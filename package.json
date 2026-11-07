@@ -1,0 +1,49 @@
+{
+  "name": "cipherdrop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-knowledge, end-to-end encrypted file sharing",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "packages/crypto",
+    "packages/shared",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"npm run dev -w @cipherdrop/api\" \"npm run dev -w @cipherdrop/web\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run test --workspaces --if-present",
+    "test:s3": "npm run test:s3 -w @cipherdrop/api",
+    "e2e": "npm run e2e -w @cipherdrop/web",
+    "db:migrate": "npm run db:migrate -w @cipherdrop/api",
+    "db:deploy": "npm run db:deploy -w @cipherdrop/api",
+    "db:seed": "npm run db:seed -w @cipherdrop/api",
+    "db:reset": "npm run db:reset -w @cipherdrop/api",
+    "bench": "npm run bench --workspaces --if-present",
+    "smoke": "npm run smoke -w @cipherdrop/api"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.20.5",
+    "concurrently": "^9.2.5",
+    "cross-env": "^10.1.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.14.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1"
+  }
+}

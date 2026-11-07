@@ -1,0 +1,67 @@
+# Local development infrastructure for CipherDrop.
+# Every credential below is a clearly-marked LOCAL DEV value; production uses docker-compose.prod.yml + real secrets.
+# Ports are bound to loopback only (127.0.0.1 AND [::1]: on Windows "localhost" may resolve to ::1 only),
+# so the dev services are never reachable from the network.
+name: cipherdrop
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cipherdrop
+      POSTGRES_PASSWORD: cipherdrop
+      POSTGRES_DB: cipherdrop
+    ports:
+      - '127.0.0.1:55433:5432'
+      - '[::1]:55433:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cipherdrop -d cipherdrop']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Dev Redis is ephemeral: rate-limit counters, the sid denylist and locks are short-lived by design.
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '127.0.0.1:56380:6379'
+      - '[::1]:56380:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # minio/minio left Docker Hub; the Chainguard image runs as uid 65532. Its /data mount point is
+  # mode 0777, so the fresh named volume inherits a root that uid 65532 can write.
+  # No mc/init container: the S3 storage driver creates the bucket at startup.
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: cipherdrop
+      MINIO_ROOT_PASSWORD: cipherdrop-dev-secret
+    ports:
+      - '127.0.0.1:59000:9000'
+      - '[::1]:59000:9000'
+      - '127.0.0.1:59001:9001'
+      - '[::1]:59001:9001'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  minio-data:

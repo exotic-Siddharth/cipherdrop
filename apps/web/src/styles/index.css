@@ -1,0 +1,194 @@
+@import 'tailwindcss';
+
+/* Dark mode follows the `dark` class on <html> (set by /theme-init.js and stores/theme.ts), R22. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Design tokens: "paper, ink and teal" (spec 11.1). Values marked "spec" are exactly the spec palette.
+ * Derived tokens (unmarked) exist for WCAG AA, measured with the spec colours:
+ * - muted-strong: muted (#64748b) is 4.76:1 on surface but 4.44:1 on the page background, so small secondary
+ *   text placed directly on bg-background uses muted-strong (5.05:1).
+ * - border-strong: form-control borders need 3:1 (WCAG 1.4.11); the spec border (#e4e7ec) is 1.24:1.
+ * - *-ink: text on soft tinted fills (bg-danger/10 and similar), where the base colours drop below 4.5:1.
+ * - dark success/warning/danger and *-foreground: the spec defines them for light only.
+ */
+:root {
+  --cd-background: #f6f7f9; /* spec */
+  --cd-surface: #ffffff; /* spec */
+  --cd-surface-2: #f2f4f7;
+  --cd-border: #e4e7ec; /* spec */
+  --cd-border-strong: #868fa1;
+  --cd-foreground: #0f172a; /* spec: text */
+  --cd-muted: #64748b; /* spec */
+  --cd-muted-strong: #5d6b80;
+  --cd-primary: #0f766e; /* spec */
+  --cd-primary-hover: #115e59; /* spec */
+  --cd-primary-foreground: #ffffff;
+  --cd-primary-ink: #115e59;
+  --cd-accent: #14b8a6; /* spec */
+  --cd-success: #15803d; /* spec */
+  --cd-success-ink: #166534;
+  --cd-warning: #b45309; /* spec */
+  --cd-warning-ink: #92400e;
+  --cd-danger: #dc2626; /* spec */
+  --cd-danger-hover: #b91c1c;
+  --cd-danger-foreground: #ffffff;
+  --cd-danger-ink: #b91c1c;
+  --cd-overlay: rgb(15 23 42 / 0.45);
+  --cd-shadow: 0 1px 2px rgb(15 23 42 / 0.05), 0 1px 3px rgb(15 23 42 / 0.06);
+  --cd-shadow-lg: 0 10px 30px -10px rgb(15 23 42 / 0.25), 0 4px 10px -6px rgb(15 23 42 / 0.12);
+}
+
+.dark {
+  --cd-background: #0b1014; /* spec */
+  --cd-surface: #11181d; /* spec */
+  --cd-surface-2: #162027;
+  --cd-border: #1f2a31; /* spec */
+  --cd-border-strong: #56677a;
+  --cd-foreground: #e2e8f0; /* spec: text */
+  --cd-muted: #94a3b8; /* spec */
+  --cd-muted-strong: #a7b3c4;
+  --cd-primary: #2dd4bf; /* spec */
+  --cd-primary-hover: #5eead4;
+  --cd-primary-foreground: #0b1014;
+  --cd-primary-ink: #5eead4;
+  --cd-accent: #14b8a6;
+  --cd-success: #4ade80;
+  --cd-success-ink: #86efac;
+  --cd-warning: #fbbf24;
+  --cd-warning-ink: #fcd34d;
+  --cd-danger: #f87171;
+  --cd-danger-hover: #fca5a5;
+  --cd-danger-foreground: #0b1014;
+  --cd-danger-ink: #fca5a5;
+  --cd-overlay: rgb(0 0 0 / 0.6);
+  --cd-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  --cd-shadow-lg: 0 12px 32px -12px rgb(0 0 0 / 0.7), 0 4px 12px -6px rgb(0 0 0 / 0.5);
+}
+
+/* `inline` makes utilities read the --cd-* variables directly, so they switch with the theme (R22). */
+@theme inline {
+  --color-background: var(--cd-background);
+  --color-surface: var(--cd-surface);
+  --color-surface-2: var(--cd-surface-2);
+  --color-border: var(--cd-border);
+  --color-border-strong: var(--cd-border-strong);
+  --color-foreground: var(--cd-foreground);
+  --color-muted: var(--cd-muted);
+  --color-muted-strong: var(--cd-muted-strong);
+  --color-primary: var(--cd-primary);
+  --color-primary-hover: var(--cd-primary-hover);
+  --color-primary-foreground: var(--cd-primary-foreground);
+  --color-primary-ink: var(--cd-primary-ink);
+  --color-accent: var(--cd-accent);
+  --color-success: var(--cd-success);
+  --color-success-ink: var(--cd-success-ink);
+  --color-warning: var(--cd-warning);
+  --color-warning-ink: var(--cd-warning-ink);
+  --color-danger: var(--cd-danger);
+  --color-danger-hover: var(--cd-danger-hover);
+  --color-danger-foreground: var(--cd-danger-foreground);
+  --color-danger-ink: var(--cd-danger-ink);
+  --color-overlay: var(--cd-overlay);
+  --shadow-card: var(--cd-shadow);
+  --shadow-popover: var(--cd-shadow-lg);
+}
+
+@theme {
+  --font-sans:
+    'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-mono:
+    'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono',
+    monospace;
+
+  --animate-fade-in: fade-in 150ms ease-out;
+  --animate-pop-in: pop-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-progress-indeterminate: progress-indeterminate 1.4s ease-in-out infinite;
+  /* Wrong-password feedback (Receive page). Use as motion-safe:animate-shake. */
+  --animate-shake: shake 0.4s ease-in-out;
+  /* HexStream: duplicate the strip content and translate it by -50% for a seamless loop. */
+  --animate-hex-scroll: hex-scroll 18s linear infinite;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes progress-indeterminate {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(260%);
+    }
+  }
+  @keyframes shake {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20%,
+    60% {
+      transform: translateX(-6px);
+    }
+    40%,
+    80% {
+      transform: translateX(6px);
+    }
+  }
+  @keyframes hex-scroll {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    font-optical-sizing: auto;
+  }
+  ::selection {
+    background-color: color-mix(in oklab, var(--cd-accent) 35%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--cd-primary);
+    outline-offset: 2px;
+  }
+  /* Respect reduced motion everywhere (HexStream, spinners, dialogs), spec 11.1. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

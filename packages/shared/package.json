@@ -1,0 +1,23 @@
+{
+  "name": "@cipherdrop/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CipherDrop zod contracts and shared constants (single source of truth for request/response shapes)",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cipherdrop/crypto": "*",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "vitest": "3.2"
+  }
+}

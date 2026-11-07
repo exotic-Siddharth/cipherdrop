@@ -1,0 +1,4 @@
+package-lock.json
+docs/
+apps/api/prisma/migrations/
+apps/api/data/

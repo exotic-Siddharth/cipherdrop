@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f6f7f9" />
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      name="description"
+      content="CipherDrop: zero-knowledge file sharing. Files are encrypted in your browser before upload; the key never reaches the server."
+    />
+    <title>CipherDrop</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Applies the saved theme before first paint. External on purpose: the CSP allows no inline scripts. -->
+    <script src="/theme-init.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      CipherDrop needs JavaScript: files are encrypted and decrypted in your browser, never on our
+      servers.
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

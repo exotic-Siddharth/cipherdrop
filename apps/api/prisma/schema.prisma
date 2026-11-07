@@ -1,0 +1,230 @@
+// CipherDrop data model: spec section 8 (normative). The server stores ciphertext, wrapped keys and hashes only.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum DropStatus {
+  UPLOADING
+  READY
+  EXHAUSTED
+  EXPIRED
+  DELETED
+  DISABLED
+}
+
+enum ReportReason {
+  MALWARE
+  PHISHING
+  ILLEGAL
+  COPYRIGHT
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+enum AuditAction {
+  REGISTER
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+  LOGIN_LOCKED
+  MFA_CHALLENGE_FAILED
+  MFA_ENABLED
+  MFA_DISABLED
+  BACKUP_CODE_USED
+  BACKUP_CODES_REGENERATED
+  PASSWORD_CHANGED
+  RECOVERY_USED
+  RECOVERY_KEY_ROTATED
+  SESSION_REVOKED
+  SESSION_REUSE_DETECTED
+  LOGOUT
+  ACCOUNT_DELETED
+  DROP_CREATED
+  DROP_COMPLETED
+  DROP_OPENED
+  DROP_UNLOCK_FAILED
+  DROP_DELETED
+  DROP_EXPIRED
+  DROP_EXHAUSTED
+  DROP_REPORTED
+  DROP_DISABLED
+}
+
+model User {
+  id                        String    @id @default(cuid())
+  email                     String    @unique // lower-case
+  role                      Role      @default(USER)
+  authKeyHash               String
+  kdfSalt                   String
+  kdfMemoryKiB              Int
+  kdfIterations             Int
+  kdfParallelism            Int
+  wrappedAccountKey         String
+  wrappedAccountKeyRecovery String
+  recoveryAuthHash          String
+  totpSecretEnc             String?
+  totpPendingSecretEnc      String?
+  totpEnabledAt             DateTime?
+  totpLastStep              Int?
+  autoLockMinutes           Int       @default(15)
+  storageQuotaBytes         BigInt
+  storageUsedBytes          BigInt    @default(0)
+  failedLoginCount          Int       @default(0)
+  lockedUntil               DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  sessions                  Session[]
+  backupCodes               BackupCode[]
+  drops                     Drop[]
+  auditEvents               AuditEvent[]
+}
+
+// one per login ("token family")
+model Session {
+  id         String         @id @default(cuid())
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent  String?
+  ipPrefix   String?
+  createdAt  DateTime       @default(now())
+  lastUsedAt DateTime       @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  tokens     RefreshToken[]
+
+  @@index([userId])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  sessionId String
+  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique // sha256(token)
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime? // set on rotation; presenting a used token = reuse -> revoke session
+}
+
+model BackupCode {
+  id       String    @id @default(cuid())
+  userId   String
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash String
+  usedAt   DateTime?
+
+  @@index([userId])
+}
+
+model Drop {
+  id                   String          @id // b64url(16 random bytes), server-generated
+  ownerId              String?
+  owner                User?           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerTokenHash       String
+  uploadTokenHash      String
+  status               DropStatus      @default(UPLOADING)
+  encryptedManifest    String          @db.Text
+  ownerWrappedKey      String?
+  passwordProtected    Boolean         @default(false)
+  pwKdfSalt            String?
+  pwKdfMemoryKiB       Int?
+  pwKdfIterations      Int?
+  pwKdfParallelism     Int?
+  wrappedDropKey       String?
+  authKeyHash          String?
+  totalCiphertextBytes BigInt
+  fileCount            Int
+  maxDownloads         Int
+  downloadCount        Int             @default(0)
+  expiresAt            DateTime
+  createdAt            DateTime        @default(now())
+  readyAt              DateTime?
+  lastOpenedAt         DateTime?
+  deletedAt            DateTime?
+  blobsDeletedAt       DateTime?
+  files                DropFile[]
+  chunks               DropChunk[]
+  grants               DownloadGrant[]
+  reports              Report[]
+
+  @@index([status, expiresAt])
+  @@index([ownerId, createdAt])
+}
+
+model DropFile {
+  dropId          String
+  id              String // client fileId (b64url, 22 chars)
+  drop            Drop   @relation(fields: [dropId], references: [id], onDelete: Cascade)
+  ciphertextBytes BigInt
+  chunkCount      Int
+
+  @@id([dropId, id])
+}
+
+model DropChunk {
+  dropId String
+  fileId String
+  index  Int
+  size   Int
+  sha256 String // hex of ciphertext
+  drop   Drop   @relation(fields: [dropId], references: [id], onDelete: Cascade)
+
+  @@id([dropId, fileId, index])
+}
+
+model DownloadGrant {
+  id        String   @id @default(cuid())
+  dropId    String
+  drop      Drop     @relation(fields: [dropId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  isAdmin   Boolean  @default(false)
+  ipPrefix  String?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([dropId, expiresAt])
+}
+
+model Report {
+  id               String       @id @default(cuid())
+  dropId           String
+  drop             Drop         @relation(fields: [dropId], references: [id], onDelete: Cascade)
+  reason           ReportReason
+  details          String?      @db.VarChar(1000)
+  providedKey      String? // only if the reporter explicitly opted in
+  reporterIpPrefix String?
+  status           ReportStatus @default(OPEN)
+  createdAt        DateTime     @default(now())
+  resolvedAt       DateTime?
+  resolvedById     String?
+}
+
+model AuditEvent {
+  id        String      @id @default(cuid())
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dropId    String?
+  action    AuditAction
+  ipPrefix  String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime    @default(now())
+
+  @@index([userId, createdAt])
+  @@index([dropId])
+}

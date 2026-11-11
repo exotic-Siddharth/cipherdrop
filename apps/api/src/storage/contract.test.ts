@@ -127,6 +127,32 @@ for (const c of cases) {
       await storage.deleteDrop(dropId);
     });
 
+    it('C-R2-01: versions of one chunk are separate blobs; deleteChunk removes one, deleteDrop all', async () => {
+      const dropId = id16();
+      const fileId = id16();
+      const [v1, v2] = [id16(), id16()];
+      const a = randomBytes(500);
+      const b = randomBytes(600);
+      await storage.putChunk(dropId, fileId, 2, a, v1);
+      await storage.putChunk(dropId, fileId, 2, b, v2);
+      expect((await readAll(await storage.getChunkStream(dropId, fileId, 2, v1))).equals(a)).toBe(
+        true,
+      );
+      expect((await readAll(await storage.getChunkStream(dropId, fileId, 2, v2))).equals(b)).toBe(
+        true,
+      );
+      await expectNotFound(storage.getChunkStream(dropId, fileId, 2)); // no legacy key written
+      await storage.deleteChunk(dropId, fileId, 2, v1);
+      await expect(storage.deleteChunk(dropId, fileId, 2, v1)).resolves.toBeUndefined();
+      await expectNotFound(storage.getChunkStream(dropId, fileId, 2, v1));
+      expect((await readAll(await storage.getChunkStream(dropId, fileId, 2, v2))).equals(b)).toBe(
+        true,
+      );
+      await storage.deleteDrop(dropId);
+      await expectNotFound(storage.getChunkStream(dropId, fileId, 2, v2));
+      await expect(storage.putChunk(dropId, fileId, 2, a, '../x')).rejects.toThrow();
+    });
+
     it('missing chunk rejects with NOT_FOUND', async () => {
       const dropId = id16();
       const fileId = id16();

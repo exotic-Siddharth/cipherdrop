@@ -6,9 +6,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../test/app';
 import { resetTables } from '../../test/db';
 import { authHeader, createUserRecord } from '../../test/factories';
-import { isAppError } from '../lib/errors';
 import { acquireLock, releaseLock } from '../lib/redis';
 import {
+  chunkBlobFiles,
   chunkData,
   createBody,
   createDropOk,
@@ -42,14 +42,9 @@ describe('cleanup job', () => {
     clock.set(T0);
   });
 
+  /** Any blob of chunk 0 on disk, whatever its storage version (one per PUT attempt). */
   async function blobExists(dropId: string, fileId: string): Promise<boolean> {
-    try {
-      (await t.storage.getChunkStream(dropId, fileId, 0)).destroy();
-      return true;
-    } catch (err) {
-      if (isAppError(err) && err.code === 'NOT_FOUND') return false;
-      throw err;
-    }
+    return (await chunkBlobFiles(t.storageDir, dropId, fileId, 0)).length > 0;
   }
 
   async function ownedReadyDrop(body: Record<string, unknown> = {}) {
@@ -166,12 +161,7 @@ describe('cleanup job', () => {
     expect(row.status).toBe('DELETED');
     expect(row.deletedAt).toBeInstanceOf(Date);
     expect(row.blobsDeletedAt).toBeInstanceOf(Date);
-    try {
-      (await t.storage.getChunkStream(drop.dropId, f.id, 1)).destroy();
-      expect.unreachable('chunk should be gone');
-    } catch (err) {
-      expect(isAppError(err) && err.code).toBe('NOT_FOUND');
-    }
+    expect(await chunkBlobFiles(t.storageDir, drop.dropId, f.id, 1)).toEqual([]);
     expect(await usedBytes(user.id)).toBe(0);
   });
 

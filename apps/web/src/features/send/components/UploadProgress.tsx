@@ -1,4 +1,5 @@
 import { CheckCircle2, Loader2, RotateCw, X } from 'lucide-react';
+import type { Ref } from 'react';
 import { Badge, Button, Card, CardContent, CardHeader, ProgressBar } from '../../../components/ui';
 import { formatBytes, formatDuration, formatPercent, formatThroughput } from '../../../lib/format';
 import type { SendPhase } from '../sendFlow';
@@ -24,6 +25,8 @@ export interface UploadProgressProps {
   retryNotice: string | null;
   onCancel: () => void;
   cancelling: boolean;
+  /** Send moves focus here when the upload view replaces the form (C-23). */
+  cancelRef?: Ref<HTMLButtonElement>;
 }
 
 const PHASE_TEXT: Record<SendPhase, string> = {
@@ -52,6 +55,7 @@ export function UploadProgress({
   retryNotice,
   onCancel,
   cancelling,
+  cancelRef,
 }: UploadProgressProps) {
   const total = files.reduce((n, f) => n + f.size, 0);
   const uploaded = files.reduce((n, f) => n + Math.min(f.size, f.uploaded), 0);
@@ -67,7 +71,14 @@ export function UploadProgress({
         title="Encrypting and uploading"
         description="Files are encrypted in your browser before a single byte is sent."
         actions={
-          <Button variant="outline" size="sm" icon={X} onClick={onCancel} loading={cancelling}>
+          <Button
+            ref={cancelRef}
+            variant="outline"
+            size="sm"
+            icon={X}
+            onClick={onCancel}
+            loading={cancelling}
+          >
             Cancel
           </Button>
         }

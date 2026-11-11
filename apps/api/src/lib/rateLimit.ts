@@ -14,6 +14,7 @@ import { rateLimit as expressRateLimit } from 'express-rate-limit';
 import type { Redis } from 'ioredis';
 import { RedisStore, type RedisReply } from 'rate-limit-redis';
 import { rateLimited } from './errors';
+import type { Logger } from './logger';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -78,6 +79,8 @@ export interface RateLimitDeps {
   /** Default from env RATE_LIMITS_ENABLED. */
   enabledByDefault: boolean;
   overrides?: RateLimitsConfig;
+  /** Where a failed success-path refund is reported (see RefundSafeRedisStore). */
+  logger?: Pick<Logger, 'warn'>;
 }
 
 export function isLimiterEnabled(
@@ -91,6 +94,32 @@ export function isLimiterEnabled(
 }
 
 const passThrough: RequestHandler = (_req, _res, next) => next();
+
+/**
+ * A RedisStore whose decrement never rejects. express-rate-limit runs the skipSuccessfulRequests refund in a
+ * 'finish' listener nobody awaits, so a Redis error there would be an unhandled rejection (fatalHandlers exit
+ * the process). The refund is best-effort: a lost DECR only leaves one extra hit in the bucket. increment()
+ * is unchanged, so a Redis error on the request path still fails that request.
+ */
+class RefundSafeRedisStore extends RedisStore {
+  readonly #onError: (err: unknown) => void;
+
+  constructor(
+    options: ConstructorParameters<typeof RedisStore>[0],
+    onError: (err: unknown) => void,
+  ) {
+    super(options);
+    this.#onError = onError;
+  }
+
+  override async decrement(key: string): Promise<void> {
+    try {
+      await super.decrement(key);
+    } catch (err) {
+      this.#onError(err);
+    }
+  }
+}
 
 /** Build the per-app `ctx.rateLimit` factory. */
 export function createRateLimitFactory(deps: RateLimitDeps): RateLimitFactory {
@@ -112,11 +141,18 @@ export function createRateLimitFactory(deps: RateLimitDeps): RateLimitFactory {
       keyGenerator: options.key,
       skip: options.skip,
       skipSuccessfulRequests: options.skipSuccessfulRequests ?? false,
-      store: new RedisStore({
-        prefix: `${deps.keyPrefix}:rl:${options.name}:`,
-        sendCommand: (command: string, ...args: string[]) =>
-          deps.redis.call(command, ...args) as Promise<RedisReply>,
-      }),
+      store: new RefundSafeRedisStore(
+        {
+          prefix: `${deps.keyPrefix}:rl:${options.name}:`,
+          sendCommand: (command: string, ...args: string[]) =>
+            deps.redis.call(command, ...args) as Promise<RedisReply>,
+        },
+        (err) =>
+          deps.logger?.warn(
+            { err: { code: (err as { code?: string } | null)?.code }, limiter: options.name },
+            'rate limit refund failed',
+          ),
+      ),
       handler: (req, _res, next) => {
         const resetTime = (req as Request & { rateLimit?: { resetTime?: Date } }).rateLimit
           ?.resetTime;

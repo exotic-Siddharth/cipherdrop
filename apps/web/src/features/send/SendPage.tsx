@@ -37,6 +37,7 @@ import { shareLinkFor } from '../../lib/links';
 import { queryClient, queryKeys } from '../../lib/queryClient';
 import { useAuth } from '../../stores/auth';
 import { useDeviceDrops } from '../../stores/deviceDrops';
+import { useLeaveGuard } from '../../stores/leaveGuard';
 import { useVault } from '../../stores/vault';
 import { validateNewPassword } from '../auth/passwordRules';
 import { DeviceDropsList } from './components/DeviceDropsList';
@@ -70,11 +71,23 @@ const POINTS = [
 const DEFAULT_EXPIRY_HOURS = 24;
 const SPEED_WINDOW_MS = 5_000;
 
+/** How the form came back; picks the focus target and the announcement (C-23). */
+type ComposeAfter = 'cancel' | 'dismiss' | 'reset' | 'unlock';
+
 type View =
-  | { kind: 'compose' }
+  | { kind: 'compose'; after?: ComposeAfter }
   | { kind: 'running' }
   | { kind: 'done'; result: SendResult }
   | { kind: 'error'; error: unknown; canResume: boolean };
+
+// Status-region announcements, worded unlike the visible headings so text locators match one element
+// (Playwright strict mode).
+const COMPOSE_STATUS: Record<ComposeAfter, string> = {
+  cancel: 'Upload stopped. The send form is below.',
+  dismiss: 'Error closed. The send form is below.',
+  reset: 'Ready for a new drop. The send form is below.',
+  unlock: 'Unlock your vault to send again.',
+};
 
 function errorText(err: unknown): string {
   if (err instanceof RangeError) {
@@ -145,8 +158,37 @@ export function Component() {
     authStatus !== 'booting';
   const running = view.kind === 'running';
 
-  // In-app navigation unmounts this page, which aborts the upload and drops the selected files: ask first.
-  const blocker = useBlocker(running);
+  // In-app navigation to another page unmounts this one, which aborts the upload and drops the selected
+  // files: ask first. Navigations that stay on "/" (the Send link, the logo) leave the upload alone.
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      running && currentLocation.pathname !== nextLocation.pathname,
+  );
+  // Sign out mid-upload asks through the same dialog (C-17); `leaveAsk` resolves the pending sign-out.
+  const leaveAsk = useRef<((leave: boolean) => void) | null>(null);
+  const [signOutAsked, setSignOutAsked] = useState(false);
+  useEffect(() => {
+    if (!running) return;
+    useLeaveGuard.setState({
+      confirmLeave: () =>
+        new Promise<boolean>((resolve) => {
+          leaveAsk.current?.(false);
+          leaveAsk.current = resolve;
+          setSignOutAsked(true);
+        }),
+    });
+    return () => {
+      useLeaveGuard.setState({ confirmLeave: null });
+      leaveAsk.current?.(false);
+      leaveAsk.current = null;
+      setSignOutAsked(false);
+    };
+  }, [running]);
+  // The dialog lives in the running view: when the upload ends while it is open, the user stays to see the
+  // result. A blocker left 'blocked' would reopen the dialog at the next upload (C-17).
+  useEffect(() => {
+    if (!running && blocker.state === 'blocked') blocker.reset();
+  }, [running, blocker]);
 
   // Leaving mid-upload loses the in-memory files; warn (resume after reload still works, R11).
   useEffect(() => {
@@ -158,17 +200,23 @@ export function Component() {
 
   useEffect(() => () => controller.current?.abort(), []);
 
-  // Move focus to the new view (the focused button is unmounted by the swap), once per change.
+  // Move focus to the new view (the focused button is unmounted by the swap), once per change. The done view's
+  // SuccessCard focuses its own heading.
   const headerRef = useRef<HTMLDivElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const unlockRef = useRef<HTMLInputElement>(null);
   const previousKind = useRef<View['kind']>(view.kind);
   useEffect(() => {
     const before = previousKind.current;
     previousKind.current = view.kind;
     if (before === view.kind) return;
-    if (view.kind === 'error') errorRef.current?.focus();
-    else if (view.kind === 'compose' && before === 'running') headerRef.current?.focus();
-  }, [view.kind]);
+    if (view.kind === 'running') cancelRef.current?.focus();
+    else if (view.kind === 'error') errorRef.current?.focus();
+    else if (view.kind === 'compose') {
+      ((view.after === 'unlock' ? unlockRef.current : null) ?? headerRef.current)?.focus();
+    }
+  }, [view]);
 
   const addFiles = (incoming: File[]) => {
     setFiles((current) => {
@@ -259,6 +307,7 @@ export function Component() {
 
   const finish = (result: SendResult) => {
     controller.current = null;
+    activeRecord.current = null; // completed: never resume or abandon it
     if (result.anonymous) {
       useDeviceDrops.getState().add({
         dropId: result.dropId,
@@ -285,9 +334,22 @@ export function Component() {
     void deleteDrop(record.dropId, record.ownerToken).catch(() => undefined);
   };
 
-  const runNew = async (selected: File[]) => {
-    const ctrl = beginRun();
+  /**
+   * Every fresh drop starts here. `replaced` is an UPLOADING drop the new one supersedes (its record is
+   * already cleared): it is deleted first, so its pending bytes no longer count against the quota.
+   */
+  const runNew = async (selected: File[], replaced?: ResumeRecord | null) => {
     const anonymous = !signedIn;
+    const accountKey = anonymous ? null : useVault.getState().accountKey;
+    if (!anonymous && accountKey === null) {
+      // A signed-in drop needs the owner wrap (R7, C-38): back to compose, which shows the inline unlock.
+      if (replaced) abandonDrop(replaced);
+      controller.current = null;
+      setView({ kind: 'compose', after: 'unlock' });
+      return;
+    }
+    const ctrl = beginRun();
+    if (replaced) await deleteDrop(replaced.dropId, replaced.ownerToken).catch(() => undefined);
     try {
       const result = await startNewDrop(
         {
@@ -296,7 +358,7 @@ export function Component() {
           expiresInHours: effectiveExpiry,
           maxDownloads: effectiveDownloads,
           password: usePassword ? password : null,
-          accountKey: anonymous ? null : useVault.getState().accountKey,
+          accountKey,
           anonymous,
         },
         callbacksFor(selected),
@@ -315,12 +377,11 @@ export function Component() {
       if (result === 'mismatch') {
         clearResumeRecord();
         setResume(null);
-        abandonDrop(record);
         toast.info('Starting a new drop', {
           description:
             "These files don't match the interrupted upload, so it can't be resumed safely.",
         });
-        await runNew(files);
+        await runNew(files, record);
         return;
       }
       finish(result);
@@ -329,13 +390,26 @@ export function Component() {
     }
   };
 
+  /** The interrupted drop, if any: after a failed upload it lives only in activeRecord and sessionStorage. */
+  const liveRecord = () => activeRecord.current ?? resume ?? readResumeRecord();
+
+  /** Same files resume the interrupted drop; other files replace it (deleted with the owner token, C-35). */
+  const resumeOrReplace = (record: ResumeRecord | null) => {
+    const matched = record ? matchResumeFiles(record, files) : null;
+    if (record && matched) {
+      void runResume(record, matched);
+      return;
+    }
+    if (record) {
+      clearResumeRecord();
+      setResume(null);
+    }
+    void runNew(files, record);
+  };
+
   const submit = () => {
     if (!canSubmit) return;
-    if (resume && resumeMatch) void runResume(resume, resumeMatch);
-    else {
-      if (resume) abandonDrop(resume);
-      void runNew(files);
-    }
+    resumeOrReplace(liveRecord());
   };
 
   const cancel = async () => {
@@ -347,24 +421,17 @@ export function Component() {
     activeRecord.current = null;
     if (record) await deleteDrop(record.dropId, record.ownerToken).catch(() => undefined);
     setCancelling(false);
-    setView({ kind: 'compose' });
+    setView({ kind: 'compose', after: 'cancel' });
     toast('Upload cancelled', { description: 'Nothing was kept on the server.' });
   };
 
-  const retryAfterError = () => {
-    const record = activeRecord.current ?? readResumeRecord();
-    const matched = record ? matchResumeFiles(record, files) : null;
-    if (record && matched) void runResume(record, matched);
-    else if (vaultLocked) {
-      // A new signed-in drop needs the owner wrap (R7): back to compose, which shows the inline unlock.
-      setView({ kind: 'compose' });
-    } else {
-      if (record) {
-        clearResumeRecord();
-        abandonDrop(record);
-      }
-      void runNew(files);
-    }
+  // A locked vault is handled in runNew (R7, C-38), the one path every fresh drop takes.
+  const retryAfterError = () => resumeOrReplace(liveRecord());
+
+  /** Back to the form; an interrupted drop shows its banner again, so Resume upload stays on offer. */
+  const dismissError = () => {
+    setResume(liveRecord());
+    setView({ kind: 'compose', after: 'dismiss' });
   };
 
   const discardResume = () => {
@@ -379,15 +446,19 @@ export function Component() {
     setNote('');
     setPassword('');
     setUsePassword(false);
-    setView({ kind: 'compose' });
+    setView({ kind: 'compose', after: 'reset' });
   };
 
   const statusText =
-    view.kind === 'done'
-      ? 'Upload finished. The share link is below.'
-      : view.kind === 'error'
-        ? 'Upload failed. Details and a retry button are below.'
-        : '';
+    view.kind === 'running'
+      ? 'Upload started. Progress and a Cancel button are below.'
+      : view.kind === 'done'
+        ? 'Upload finished. The share link is below.'
+        : view.kind === 'error'
+          ? 'Upload failed. Details and a retry button are below.'
+          : view.after
+            ? COMPOSE_STATUS[view.after]
+            : '';
   // One live region that stays mounted across view swaps, so a result inserted with its text is announced.
   const statusRegion = (
     <div data-testid="send-status" aria-live="polite" className="sr-only">
@@ -395,20 +466,40 @@ export function Component() {
     </div>
   );
 
+  const answerSignOut = (leave: boolean) => {
+    const resolve = leaveAsk.current;
+    leaveAsk.current = null;
+    setSignOutAsked(false);
+    resolve?.(leave);
+  };
+
   const leaveDialog = (
     <ConfirmDialog
-      open={blocker.state === 'blocked'}
+      open={blocker.state === 'blocked' || signOutAsked}
       onOpenChange={(open) => {
-        if (!open && blocker.state === 'blocked') blocker.reset();
+        if (open) return;
+        if (blocker.state === 'blocked') blocker.reset();
+        if (signOutAsked) answerSignOut(false);
       }}
-      title="Leave and cancel the upload?"
-      description="Your files are still being encrypted and uploaded. Leaving this page stops it, and you would have to select the files again."
-      confirmLabel="Leave"
+      title={signOutAsked ? 'Sign out and cancel the upload?' : 'Leave and cancel the upload?'}
+      description={
+        signOutAsked
+          ? 'Your files are still being encrypted and uploaded. Signing out stops the upload and deletes the unfinished drop.'
+          : 'Your files are still being encrypted and uploaded. Leaving this page stops it, and you would have to select the files again.'
+      }
+      confirmLabel={signOutAsked ? 'Sign out' : 'Leave'}
       cancelLabel="Keep uploading"
       tone="danger"
-      onConfirm={() => {
+      onConfirm={async () => {
         if (blocker.state === 'blocked') blocker.proceed();
-        return false; // the dialog closes with the blocker state; never reset() after proceed()
+        else if (signOutAsked) {
+          // Cancel (abort and delete the drop) while the session still exists, then let sign-out go on.
+          const resolve = leaveAsk.current;
+          leaveAsk.current = null;
+          await cancel();
+          resolve?.(true);
+        }
+        return false; // the dialog closes with the blocker or view state; never reset() after proceed()
       }}
     />
   );
@@ -448,6 +539,7 @@ export function Component() {
             retryNotice={retryNotice}
             onCancel={() => void cancel()}
             cancelling={cancelling}
+            cancelRef={cancelRef}
           />
         </div>
         {leaveDialog}
@@ -528,7 +620,7 @@ export function Component() {
                 >
                   Try again
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setView({ kind: 'compose' })}>
+                <Button size="sm" variant="ghost" onClick={dismissError}>
                   Dismiss
                 </Button>
               </div>
@@ -657,7 +749,7 @@ export function Component() {
               rows={3}
             />
 
-            {vaultLocked ? <VaultUnlockInline /> : null}
+            {vaultLocked ? <VaultUnlockInline inputRef={unlockRef} /> : null}
 
             <Button
               size="lg"

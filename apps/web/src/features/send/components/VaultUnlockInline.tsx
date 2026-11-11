@@ -1,7 +1,7 @@
 import { AAD, importAesKey, unwrapKey } from '@cipherdrop/crypto';
 import { VaultSchema } from '@cipherdrop/shared';
 import { KeyRound, Lock } from 'lucide-react';
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type Ref } from 'react';
 import { Link, useLocation } from 'react-router';
 import { Button, PasswordInput } from '../../../components/ui';
 import { kdfClient } from '../../../crypto/kdfClient';
@@ -16,7 +16,14 @@ import { useVault } from '../../../stores/vault';
  * R7: signed in with a locked vault, Send asks for the account password inline (never navigates). The
  * account key is unwrapped locally and kept only as a non-extractable CryptoKey; the raw bytes are zeroed.
  */
-export function VaultUnlockInline({ className }: { className?: string }) {
+export function VaultUnlockInline({
+  className,
+  inputRef,
+}: {
+  className?: string;
+  /** The password field, so Send can focus it when a retry needs the vault (C-23). */
+  inputRef?: Ref<HTMLInputElement>;
+}) {
   const location = useLocation();
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -73,6 +80,7 @@ export function VaultUnlockInline({ className }: { className?: string }) {
             )}
           >
             <PasswordInput
+              ref={inputRef}
               label="Account password"
               hideLabel
               placeholder="Account password"

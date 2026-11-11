@@ -63,6 +63,7 @@ export function createContext(deps: AppDeps = {}): AppContext {
       keyPrefix: globalEnv.KEY_PREFIX,
       enabledByDefault: env.RATE_LIMITS_ENABLED,
       overrides: deps.rateLimits,
+      logger: deps.logger ?? defaultLogger,
     }),
   };
 }

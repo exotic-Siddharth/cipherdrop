@@ -10,6 +10,7 @@ import { resetTables } from '../../../test/db';
 import { authHeader, createUserRecord } from '../../../test/factories';
 import { isAppError } from '../../lib/errors';
 import {
+  chunkBlobFiles,
   chunkData,
   complete,
   createBody,
@@ -43,8 +44,19 @@ describe('drop upload', () => {
     fileId: string,
     index: number,
   ): Promise<Buffer | null> {
+    // The blob the DropChunk row points at (C-R2-01: each PUT attempt writes its own version).
+    const row = await t.prisma.dropChunk.findUnique({
+      where: { dropId_fileId_index: { dropId, fileId, index } },
+      select: { blobVersion: true },
+    });
+    if (!row) return null;
     try {
-      const stream = await t.storage.getChunkStream(dropId, fileId, index);
+      const stream = await t.storage.getChunkStream(
+        dropId,
+        fileId,
+        index,
+        row.blobVersion ?? undefined,
+      );
       const parts: Buffer[] = [];
       for await (const p of stream) parts.push(Buffer.from(p as Uint8Array));
       return Buffer.concat(parts);
@@ -223,6 +235,8 @@ describe('drop upload', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]!.sha256).toBe(sha256Hex(second));
       expect((await storedChunk(drop.dropId, f.id, 0))?.equals(second)).toBe(true);
+      // The superseded versions are deleted: one blob on disk.
+      expect(await chunkBlobFiles(t.storageDir, drop.dropId, f.id, 0)).toHaveLength(1);
     });
 
     it('answers 409 after the drop is READY (upload token is useless)', async () => {

@@ -1,5 +1,5 @@
 /**
- * Local filesystem blob driver (spec section 9, R21). Layout: <root>/<dropId>/<fileId>/<index>.
+ * Local filesystem blob driver (spec section 9, R21). Layout: <root>/<dropId>/<fileId>/<index>[.<version>].
  *
  * - Writes are atomic: the chunk goes to a unique temp file in the same directory, then rename() replaces
  *   the target, so a reader sees either the old or the new chunk, never a partial one.
@@ -15,7 +15,7 @@ import type { Readable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { notFound } from '../lib/errors';
 
-import { assertBlobAddress, assertDropId, type StorageDriver } from './index';
+import { assertBlobAddress, assertDropId, chunkLeaf, type StorageDriver } from './index';
 
 const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const RENAME_ATTEMPTS = 6;
@@ -59,9 +59,9 @@ export function createLocalStorage(storageDir: string): StorageDriver {
     return full;
   };
 
-  const chunkPath = async (dropId: string, fileId: string, index: number) => {
-    assertBlobAddress(dropId, fileId, index);
-    return inside(dropId, fileId, String(index));
+  const chunkPath = async (dropId: string, fileId: string, index: number, version?: string) => {
+    assertBlobAddress(dropId, fileId, index, version);
+    return inside(dropId, fileId, chunkLeaf(index, version));
   };
 
   return {
@@ -69,8 +69,8 @@ export function createLocalStorage(storageDir: string): StorageDriver {
       await root();
     },
 
-    async putChunk(dropId, fileId, index, data) {
-      const target = await chunkPath(dropId, fileId, index);
+    async putChunk(dropId, fileId, index, data, version) {
+      const target = await chunkPath(dropId, fileId, index, version);
       const dir = path.dirname(target);
       await fs.promises.mkdir(dir, { recursive: true });
       const temp = path.join(dir, `.${index}.${randomBytes(6).toString('hex')}.tmp`);
@@ -83,8 +83,8 @@ export function createLocalStorage(storageDir: string): StorageDriver {
       }
     },
 
-    async getChunkStream(dropId, fileId, index): Promise<Readable> {
-      const file = await chunkPath(dropId, fileId, index);
+    async getChunkStream(dropId, fileId, index, version): Promise<Readable> {
+      const file = await chunkPath(dropId, fileId, index, version);
       let handle: fs.promises.FileHandle;
       try {
         handle = await fs.promises.open(file, 'r');
@@ -94,6 +94,14 @@ export function createLocalStorage(storageDir: string): StorageDriver {
         throw err;
       }
       return handle.createReadStream({ autoClose: true });
+    },
+
+    async deleteChunk(dropId, fileId, index, version) {
+      await fs.promises.rm(await chunkPath(dropId, fileId, index, version), {
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     },
 
     async deleteDrop(dropId) {

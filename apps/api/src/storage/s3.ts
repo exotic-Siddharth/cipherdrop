@@ -1,5 +1,6 @@
 /**
- * S3-compatible blob driver (MinIO in dev, S3/R2 in prod; R17). Keys: drops/<dropId>/<fileId>/<index>.
+ * S3-compatible blob driver (MinIO in dev, S3/R2 in prod; R17).
+ * Keys: drops/<dropId>/<fileId>/<index>[.<version>].
  *
  * - forcePathStyle (MinIO), and requestChecksumCalculation/responseChecksumValidation WHEN_REQUIRED: newer
  *   SDKs otherwise add CRC32 trailers that some S3-compatible servers reject.
@@ -11,6 +12,7 @@
  */
 import {
   CreateBucketCommand,
+  DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadBucketCommand,
@@ -21,7 +23,13 @@ import {
 } from '@aws-sdk/client-s3';
 import { Readable } from 'node:stream';
 import { notFound } from '../lib/errors';
-import { assertBlobAddress, assertDropId, type StorageDriver, type StorageEnv } from './index';
+import {
+  assertBlobAddress,
+  assertDropId,
+  chunkLeaf,
+  type StorageDriver,
+  type StorageEnv,
+} from './index';
 
 const S3_MAX_SOCKETS = 256;
 const S3_CONNECT_TIMEOUT_MS = 5_000;
@@ -65,9 +73,9 @@ export function createS3Storage(storageEnv: S3StorageEnv): StorageDriver {
   const Bucket = storageEnv.S3_BUCKET;
 
   const dropPrefix = (dropId: string) => `drops/${dropId}/`;
-  const objectKey = (dropId: string, fileId: string, index: number) => {
-    assertBlobAddress(dropId, fileId, index);
-    return `${dropPrefix(dropId)}${fileId}/${index}`;
+  const objectKey = (dropId: string, fileId: string, index: number, version?: string) => {
+    assertBlobAddress(dropId, fileId, index, version);
+    return `${dropPrefix(dropId)}${fileId}/${chunkLeaf(index, version)}`;
   };
 
   return {
@@ -79,11 +87,11 @@ export function createS3Storage(storageEnv: S3StorageEnv): StorageDriver {
       }
     },
 
-    async putChunk(dropId, fileId, index, data) {
+    async putChunk(dropId, fileId, index, data, version) {
       await client.send(
         new PutObjectCommand({
           Bucket,
-          Key: objectKey(dropId, fileId, index),
+          Key: objectKey(dropId, fileId, index, version),
           Body: data,
           ContentLength: data.length,
           ContentType: 'application/octet-stream',
@@ -91,8 +99,8 @@ export function createS3Storage(storageEnv: S3StorageEnv): StorageDriver {
       );
     },
 
-    async getChunkStream(dropId, fileId, index) {
-      const Key = objectKey(dropId, fileId, index);
+    async getChunkStream(dropId, fileId, index, version) {
+      const Key = objectKey(dropId, fileId, index, version);
       try {
         const out = await client.send(new GetObjectCommand({ Bucket, Key }));
         const body = out.Body;
@@ -113,6 +121,12 @@ export function createS3Storage(storageEnv: S3StorageEnv): StorageDriver {
         }
         throw err;
       }
+    },
+
+    async deleteChunk(dropId, fileId, index, version) {
+      await client.send(
+        new DeleteObjectCommand({ Bucket, Key: objectKey(dropId, fileId, index, version) }),
+      );
     },
 
     async deleteDrop(dropId) {

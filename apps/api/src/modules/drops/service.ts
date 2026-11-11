@@ -38,6 +38,9 @@ import { downloadsRemaining, goneReason, purgeDropBlobs } from './lifecycle';
 
 const HOUR_MS = 3_600_000;
 const MIN_MS = 60_000;
+/** Advisory lock namespaces (pg_advisory_xact_lock(int, int) first key). */
+const ANON_CAPACITY_LOCK = 1;
+const CHUNK_ROW_LOCK = 2;
 
 type Req = Pick<Request, 'ip' | 'headers'>;
 
@@ -107,21 +110,6 @@ export async function createDrop(
     throw payloadTooLarge('The drop is larger than allowed', { maxBytes });
   }
 
-  if (anon && ctx.env.ANON_TOTAL_PENDING_BYTES > 0) {
-    const held = await ctx.prisma.drop.aggregate({
-      _sum: { totalCiphertextBytes: true },
-      where: { ownerId: null, status: { in: ['UPLOADING', 'READY'] }, blobsDeletedAt: null },
-    });
-    if (
-      (held._sum.totalCiphertextBytes ?? 0n) + BigInt(totalBytes) >
-      ctx.env.ANON_TOTAL_PENDING_BYTES
-    ) {
-      throw quotaExceeded(
-        'Anonymous uploads are at capacity right now, try again later or sign in',
-      );
-    }
-  }
-
   const now = ctx.now();
   const id = randomBytes(16).toString('base64url');
   const ownerToken = randomToken();
@@ -186,6 +174,27 @@ export async function createDrop(
       }
       await insert(tx);
     });
+  } else if (ctx.env.ANON_TOTAL_PENDING_BYTES > 0) {
+    // The anonymous capacity check and the insert run under one transaction-scoped advisory lock (the
+    // anonymous counterpart of the per-user row lock above), so parallel creates see each other's bytes.
+    // Every anonymous drop whose blobs are not purged yet counts, whatever its status (EXHAUSTED and
+    // EXPIRED drops keep their blobs while a grant lives).
+    await ctx.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ANON_CAPACITY_LOCK}::int, 0)`;
+      const held = await tx.drop.aggregate({
+        _sum: { totalCiphertextBytes: true },
+        where: { ownerId: null, blobsDeletedAt: null },
+      });
+      if (
+        (held._sum.totalCiphertextBytes ?? 0n) + BigInt(totalBytes) >
+        ctx.env.ANON_TOTAL_PENDING_BYTES
+      ) {
+        throw quotaExceeded(
+          'Anonymous uploads are at capacity right now, try again later or sign in',
+        );
+      }
+      await insert(tx);
+    });
   } else {
     await insert(ctx.prisma);
   }
@@ -205,20 +214,34 @@ export function assertUploadable(ctx: Pick<AppContext, 'now'>, drop: Drop): void
 }
 
 /**
- * Write one verified chunk and record it, only while the drop is still UPLOADING and unexpired. The drop row
- * is read FOR SHARE and kept locked until the blob and its row are written: delete, disable, complete and
- * account deletion all update (or cascade-delete) that row, so they wait for an in-flight chunk and their
- * blob purge then also removes it, and a chunk arriving after them sees the new status and is refused. Several
- * chunks of one drop still run in parallel (share locks do not conflict).
+ * Write one verified chunk and record it, only while the drop is still UPLOADING and unexpired (C-04,
+ * C-R2-01). The blob is written FIRST, under a fresh storage version, with no DB connection, transaction or
+ * lock held. A short transaction then reads the drop row FOR SHARE, re-checks the status and expiry, and
+ * points the DropChunk row at the new version. Delete, disable, complete and account deletion update (or
+ * cascade-delete) that row, so they serialise with this short transaction only:
+ * - the transaction commits first: the blob already exists, so their later purge removes it;
+ * - they commit first: the re-check fails and the blob just written (referenced by nothing) is deleted here.
+ * A re-PUT never touches the blob complete() verified; the superseded version is deleted after the commit.
+ * Several chunks of one drop still run in parallel (share locks do not conflict); PUTs of the SAME chunk
+ * serialise on an advisory lock so each one learns the version it replaces.
  */
 export async function storeChunk(
   ctx: AppContext,
   chunk: { dropId: string; fileId: string; index: number; sha256: string; body: Buffer },
 ): Promise<void> {
   const { dropId, fileId, index, sha256, body } = chunk;
-  const now = ctx.now();
-  await ctx.prisma.$transaction(
-    async (tx) => {
+  const version = randomBytes(12).toString('base64url');
+  const dropBlob = (v: string | undefined, what: string) =>
+    ctx.storage.deleteChunk(dropId, fileId, index, v).catch((err: unknown) => {
+      // Garbage under the drop's prefix only: the drop purge still removes it.
+      ctx.logger.warn({ err: { code: (err as { code?: string }).code } }, what);
+    });
+
+  await ctx.storage.putChunk(dropId, fileId, index, body, version);
+  let superseded: { blobVersion: string | null } | null;
+  try {
+    superseded = await ctx.prisma.$transaction(async (tx) => {
+      const now = ctx.now();
       const rows = await tx.$queryRaw<{ status: string; expired: boolean }[]>`
         SELECT "status"::text AS "status", ("expiresAt" <= ${utc(now)}) AS "expired"
         FROM "Drop" WHERE "id" = ${dropId} FOR SHARE`;
@@ -226,15 +249,26 @@ export async function storeChunk(
       if (!row) throw notFound('Unknown drop');
       if (row.status !== 'UPLOADING') throw conflict('This drop is no longer accepting uploads');
       if (row.expired) throw gone('EXPIRED');
-      await ctx.storage.putChunk(dropId, fileId, index, body);
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(${CHUNK_ROW_LOCK}::int, hashtext(${`${dropId}/${fileId}/${index}`}))`;
+      const previous = await tx.dropChunk.findUnique({
+        where: { dropId_fileId_index: { dropId, fileId, index } },
+        select: { blobVersion: true },
+      });
       await tx.dropChunk.upsert({
         where: { dropId_fileId_index: { dropId, fileId, index } },
-        create: { dropId, fileId, index, size: body.length, sha256 },
-        update: { size: body.length, sha256 },
+        create: { dropId, fileId, index, size: body.length, sha256, blobVersion: version },
+        update: { size: body.length, sha256, blobVersion: version },
       });
-    },
-    { timeout: 60_000, maxWait: 10_000 },
-  );
+      return previous;
+    });
+  } catch (err) {
+    await dropBlob(version, 'could not delete a refused chunk blob');
+    throw err;
+  }
+  if (superseded) {
+    await dropBlob(superseded.blobVersion ?? undefined, 'could not delete a superseded chunk blob');
+  }
 }
 
 export async function uploadStatus(ctx: AppContext, drop: Drop): Promise<UploadStatus> {
@@ -559,11 +593,14 @@ export async function reportDrop(
 ): Promise<{ id: string }> {
   const drop = await ctx.prisma.drop.findUnique({
     where: { id: dropId },
-    select: { id: true, status: true, ownerId: true, expiresAt: true },
+    select: { id: true, status: true, ownerId: true, expiresAt: true, blobsDeletedAt: true },
   });
   if (!drop || drop.status === 'UPLOADING') throw notFound('Unknown drop');
-  const reason = goneReason(drop, ctx.now());
-  if (reason) throw gone(reason);
+  // A report is useful while the ciphertext still exists and can be reviewed: READY, EXHAUSTED (a
+  // burn-after-read drop is EXHAUSTED the moment it is opened) and EXPIRED until purged. Deleted, disabled
+  // and purged drops answer 410 with the reason.
+  if (drop.status === 'DELETED' || drop.status === 'DISABLED') throw gone(drop.status);
+  if (drop.blobsDeletedAt) throw gone(goneReason(drop, ctx.now()) ?? 'EXPIRED');
   const report = await ctx.prisma.report.create({
     data: {
       dropId,

@@ -65,6 +65,35 @@ interface PendingChunk {
 const tokenKey = (req: Request) => sha256B64url(bearerToken(req) ?? '');
 const paramId = (req: Request) => String(req.params.id ?? '');
 
+/**
+ * Counters of requests in flight in this process: a total and per-key shares (per token, grant or IP). take()
+ * claims a slot for every share or answers 429 + Retry-After; the slot is released when the response closes
+ * (finish, error, abort, client disconnect, hang-up).
+ */
+function slotPool(maxTotal: () => number) {
+  let total = 0;
+  const held = new Map<string, number>();
+  return {
+    take(req: Request, res: Response, shares: { key: string; max: number }[]): void {
+      // A socket already destroyed may have emitted 'close' before we listen: never count it.
+      if (req.socket.destroyed) throw rateLimited(1);
+      if (total >= maxTotal() || shares.some((s) => (held.get(s.key) ?? 0) >= s.max)) {
+        throw rateLimited(1);
+      }
+      total += 1;
+      for (const s of shares) held.set(s.key, (held.get(s.key) ?? 0) + 1);
+      res.once('close', () => {
+        total -= 1;
+        for (const s of shares) {
+          const n = (held.get(s.key) ?? 1) - 1;
+          if (n > 0) held.set(s.key, n);
+          else held.delete(s.key);
+        }
+      });
+    },
+  };
+}
+
 /** Rejected chunk bodies up to this size are read and discarded, larger ones close the connection. */
 const DISCARD_LIMIT = LIMITS.MAX_CHUNK_BYTES + 64 * 1024;
 
@@ -130,32 +159,41 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
     type: 'application/octet-stream',
     limit: LIMITS.MAX_CHUNK_BYTES,
   });
-  // Chunk PUTs in flight in this process. A slot is taken after the cheap checks (only a verified uploader
-  // holds one), released when the response closes or the client aborts, and a body that stops arriving for
-  // CHUNK_UPLOAD_IDLE_TIMEOUT_SEC is hung up so a slow-drip client cannot pin its buffer.
-  let chunkUploadsInFlight = 0;
+  // Chunk PUTs in flight: per process, per upload token and per IP, so one client cannot take every slot.
+  // A slot is taken after the cheap checks (only a verified uploader holds one) and released when the
+  // response closes. The body is hung up when nothing arrives for CHUNK_UPLOAD_IDLE_TIMEOUT_SEC (a stalled
+  // client) or when it is still incomplete CHUNK_UPLOAD_DEADLINE_SEC after the slot was taken (a slow-drip
+  // client that sends a byte now and then), so no client pins a slot and its buffer for long.
+  const uploadSlots = slotPool(() => ctx.env.MAX_CONCURRENT_CHUNK_UPLOADS);
   const chunkSlot: RequestHandler = (req, res, next) => {
-    if (chunkUploadsInFlight >= ctx.env.MAX_CONCURRENT_CHUNK_UPLOADS) {
+    try {
+      uploadSlots.take(req, res, [
+        { key: `token:${tokenKey(req)}`, max: ctx.env.MAX_CHUNK_UPLOADS_PER_TOKEN },
+        { key: `ip:${ipKey(req.ip)}`, max: ctx.env.MAX_CHUNK_UPLOADS_PER_IP },
+      ]);
+    } catch (err) {
       res.setHeader('Connection', 'close'); // the unread body is not worth draining under load
-      throw rateLimited(1);
+      throw err;
     }
-    chunkUploadsInFlight += 1;
     let timer: NodeJS.Timeout | undefined;
-    const stopTimer = () => clearTimeout(timer);
     const hangUp = () => req.socket.destroy();
+    const deadline = setTimeout(hangUp, ctx.env.CHUNK_UPLOAD_DEADLINE_SEC * 1000);
+    const stopTimers = () => {
+      clearTimeout(timer);
+      clearTimeout(deadline);
+    };
     const arm = () => {
-      stopTimer();
+      clearTimeout(timer);
       timer = setTimeout(hangUp, ctx.env.CHUNK_UPLOAD_IDLE_TIMEOUT_SEC * 1000);
     };
     arm();
     req.on('data', arm);
-    req.once('end', stopTimer);
-    res.once('close', () => {
-      stopTimer();
-      chunkUploadsInFlight -= 1;
-    });
+    req.once('end', stopTimers);
+    res.once('close', stopTimers);
     next();
   };
+  // Chunk GETs streaming: per process (below the S3 socket pool), per grant and per IP.
+  const downloadSlots = slotPool(() => ctx.env.MAX_CONCURRENT_CHUNK_DOWNLOADS);
   const gone = { description: 'Expired, exhausted, deleted or disabled (GONE, details.reason)' };
 
   r.route(
@@ -368,6 +406,7 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       responses: {
         200: { description: 'Ciphertext chunk', contentType: 'application/octet-stream' },
         404: { description: 'Unknown chunk' },
+        429: { description: 'Too many chunk downloads in flight (RATE_LIMITED, Retry-After)' },
       },
     },
     chunkIpLimiter,
@@ -377,15 +416,24 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       const grant = await grantForDownload(ctx, id, bearerToken(req));
       const chunk = await ctx.prisma.dropChunk.findUnique({
         where: { dropId_fileId_index: { dropId: id, fileId, index } },
-        select: { size: true },
+        select: { size: true, blobVersion: true },
       });
       if (!chunk) throw notFound('Unknown chunk');
+      downloadSlots.take(req, res, [
+        { key: `grant:${grant.grantId}`, max: ctx.env.MAX_CHUNK_DOWNLOADS_PER_GRANT },
+        { key: `ip:${ipKey(req.ip)}`, max: ctx.env.MAX_CHUNK_DOWNLOADS_PER_IP },
+      ]);
       // R12: every successful chunk GET slides the grant, capped at createdAt + 24 h.
       await ctx.prisma.downloadGrant.update({
         where: { id: grant.grantId },
         data: { expiresAt: grantExpiry(ctx, grant.createdAt, ctx.now()) },
       });
-      const stream = await ctx.storage.getChunkStream(id, fileId, index);
+      const stream = await ctx.storage.getChunkStream(
+        id,
+        fileId,
+        index,
+        chunk.blobVersion ?? undefined,
+      );
       res.status(200);
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Length', String(chunk.size));
@@ -407,7 +455,9 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
         ctx.logger.warn({ err: { code: (err as { code?: string }).code } }, 'chunk stream aborted');
       } finally {
         res.off('timeout', onIdle);
-        req.socket?.setTimeout(0); // the connection may be reused (keep-alive) for other routes
+        // After a normal finish Node has already armed the keep-alive idle timeout: leave it alone. Only an
+        // unfinished response still carries our idle timer on a socket that may be reused.
+        if (!res.writableFinished) req.socket?.setTimeout(0);
       }
     },
   );

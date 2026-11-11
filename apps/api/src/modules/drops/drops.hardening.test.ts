@@ -16,7 +16,7 @@ import {
   passwordFixture,
   testFile,
 } from './test-utils';
-import { authHeader, createUserRecord } from '../../../test/factories';
+import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
 import { purgeDropBlobs } from './lifecycle';
 import { uploadAll } from './test-utils';
 
@@ -69,6 +69,34 @@ describe('drops hardening', () => {
         .send({ reason: 'OTHER' });
       expect(res.status).toBe(410);
       expect(res.body.error.details).toEqual({ reason: 'DELETED' });
+      expect(await t.prisma.report.count({ where: { dropId: d.dropId } })).toBe(0);
+    });
+
+    it('C-R2-05: accepts a report on a burn-after-read drop just opened (EXHAUSTED, blobs kept), reviewable by an admin', async () => {
+      const d = await createReadyDrop(t.app, { body: { maxDownloads: 1 } });
+      expect((await openDrop(t.app, d.dropId)).status).toBe(200);
+      const res = await request(t.app)
+        .post(`/api/drops/${d.dropId}/report`)
+        .send({ reason: 'MALWARE' });
+      expect(res.status).toBe(201);
+      expect(await t.prisma.report.count({ where: { dropId: d.dropId } })).toBe(1);
+      const admin = await createAdminRecord(t.prisma);
+      const grant = await request(t.app)
+        .post(`/api/admin/drops/${d.dropId}/grant`)
+        .set('Authorization', authHeader(admin))
+        .send({});
+      expect(grant.status).toBe(200);
+    });
+
+    it('C-R2-05: answers 410 once the blobs of an exhausted drop are purged', async () => {
+      const d = await createReadyDrop(t.app, { body: { maxDownloads: 1 } });
+      expect((await openDrop(t.app, d.dropId)).status).toBe(200);
+      await purgeDropBlobs(t.ctx, d.dropId, new Date());
+      const res = await request(t.app)
+        .post(`/api/drops/${d.dropId}/report`)
+        .send({ reason: 'OTHER' });
+      expect(res.status).toBe(410);
+      expect(res.body.error.details).toEqual({ reason: 'EXHAUSTED' });
       expect(await t.prisma.report.count({ where: { dropId: d.dropId } })).toBe(0);
     });
   });

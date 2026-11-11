@@ -188,7 +188,10 @@ export function useAccountActions(): AccountActions {
           queryFn: () => api.get('/auth/vault', { schema: VaultSchema }),
           staleTime: 30_000,
         });
+        const userId = useAuth.getState().user?.id;
         const res = await kdfClient.unlockVault(password, vault.kdf, vault.wrappedAccountKey);
+        // Signed out (or switched account) while the derivation ran: the key must not reach the vault.
+        if (useAuth.getState().user?.id !== userId) return;
         useVault.getState().setAccountKey(res.accountKey);
       },
 

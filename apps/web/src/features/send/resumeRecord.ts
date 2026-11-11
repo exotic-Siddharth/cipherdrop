@@ -131,13 +131,17 @@ export function clearResumeRecord(): void {
 
 /**
  * Match re-selected files to the record by size + lastModified (each file used once). Returns the files in
- * record order, or null unless every record file matches and nothing extra was selected.
+ * record order, or null unless every record file matches and nothing extra was selected. Two record files
+ * with the same size and lastModified cannot be told apart (the record holds no names), and a swapped pair
+ * would upload one file's bytes under the other's key and nonces: those drops are never resumed (C-19).
  */
 export function matchResumeFiles<F extends { size: number; lastModified: number }>(
   record: ResumeRecord,
   selected: readonly F[],
 ): F[] | null {
   if (selected.length !== record.files.length) return null;
+  const keys = new Set(record.files.map((rf) => `${rf.size}:${rf.lastModified}`));
+  if (keys.size !== record.files.length) return null;
   const pool = [...selected];
   const out: F[] = [];
   for (const rf of record.files) {

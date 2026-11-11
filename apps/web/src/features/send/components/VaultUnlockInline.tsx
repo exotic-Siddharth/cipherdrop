@@ -9,6 +9,7 @@ import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { describeError } from '../../../lib/errors';
 import { unlockPath } from '../../../lib/paths';
+import { useAuth } from '../../../stores/auth';
 import { useVault } from '../../../stores/vault';
 
 /**
@@ -27,12 +28,16 @@ export function VaultUnlockInline({ className }: { className?: string }) {
     if (!password || busy) return;
     setBusy(true);
     setError(null);
+    const userId = useAuth.getState().user?.id;
     try {
       const vault = await api.get('/auth/vault', { schema: VaultSchema });
       const { encKey } = await kdfClient.deriveAccountKeys(password, vault.kdf);
       const raw = await unwrapKey(encKey, vault.wrappedAccountKey, AAD.WRAP_ACCOUNT);
       try {
-        useVault.getState().setAccountKey(await importAesKey(raw));
+        const key = await importAesKey(raw);
+        // Signed out (or switched account) while the derivation ran: the key must not reach the vault.
+        if (useAuth.getState().user?.id !== userId) return;
+        useVault.getState().setAccountKey(key);
       } finally {
         raw.fill(0);
       }

@@ -19,7 +19,7 @@ const STEPS = [
   {
     icon: ShieldCheck,
     title: 'The server sees ciphertext',
-    text: 'We store encrypted bytes, sizes and timestamps. Never names, notes, keys or passwords.',
+    text: 'We store encrypted bytes, sizes and timestamps. Never names, notes, keys or passwords, unless you choose to include the key in an abuse report.',
   },
 ];
 
@@ -34,10 +34,10 @@ const SERVER_SEES = [
 
 const SERVER_NEVER = [
   'File names, file types or your note: they are encrypted too',
-  'The decryption key in the link after the #',
+  'The decryption key in the link after the # (unless you choose to include it in an abuse report)',
   'Your account password or your recovery key',
-  'Your account key or any drop key in a usable form',
-  'The contents of any file, at any point',
+  'Your account key, or a drop key in a usable form (unless you choose to include it in an abuse report)',
+  'The contents of any file, unless you hand over its key in an abuse report',
 ];
 
 const LIMITATIONS = [
@@ -58,12 +58,16 @@ const LIMITATIONS = [
     text: 'The server knows that a drop of a given size exists, when it was created and when it was fetched, and the network prefix that did it.',
   },
   {
+    title: 'An abuse report can include the key.',
+    text: 'When you report a drop you may tick a box to send its decryption key, so a moderator can open it. It is off by default, and it is the only way we ever receive a key.',
+  },
+  {
     title: 'A recipient can keep what they download.',
     text: 'Download limits and expiry control our copy, not the copies people have already saved.',
   },
   {
     title: 'Large files in some browsers.',
-    text: 'Files over 256 MB need a browser that can stream to disk. Otherwise the page tells you before it starts.',
+    text: 'Uploads are read chunk by chunk, but a download up to 256 MB is held in memory until it is saved. Larger files need a browser that can stream to disk. Otherwise the page tells you before it starts, and no download is used up.',
   },
 ];
 
@@ -178,9 +182,9 @@ export function Component() {
           <div className="grid items-start gap-6 lg:grid-cols-2">
             <Prose>
               <p>
-                Each file is cut into 4 MiB chunks, so even very large files never have to fit in
-                memory. Every chunk is sealed with AES-256-GCM, which both scrambles it and adds a
-                tag that proves it was not changed.
+                Each file is cut into 4 MiB chunks, so an upload never has to hold a whole large
+                file in memory. Every chunk is sealed with AES-256-GCM, which both scrambles it and
+                adds a tag that proves it was not changed.
               </p>
               <p>
                 The nonce for each chunk is built from its position and a flag for the last chunk.
@@ -338,7 +342,9 @@ export function Component() {
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-primary/25 bg-primary/5 p-5 sm:p-6">
           <div>
             <p className="text-base font-semibold text-foreground">Ready to try it?</p>
-            <p className="mt-1 text-sm text-muted">No account needed. Drops up to 72 hours.</p>
+            <p className="mt-1 text-sm text-muted-strong">
+              No account needed. Drops up to 72 hours.
+            </p>
           </div>
           <ButtonLink to="/" size="lg" icon={FileLock}>
             Send files

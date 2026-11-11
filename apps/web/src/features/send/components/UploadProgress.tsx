@@ -73,9 +73,13 @@ export function UploadProgress({
         }
       />
       <CardContent className="space-y-5">
-        <div aria-live="polite" className="space-y-2">
+        <div className="space-y-2">
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+            {/* Only the phase is announced: the byte counts change every chunk, and the progressbar has its own value. */}
+            <p
+              aria-live="polite"
+              className="flex items-center gap-2 text-sm font-medium text-foreground"
+            >
               <Loader2
                 className="size-4 animate-spin text-primary motion-reduce:animate-none"
                 aria-hidden="true"

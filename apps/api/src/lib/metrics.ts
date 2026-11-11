@@ -50,6 +50,11 @@ export const metrics = {
     help: 'Drops whose blobs were deleted by the cleanup job',
     registers: [metricsRegistry],
   }),
+  storageFreeBytes: new client.Gauge({
+    name: 'storage_free_bytes',
+    help: 'Free bytes on the volume holding the blobs (local storage driver; set by /readyz)',
+    registers: [metricsRegistry],
+  }),
   storageBytes: new client.Gauge({
     name: 'storage_bytes',
     help: 'Ciphertext bytes currently stored',

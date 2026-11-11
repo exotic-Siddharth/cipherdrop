@@ -31,6 +31,54 @@ function miniApp(mount: (app: express.Express) => void): express.Express {
   return app;
 }
 
+/* Minimal views of Express 5's router internals (router@2): enough to walk the real route table. */
+interface StackLayer {
+  route?: { path: string; methods: Record<string, boolean> };
+  handle?: { stack?: StackLayer[] };
+  matchers?: ((path: string) => unknown)[];
+}
+
+/** Every "METHOD /full/path" actually mounted on `app` (walks app.router.stack, not routeManifest). */
+function mountedRoutes(app: express.Express): string[] {
+  const root = (app as unknown as { router: { stack: StackLayer[] } }).router.stack;
+  // Mount paths are not stored on a Layer: find the shortest segment prefix of a known path that it matches.
+  const prefixes = new Set<string>(['']);
+  for (const entry of routeManifest) {
+    const parts = entry.path.split('/').filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) prefixes.add(`/${parts.slice(0, i).join('/')}`);
+  }
+  const candidates = [...prefixes].sort((a, b) => a.length - b.length);
+  const out: string[] = [];
+  const walk = (stack: StackLayer[], base: string): void => {
+    for (const layer of stack) {
+      if (layer.route) {
+        const full = layer.route.path === '/' ? base || '/' : `${base}${layer.route.path}`;
+        for (const m of Object.keys(layer.route.methods)) out.push(`${m.toUpperCase()} ${full}`);
+      } else if (layer.handle?.stack) {
+        const mount = candidates.find((c) => layer.matchers?.some((m) => m(c || '/')));
+        walk(layer.handle.stack, mount ?? base);
+      }
+    }
+  };
+  walk(root, '');
+  return out;
+}
+
+/** Mounted routes that are missing from routeManifest or from the OpenAPI document. */
+function undocumentedRoutes(
+  app: express.Express,
+  paths: Record<string, Record<string, unknown>>,
+): string[] {
+  const manifest = new Map(
+    routeManifest.map((e) => [`${e.method.toUpperCase()} ${e.path}`, e.openApiPath]),
+  );
+  return mountedRoutes(app).filter((key) => {
+    const openApiPath = manifest.get(key);
+    const method = key.split(' ')[0]?.toLowerCase() ?? '';
+    return openApiPath === undefined || paths[openApiPath]?.[method] === undefined;
+  });
+}
+
 describe('S4 app skeleton', () => {
   it('GET /healthz 200', async () => {
     const res = await request(t.app).get('/healthz');
@@ -98,6 +146,11 @@ describe('S4 app skeleton', () => {
         `${entry.method} ${entry.openApiPath}`,
       ).toBeDefined();
     }
+    // routeManifest and the registry are filled by the same route() call, so also walk the REAL router stack:
+    // a route mounted any other way (bare router.get, app.get) would be missing from both.
+    expect(mountedRoutes(t.app).length).toBeGreaterThanOrEqual(routeManifest.length);
+    // /api/openapi.json is the one deliberate non-route() route (it serves the document itself).
+    expect(undocumentedRoutes(t.app, paths)).toEqual(['GET /api/openapi.json']);
     // A sample of spec section 10 routes, including R9 and both chunk routes.
     expect(paths['/api/auth/prelogin']?.post).toBeDefined();
     expect(paths['/api/auth/recovery/rotate']?.post).toBeDefined();
@@ -109,6 +162,17 @@ describe('S4 app skeleton', () => {
     const docs = await request(t.app).get('/api/docs/');
     expect(docs.status).toBe(200);
     expect(docs.text).toContain('swagger');
+  });
+
+  it('the route-table walk flags a route mounted outside route()', async () => {
+    const bare = express.Router();
+    bare.get('/ping', (_req, res) => {
+      res.json({ ok: true });
+    });
+    const app = miniApp((a) => a.use('/api/__bare', bare));
+    const paths = (await request(t.app).get('/api/openapi.json')).body.paths;
+    // (Its mount path is unknown to routeManifest, so only the tail is asserted.)
+    expect(undocumentedRoutes(app, paths)).toEqual([expect.stringMatching(/^GET .*\/ping$/)]);
   });
 
   it('no-store header on /api routes', async () => {

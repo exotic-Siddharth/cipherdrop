@@ -98,15 +98,17 @@ export function meRoutes(ctx: AppContext): AppRouter {
       const user = await loadUser(ctx, authUser(req).id);
       await requireAccountProof(ctx, user, req.body, req, 'account-deletion');
 
-      const drops = await prisma.drop.findMany({
-        where: { ownerId: user.id },
-        select: { id: true },
-      });
-      // Stop serving the drops first, then delete their blobs. A storage failure aborts here (500) with the
-      // account intact and the session alive, so the user can simply retry (deleteDrop is idempotent).
+      // Stop serving the drops first (a chunk PUT in flight finishes before this update gets the row lock, and
+      // later ones see DELETED), then list them, so a drop created meanwhile is purged too, and delete their
+      // blobs. A storage failure aborts here (500) with the account intact and the session alive, so the user
+      // can simply retry (deleteDrop is idempotent).
       await prisma.drop.updateMany({
         where: { ownerId: user.id, status: { not: 'DELETED' } },
         data: { status: 'DELETED', deletedAt: ctx.now() },
+      });
+      const drops = await prisma.drop.findMany({
+        where: { ownerId: user.id },
+        select: { id: true },
       });
       for (const drop of drops) await ctx.storage.deleteDrop(drop.id);
 

@@ -8,16 +8,23 @@ import { createApp } from './app';
 import { env } from './config/env';
 import type { AppContext } from './context';
 import { startCleanupScheduler, type CleanupScheduler } from './jobs/cleanup';
+import { installFatalHandlers } from './lib/fatalHandlers';
 import { logger } from './lib/logger';
+import { getRedis } from './lib/redis';
 
 async function main(): Promise<void> {
+  installFatalHandlers(process, logger);
+  // Fail fast with ONE readable error when Redis is down (the rate limiters load their scripts at start-up).
+  await getRedis().ping();
   const app = createApp();
   const ctx = app.locals.ctx as AppContext;
 
   await ctx.prisma.$connect();
   await ctx.storage.init();
 
-  const server: Server = app.listen(env.API_PORT, () => {
+  // Express 5 also passes a listen error (EADDRINUSE...) to this callback: only log "listening" on success.
+  const server: Server = app.listen(env.API_PORT, (err?: Error) => {
+    if (err) return;
     logger.info({ port: env.API_PORT, storage: env.STORAGE_DRIVER }, 'CipherDrop API listening');
   });
   server.on('error', (err) => {

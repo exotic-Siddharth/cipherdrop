@@ -8,7 +8,7 @@ import {
   Trash2,
   TriangleAlert,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { QrCode } from '../../../components/QrCode';
 import {
@@ -46,6 +46,9 @@ export function SuccessCard({
 }: SuccessCardProps) {
   const [showQr, setShowQr] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // The card replaces the progress view, whose Cancel button held focus: land on the result instead.
+  useEffect(() => headingRef.current?.focus(), []);
 
   const summary = [
     {
@@ -65,12 +68,18 @@ export function SuccessCard({
   return (
     <Card className="animate-pop-in">
       <CardContent className="space-y-5 pt-6">
-        <div className="flex items-start gap-3" role="status">
+        <div className="flex items-start gap-3">
           <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-success/10 text-success-ink">
             <CheckCircle2 className="size-5" aria-hidden="true" />
           </span>
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-foreground">Your encrypted link is ready</h2>
+            <h2
+              ref={headingRef}
+              tabIndex={-1}
+              className="text-lg font-semibold text-foreground outline-none"
+            >
+              Your encrypted link is ready
+            </h2>
             <p className="text-sm text-muted">
               {pluralize(fileCount, 'file')} · {formatBytes(totalBytes)}, encrypted end to end.
             </p>

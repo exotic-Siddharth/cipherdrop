@@ -14,6 +14,7 @@ import type { AuthSuccess, Me } from '@cipherdrop/shared';
 import { RefreshResponseSchema } from '@cipherdrop/shared';
 import { toast } from 'sonner';
 import { create } from 'zustand';
+import { resetKdfWorker } from '../crypto/kdfClient';
 import { apiUrl } from '../lib/http';
 import { queryClient } from '../lib/queryClient';
 import { useVault } from './vault';
@@ -136,6 +137,8 @@ export const useAuth = create<AuthState>()((set, get) => {
       logoutReason: reason,
     });
     useVault.getState().lock('logout');
+    // A derivation still running would otherwise hand its key to the vault after sign-out.
+    resetKdfWorker();
     queryClient.clear();
   };
 
@@ -148,10 +151,11 @@ export const useAuth = create<AuthState>()((set, get) => {
 
     setSession: (session) => {
       const previous = get().user;
-      if (previous && previous.id !== session.user.id) {
-        // A different account signed in on this page: nothing of the previous one may survive.
-        useVault.getState().lock('logout');
-        queryClient.clear();
+      if (previous?.id !== session.user.id) {
+        // A different account signed in on this page: nothing of the previous one may survive. The vault
+        // is locked even with no previous user, so a stale key cannot carry over into a new session.
+        if (previous || useVault.getState().accountKey) useVault.getState().lock('logout');
+        if (previous) queryClient.clear();
       }
       epoch += 1;
       set({

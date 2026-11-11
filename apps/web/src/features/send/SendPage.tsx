@@ -13,6 +13,7 @@ import {
 } from '@cipherdrop/shared';
 import { Flame, KeyRound, Lock, RotateCcw, Timer, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useBlocker } from 'react-router';
 import { toast } from 'sonner';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { PasswordStrength } from '../../components/PasswordStrength';
@@ -22,6 +23,7 @@ import {
   Card,
   CardContent,
   CardHeader,
+  ConfirmDialog,
   PasswordInput,
   Select,
   Switch,
@@ -30,11 +32,13 @@ import {
 import type { UploadEvent } from '../../crypto/uploader';
 import { describeError, formatWait, isAbortError } from '../../lib/errors';
 import { formatBytes, pluralize } from '../../lib/format';
+import type { StrengthScore } from '../../lib/passwordStrength';
 import { shareLinkFor } from '../../lib/links';
 import { queryClient, queryKeys } from '../../lib/queryClient';
 import { useAuth } from '../../stores/auth';
 import { useDeviceDrops } from '../../stores/deviceDrops';
 import { useVault } from '../../stores/vault';
+import { validateNewPassword } from '../auth/passwordRules';
 import { DeviceDropsList } from './components/DeviceDropsList';
 import { Dropzone } from './components/Dropzone';
 import { FileList } from './components/FileList';
@@ -58,7 +62,7 @@ import {
 
 const POINTS = [
   { icon: Lock, text: 'AES-256-GCM in your browser' },
-  { icon: KeyRound, text: 'The key stays in the link' },
+  { icon: KeyRound, text: 'The key stays in the link, or behind your password' },
   { icon: Timer, text: 'Links expire on schedule' },
   { icon: Flame, text: 'Burn after reading' },
 ];
@@ -95,6 +99,7 @@ export function Component() {
   const [maxDownloads, setMaxDownloads] = useState<DownloadOption>(1);
   const [usePassword, setUsePassword] = useState(false);
   const [password, setPassword] = useState('');
+  const [passwordScore, setPasswordScore] = useState<StrengthScore | null>(null);
   const [note, setNote] = useState('');
   const [resume, setResume] = useState<ResumeRecord | null>(() => readResumeRecord());
   const [view, setView] = useState<View>({ kind: 'compose' });
@@ -130,8 +135,18 @@ export function Component() {
   const vaultLocked = signedIn && accountKey === null;
   const resumeMatch = resume ? matchResumeFiles(resume, files) : null;
   const passwordMissing = usePassword && password.length === 0;
+  // Same floor as account passwords: a database copy lets an attacker guess the drop password offline.
+  const passwordProblem = usePassword ? validateNewPassword(password, passwordScore) : null;
   const canSubmit =
-    files.length > 0 && !overLimit && !passwordMissing && !vaultLocked && authStatus !== 'booting';
+    files.length > 0 &&
+    !overLimit &&
+    passwordProblem === null &&
+    !vaultLocked &&
+    authStatus !== 'booting';
+  const running = view.kind === 'running';
+
+  // In-app navigation unmounts this page, which aborts the upload and drops the selected files: ask first.
+  const blocker = useBlocker(running);
 
   // Leaving mid-upload loses the in-memory files; warn (resume after reload still works, R11).
   useEffect(() => {
@@ -142,6 +157,18 @@ export function Component() {
   }, [view.kind]);
 
   useEffect(() => () => controller.current?.abort(), []);
+
+  // Move focus to the new view (the focused button is unmounted by the swap), once per change.
+  const headerRef = useRef<HTMLDivElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const previousKind = useRef<View['kind']>(view.kind);
+  useEffect(() => {
+    const before = previousKind.current;
+    previousKind.current = view.kind;
+    if (before === view.kind) return;
+    if (view.kind === 'error') errorRef.current?.focus();
+    else if (view.kind === 'compose' && before === 'running') headerRef.current?.focus();
+  }, [view.kind]);
 
   const addFiles = (incoming: File[]) => {
     setFiles((current) => {
@@ -253,6 +280,11 @@ export function Component() {
     setView({ kind: 'error', error: err, canResume: activeRecord.current !== null });
   };
 
+  /** Best-effort delete of an UPLOADING drop that a new drop replaces (DESIGN W2A: the old one is abandoned). */
+  const abandonDrop = (record: ResumeRecord) => {
+    void deleteDrop(record.dropId, record.ownerToken).catch(() => undefined);
+  };
+
   const runNew = async (selected: File[]) => {
     const ctrl = beginRun();
     const anonymous = !signedIn;
@@ -283,6 +315,7 @@ export function Component() {
       if (result === 'mismatch') {
         clearResumeRecord();
         setResume(null);
+        abandonDrop(record);
         toast.info('Starting a new drop', {
           description:
             "These files don't match the interrupted upload, so it can't be resumed safely.",
@@ -299,7 +332,10 @@ export function Component() {
   const submit = () => {
     if (!canSubmit) return;
     if (resume && resumeMatch) void runResume(resume, resumeMatch);
-    else void runNew(files);
+    else {
+      if (resume) abandonDrop(resume);
+      void runNew(files);
+    }
   };
 
   const cancel = async () => {
@@ -319,14 +355,23 @@ export function Component() {
     const record = activeRecord.current ?? readResumeRecord();
     const matched = record ? matchResumeFiles(record, files) : null;
     if (record && matched) void runResume(record, matched);
-    else void runNew(files);
+    else if (vaultLocked) {
+      // A new signed-in drop needs the owner wrap (R7): back to compose, which shows the inline unlock.
+      setView({ kind: 'compose' });
+    } else {
+      if (record) {
+        clearResumeRecord();
+        abandonDrop(record);
+      }
+      void runNew(files);
+    }
   };
 
   const discardResume = () => {
     const record = resume;
     clearResumeRecord();
     setResume(null);
-    if (record) void deleteDrop(record.dropId, record.ownerToken).catch(() => undefined);
+    if (record) abandonDrop(record);
   };
 
   const reset = () => {
@@ -337,8 +382,39 @@ export function Component() {
     setView({ kind: 'compose' });
   };
 
+  const statusText =
+    view.kind === 'done'
+      ? 'Upload finished. The share link is below.'
+      : view.kind === 'error'
+        ? 'Upload failed. Details and a retry button are below.'
+        : '';
+  // One live region that stays mounted across view swaps, so a result inserted with its text is announced.
+  const statusRegion = (
+    <div data-testid="send-status" aria-live="polite" className="sr-only">
+      {statusText}
+    </div>
+  );
+
+  const leaveDialog = (
+    <ConfirmDialog
+      open={blocker.state === 'blocked'}
+      onOpenChange={(open) => {
+        if (!open && blocker.state === 'blocked') blocker.reset();
+      }}
+      title="Leave and cancel the upload?"
+      description="Your files are still being encrypted and uploaded. Leaving this page stops it, and you would have to select the files again."
+      confirmLabel="Leave"
+      cancelLabel="Keep uploading"
+      tone="danger"
+      onConfirm={() => {
+        if (blocker.state === 'blocked') blocker.proceed();
+        return false; // the dialog closes with the blocker state; never reset() after proceed()
+      }}
+    />
+  );
+
   const header = (
-    <>
+    <div ref={headerRef} tabIndex={-1} className="outline-none">
       <PageHeader
         eyebrow="End-to-end encrypted"
         title="Send files"
@@ -355,12 +431,13 @@ export function Component() {
           </li>
         ))}
       </ul>
-    </>
+    </div>
   );
 
   if (view.kind === 'running') {
     return (
       <>
+        {statusRegion}
         {header}
         <div className="mx-auto max-w-3xl">
           <UploadProgress
@@ -373,6 +450,7 @@ export function Component() {
             cancelling={cancelling}
           />
         </div>
+        {leaveDialog}
       </>
     );
   }
@@ -382,6 +460,7 @@ export function Component() {
     const link = shareLinkFor(r.dropId, r.passwordProtected ? null : r.dk);
     return (
       <>
+        {statusRegion}
         {header}
         <div className="mx-auto max-w-3xl space-y-6">
           <SuccessCard
@@ -430,35 +509,37 @@ export function Component() {
 
   return (
     <>
+      {statusRegion}
       {header}
 
       {view.kind === 'error' ? (
-        <Alert
-          tone="danger"
-          live="assertive"
-          title="The upload did not finish"
-          className="mb-6"
-          action={
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                icon={RotateCcw}
-                onClick={retryAfterError}
-                disabled={files.length === 0}
-              >
-                Try again
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setView({ kind: 'compose' })}>
-                Dismiss
-              </Button>
-            </div>
-          }
-        >
-          {errorText(view.error)}
-          {view.canResume
-            ? ' Chunks that already arrived are kept, so trying again continues where it stopped.'
-            : ''}
-        </Alert>
+        <div ref={errorRef} tabIndex={-1} className="mb-6 outline-none">
+          <Alert
+            tone="danger"
+            live="assertive"
+            title="The upload did not finish"
+            action={
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  icon={RotateCcw}
+                  onClick={retryAfterError}
+                  disabled={files.length === 0}
+                >
+                  Try again
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setView({ kind: 'compose' })}>
+                  Dismiss
+                </Button>
+              </div>
+            }
+          >
+            {errorText(view.error)}
+            {view.canResume
+              ? ' Chunks that already arrived are kept, so trying again continues where it stopped.'
+              : ''}
+          </Alert>
+        </div>
       ) : null}
 
       {resume ? (
@@ -553,12 +634,14 @@ export function Component() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     error={
-                      passwordMissing && files.length > 0
-                        ? 'Enter a password, or turn password protection off.'
-                        : undefined
+                      passwordMissing
+                        ? files.length > 0
+                          ? 'Enter a password, or turn password protection off.'
+                          : undefined
+                        : (passwordProblem ?? undefined)
                     }
                   />
-                  <PasswordStrength password={password} />
+                  <PasswordStrength password={password} onScoreChange={setPasswordScore} />
                 </div>
               ) : null}
             </div>

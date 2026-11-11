@@ -1,5 +1,6 @@
 import { FolderOpen, UploadCloud } from 'lucide-react';
 import { useId, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { toast } from 'sonner';
 import { Button } from '../../../components/ui';
 import { cn } from '../../../lib/cn';
 
@@ -26,7 +27,7 @@ export function Dropzone({
   const depth = useRef(0);
   const hintId = useId();
 
-  const take = (list: FileList | null) => {
+  const take = (list: ArrayLike<File> | null) => {
     if (!list || disabled) return;
     const files = Array.from(list).filter((f) => f instanceof File);
     if (files.length > 0) onFiles(files);
@@ -51,7 +52,28 @@ export function Dropzone({
     e.preventDefault();
     depth.current = 0;
     setOver(false);
-    take(e.dataTransfer.files);
+    const { items, files } = e.dataTransfer;
+    // A dropped folder shows up as an unreadable File: spot it through its entry and say why it is skipped.
+    if (items && items.length > 0 && typeof items[0]?.webkitGetAsEntry === 'function') {
+      const taken: File[] = [];
+      let folders = 0;
+      for (const item of Array.from(items)) {
+        if (item.kind !== 'file') continue;
+        if (item.webkitGetAsEntry()?.isDirectory) folders += 1;
+        else {
+          const file = item.getAsFile();
+          if (file) taken.push(file);
+        }
+      }
+      if (folders > 0) {
+        toast.error('Folders are not supported', {
+          description: 'Zip the folder first, then add the zip file.',
+        });
+      }
+      take(taken);
+      return;
+    }
+    take(files);
   };
 
   return (

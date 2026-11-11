@@ -8,6 +8,7 @@ import type { AuditAction, Page } from '@cipherdrop/shared';
 import type { AuditEvent, Prisma, PrismaClient } from '@prisma/client';
 import type { Request } from 'express';
 import { ipPrefix } from '../../lib/ip';
+import type { Logger } from '../../lib/logger';
 import { summarizeUserAgent } from '../../lib/userAgent';
 
 export interface AuditRecordInput {
@@ -29,6 +30,24 @@ export interface AuditService {
   record(input: AuditRecordInput): Promise<void>;
   /** Newest first (createdAt, then id). */
   list(userId: string, options: AuditListOptions): Promise<Page<AuditEvent>>;
+}
+
+/**
+ * Record an audit event AFTER the change it describes has committed. A failing audit insert is logged and
+ * swallowed: the request must not fail (and, for burn-after-read, burn a download) because of it.
+ */
+export async function recordAfterCommit(
+  ctx: { audit: AuditService; logger: Logger },
+  input: AuditRecordInput,
+): Promise<void> {
+  try {
+    await ctx.audit.record(input);
+  } catch (err) {
+    ctx.logger.error(
+      { action: input.action, dropId: input.dropId, err: { message: (err as Error).message } },
+      'audit write failed after the change committed',
+    );
+  }
 }
 
 export function createAuditService(prisma: PrismaClient): AuditService {

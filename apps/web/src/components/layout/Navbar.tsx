@@ -74,7 +74,7 @@ function VaultStatus() {
           onClick={() => {
             lock('manual');
             toast.success('Vault locked', {
-              description: 'Your account key was cleared from memory.',
+              description: 'Your account key was removed from this tab.',
             });
           }}
         >

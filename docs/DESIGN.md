@@ -146,7 +146,7 @@ cipherdrop/
 | `JWT_ACCESS_SECRET` | dev value | ≥ 32 chars |
 | `ACCESS_TOKEN_TTL_SEC` | 900 | |
 | `REFRESH_TOKEN_TTL_DAYS` | 30 | |
-| `COOKIE_SECURE` | false | |
+| `COOKIE_SECURE` | false | must be `true` when `NODE_ENV=production` |
 | `TOTP_ENC_KEY` | dev value | 32 bytes base64; encrypts TOTP secrets at rest |
 | `PRELOGIN_SECRET` | dev value | HMAC key for fake salts (no user enumeration) |
 | `STORAGE_DRIVER` | local | `local` or `s3` |
@@ -160,7 +160,13 @@ cipherdrop/
 | `MAX_FILES_PER_DROP` | 20 | |
 | `DOWNLOAD_GRANT_TTL_MIN` | 30 | |
 | `CLEANUP_INTERVAL_SEC` | 60 | |
-| `TRUST_PROXY` | false | true behind nginx |
+| `TRUST_PROXY` | false | true behind nginx; in production it must be set explicitly (`0` = deliberate opt-out) |
+| `CHUNK_IDLE_TIMEOUT_SEC` | 30 (1-3600) | a chunk GET whose socket sees no activity for this long is aborted (stalled readers cannot hold the storage pool) |
+| `CHUNK_UPLOAD_IDLE_TIMEOUT_SEC` | 30 (1-3600) | a chunk PUT body with no data for this long is hung up |
+| `MAX_CONCURRENT_CHUNK_UPLOADS` | 64 | per-process cap of in-flight chunk PUTs; above it the API answers 429 + `Retry-After` |
+| `ANON_TOTAL_PENDING_BYTES` | 0 (off) | optional ceiling on the bytes of all pending anonymous drops |
+
+With `NODE_ENV=production` the API refuses to start unless `DATABASE_URL`, `REDIS_URL`, `WEB_ORIGIN` (a bare origin) and `TRUST_PROXY` are set explicitly and `COOKIE_SECURE=true`; `apps/api/.env` is not loaded in production.
 | `SEED_ADMIN_PASSWORD` / `SEED_DEMO_PASSWORD` | dev values | |
 
 Ports: web **5174**, api **4100**, Postgres **55433**, Redis **56380**, MinIO **59000** (API) / **59001** (console). The Vite dev server proxies `/api` to the API, so the SPA is always same-origin. `vite preview` serves the production build **with the production security headers, including the CSP** (§12). The e2e tests run against preview, which proves the CSP doesn't break the app.
@@ -459,7 +465,7 @@ owner/admin delete → DELETED; admin disable → DISABLED   (blobs deleted imme
 ```
 
 - **Atomic consumption**: `/open` is a single conditional `UPDATE … SET downloadCount = downloadCount + 1 WHERE id = $1 AND status = 'READY' AND expiresAt > now() AND downloadCount < maxDownloads RETURNING …`. If that makes `downloadCount == maxDownloads`, the same transaction sets `status = EXHAUSTED`. With N concurrent opens on a 1-download link, **exactly one** succeeds (integration test).
-- **Grants**: a successful open creates a `DownloadGrant`, an opaque token valid for `DOWNLOAD_GRANT_TTL_MIN`. Each chunk GET extends the expiry, up to 24 h after the grant was created. Chunk GETs need a valid grant for that drop, and the drop must not be DELETED or DISABLED. EXHAUSTED drops stay downloadable while a grant lives, so a burn-after-read download can still resume.
+- **Grants**: a successful open creates a `DownloadGrant`, an opaque token valid for `DOWNLOAD_GRANT_TTL_MIN`. Each chunk GET extends the expiry, up to 24 h after the grant was created. Chunk GETs need a valid grant for that drop, and the drop must not be DELETED or DISABLED. EXPIRED drops keep serving chunks to a live grant, and their blobs are deleted once no grant is live (at most about 24 h after expiry). EXHAUSTED drops stay downloadable while a grant lives, so a burn-after-read download can still resume.
 - **Upload validation**:
   - `index < chunkCount`;
   - non-final chunks are exactly `CHUNK_SIZE + 16` bytes, and the final chunk is between `16` and `CHUNK_SIZE + 16` bytes;
@@ -469,10 +475,11 @@ owner/admin delete → DELETED; admin disable → DISABLED   (blobs deleted imme
   `complete` requires every chunk and requires each file's chunk sizes to sum to its declared `ciphertextBytes`. It moves the drop to READY, adds the bytes to the owner's `storageUsedBytes`, and writes an audit record.
 - **Quotas**: on create, enforce the per-drop byte limit (anon vs user), `MAX_FILES_PER_DROP`, the expiry ceiling, `maxDownloads ∈ {1,2,3,5,10,20,50,100}` (anonymous ≤ 10), and the user quota (`storageUsedBytes + new ≤ storageQuotaBytes`). Bytes are released when the drop's blobs are deleted.
 - **Cleanup** (`runCleanup(now)`, every `CLEANUP_INTERVAL_SEC`, under a Redis lock `lock:cleanup`):
-  - READY drops past `expiresAt` → EXPIRED, delete blobs;
+  - READY drops past `expiresAt` → EXPIRED (blobs are deleted once no grant is live, see Grants);
   - EXHAUSTED drops with no unexpired grant → delete blobs;
-  - UPLOADING drops older than 24 h → DELETED, delete blobs;
-  - release quota, write audit events (`DROP_EXPIRED` / `DROP_EXHAUSTED`) to the owner if there is one.
+  - UPLOADING drops older than 24 h or past `expiresAt` → DELETED, delete blobs (chunk PUT, upload-status and complete answer 410 EXPIRED after expiry);
+  - release quota, write audit events (`DROP_EXPIRED` / `DROP_EXHAUSTED`) to the owner if there is one;
+  - retention: sessions (cascading refresh tokens) and refresh tokens 7 days past expiry or revocation, audit events and closed reports 90 days old are deleted. Purging a drop scrubs its password verifier, wrapped drop key, KDF fields and chunk rows, plus the manifest and owner wrap for DELETED and anonymous drops. Drop rows themselves are kept.
 
   `runCleanup` is pure-ish (takes `now`) and unit/integration tested.
 
@@ -554,9 +561,9 @@ Health: `/healthz`, `/readyz` (DB + Redis + storage), `/metrics`.
 | recovery | 5/h per IP |
 | create drop (anon) | 10/h per IP |
 | create drop (user) | 60/h per user |
-| chunk PUT / GET | 1200/min per upload/download token (exempt from the global limit) |
+| chunk PUT / GET | 1200/min per upload/download token and 6000/min per IP, the IP limiter first so random tokens cannot dodge it (exempt from the global limit) |
 | open | 30/h per IP |
-| unlock | as above |
+| unlock | `unlockDropIp` 5 failures per 15 min per drop+IP and `unlockDrop` 20 failures per hour per drop. Only failed authKey checks count; `/unlock` and `/open` (password drops) share the budget. An attacker who uses up the per-drop budget also blocks recipients until the window ends |
 | report | 5/h per IP |
 | global | 600/min per IP |
 
@@ -784,3 +791,9 @@ Internal module structure beyond §5, component APIs, copywriting details, chart
 - 2026-11-08 (W2B): ExpiryBadge shows nothing for used-up or disabled drops that have not reached their expiry time (the status badge says it all).
 - 2026-11-11 (I1, audit): admin review grants are audited as the dedicated action `ADMIN_REVIEW_GRANT` (enum value plus migration `add_admin_review_grant_audit`) on the admin's own log with `{adminReview: true}`; this supersedes the B2 line that used `DROP_OPENED`. The Activity tab shows it as "Reviewed a reported drop".
 - 2026-11-11 (I1, argon2): the binary-safe authKey verification (hashRaw on raw bytes, constant-time compare) moved from `modules/auth/authKeyHash.ts` into `lib/argon2.ts` `verifyAuthKey`, so the seed, smoke script, drops and admin share one correct verifier; `authKeyHash.ts` keeps the B1 names as aliases. This supersedes the B1 line about working around `verifyAuthKey`.
+- 2026-11-11 (review): create takes `SELECT ... FOR UPDATE` on the user row so the quota check and the insert are atomic (parallel creates cannot overshoot); a chunk write reads the drop row `FOR SHARE` and stores the blob and the `DropChunk` row in one transaction, so delete, disable, complete and account deletion wait for an in-flight chunk and their purge removes it (no orphans, no chunk changes after READY).
+- 2026-11-11 (review): the S3 client uses 256 sockets, a 5 s connect timeout and a 60 s idle-socket timeout (R17), and chunk GET aborts after `CHUNK_IDLE_TIMEOUT_SEC` of silence, so slow readers cannot exhaust the pool.
+- 2026-11-11 (review): audit writes after a committed change (create, open, complete, delete, report, admin disable) are best-effort: a failure is logged and never fails the request, so it cannot burn a burn-after-read download. The unlock-failure audit stays pre-commit.
+- 2026-11-11 (review): the reporter's decryption key is kept only while the report is OPEN; DISMISS, DISABLE_DROP and blob purge null it, and the admin list returns it only for OPEN reports. A report on a gone drop answers 410.
+- 2026-11-11 (review): the chunk PUT in-flight cap is per process; behind several instances use reverse-proxy connection limits. `storage_free_bytes` is a metric refreshed by `/readyz`, not a readiness check.
+- 2026-11-11 (review, web): resume refuses drops whose files share size and `lastModified` (the match would be ambiguous), so a fresh drop is started and the old UPLOADING drop is deleted best-effort; drop passwords use the `validateNewPassword` floor (min length and zxcvbn); the Toaster is portalled outside `#root` so it is not inert under a dialog; the Receive page blocks Decrypt & download up front when a file over 256 MB cannot be saved (no `showSaveFilePicker`), so the download is not consumed first (§11.2).

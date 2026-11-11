@@ -5,6 +5,8 @@
  *   SDKs otherwise add CRC32 trailers that some S3-compatible servers reject.
  * - init() creates the bucket, ignoring BucketAlreadyOwnedByYou / BucketAlreadyExists.
  * - deleteDrop lists the drop prefix and removes it with DeleteObjects in batches of up to 1000 keys.
+ * - requestHandler: 256 sockets, 5 s connect timeout, 60 s idle-socket timeout (a stalled GetObject body is
+ *   destroyed instead of pinning a socket).
  * - A PUT replaces the object atomically, so overwrites (idempotent re-PUT) need nothing special.
  */
 import {
@@ -21,6 +23,10 @@ import { Readable } from 'node:stream';
 import { notFound } from '../lib/errors';
 import { assertBlobAddress, assertDropId, type StorageDriver, type StorageEnv } from './index';
 
+const S3_MAX_SOCKETS = 256;
+const S3_CONNECT_TIMEOUT_MS = 5_000;
+const S3_SOCKET_IDLE_TIMEOUT_MS = 60_000;
+
 const IGNORED_CREATE_ERRORS = new Set(['BucketAlreadyOwnedByYou', 'BucketAlreadyExists']);
 const NOT_FOUND_ERRORS = new Set(['NoSuchKey', 'NotFound']);
 
@@ -36,6 +42,15 @@ export function createS3Storage(storageEnv: S3StorageEnv): StorageDriver {
     forcePathStyle: storageEnv.S3_FORCE_PATH_STYLE,
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
+    // The default handler allows 50 sockets and has no timeouts: 50 stalled chunk GETs would block every
+    // other storage call. A bigger pool, a connect timeout, and an idle-socket timeout that also destroys a
+    // response body stuck mid-stream (the route aborts stalled client reads too, CHUNK_IDLE_TIMEOUT_SEC).
+    requestHandler: {
+      connectionTimeout: S3_CONNECT_TIMEOUT_MS,
+      socketTimeout: S3_SOCKET_IDLE_TIMEOUT_MS,
+      httpAgent: { keepAlive: true, maxSockets: S3_MAX_SOCKETS },
+      httpsAgent: { keepAlive: true, maxSockets: S3_MAX_SOCKETS },
+    },
     ...(storageEnv.S3_ENDPOINT ? { endpoint: storageEnv.S3_ENDPOINT } : {}),
     ...(storageEnv.S3_ACCESS_KEY_ID && storageEnv.S3_SECRET_ACCESS_KEY
       ? {

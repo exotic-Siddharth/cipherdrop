@@ -34,6 +34,7 @@ configure({ asyncUtilTimeout: 5000 });
 vi.setConfig({ testTimeout: 20_000 });
 
 const token = () => b64urlEncode(randomBytes(32));
+const RLO = String.fromCharCode(0x202e);
 const INTEGRITY = 'This file was modified in transit or storage. Download blocked.';
 
 interface Fixture {
@@ -44,13 +45,22 @@ interface Fixture {
 }
 
 async function fixture(
-  opts: { remaining?: number; max?: number; note?: string | null; password?: string } = {},
+  opts: {
+    remaining?: number;
+    max?: number;
+    note?: string | null;
+    password?: string;
+    name?: string;
+    /** Pretend the plaintext is this large (the bytes stay tiny; only the manifest size changes). */
+    size?: number;
+  } = {},
 ): Promise<Fixture> {
   const content = new TextEncoder().encode('quarterly numbers: 42');
-  const file = new File([content], 'report.bin', {
+  const file = new File([content], opts.name ?? 'report.bin', {
     type: 'application/octet-stream',
     lastModified: 1,
   });
+  if (opts.size !== undefined) Object.defineProperty(file, 'size', { value: opts.size });
   const prepared = await prepareDrop({
     files: [file],
     note: opts.note === undefined ? 'Here are the numbers' : opts.note,
@@ -149,6 +159,13 @@ describe('ReceivePage', () => {
     expect(screen.queryByRole('button', { name: /decrypt/i })).toBeNull();
   });
 
+  it('the footer qualifies "never sees the key" with the opt-in abuse report (C-39)', async () => {
+    const f = await fixture();
+    mockApi(f);
+    renderAt(`/d/${f.dropId}`);
+    expect(await screen.findByText(/unless you include the key in an abuse report/)).toBeVisible();
+  });
+
   it.each([
     ['a short key', (k: string) => k.slice(0, 30)],
     ['a key cut by one character', (k: string) => k.slice(0, 42)],
@@ -214,6 +231,30 @@ describe('ReceivePage', () => {
       expect(c.path).not.toContain(f.dkB64);
       expect(c.path).not.toContain('report');
     }
+  });
+
+  it('a file over 256 MB in a browser without the save picker never consumes a download (C-03)', async () => {
+    const f = await fixture({ remaining: 1, max: 1, size: 300 * 1024 * 1024 });
+    const calls = mockApi(f);
+    vi.stubGlobal('showSaveFilePicker', undefined);
+    delete (window as unknown as Record<string, unknown>).showSaveFilePicker;
+    renderAt(`/d/${f.dropId}#${f.dkB64}`);
+    expect(await screen.findByText('report.bin')).toBeVisible();
+    expect(await screen.findByText(/can't save it straight to disk/)).toBeVisible();
+    const button = screen.getByRole('button', { name: /decrypt & download/i });
+    await userEvent.click(button);
+    expect(screen.queryByRole('dialog', { name: 'This is the last download' })).toBeNull();
+    expect(calls.some((c) => c.path.endsWith('/open'))).toBe(false);
+  });
+
+  it('shows the sanitised saved name, not the raw bidi or path name (C-16)', async () => {
+    const f = await fixture({ name: `inv${RLO}gnp.exe` });
+    mockApi(f);
+    renderAt(`/d/${f.dropId}#${f.dkB64}`);
+    const list = await screen.findByRole('list', { name: 'Files in this drop' });
+    expect(within(list).getByText('invgnp.exe')).toBeVisible();
+    expect(list.textContent).not.toContain(RLO);
+    expect(within(list).getByText('invgnp.exe')).toHaveAttribute('title', 'invgnp.exe');
   });
 
   it('a tampered chunk shows the integrity error and saves nothing', async () => {

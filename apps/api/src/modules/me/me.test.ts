@@ -280,6 +280,10 @@ describe('DELETE /me', () => {
     const strangers = await createDrop((await createUserRecord(t.prisma)).id, 'READY');
     deleteDrop.mockClear();
 
+    const deletedEvents = () =>
+      t.prisma.auditEvent.count({ where: { action: 'ACCOUNT_DELETED', userId: null } });
+    const deletedBefore = await deletedEvents();
+
     const res = await request(t.app)
       .delete('/api/me')
       .set('Authorization', bearer(u.accessToken))
@@ -299,9 +303,7 @@ describe('DELETE /me', () => {
     expect(
       (await request(t.app).post('/api/auth/refresh').set('Cookie', other.cookie)).status,
     ).toBe(401);
-    expect(
-      await t.prisma.auditEvent.count({ where: { action: 'ACCOUNT_DELETED', userId: null } }),
-    ).toBeGreaterThan(0);
+    expect(await deletedEvents()).toBe(deletedBefore + 1);
   });
 
   it('requires a TOTP code when TOTP is enabled', async () => {

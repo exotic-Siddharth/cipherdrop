@@ -27,6 +27,7 @@ const storage: StorageDriver = {
   init: async () => {},
   putChunk: async () => {},
   getChunkStream: () => Promise.reject(new Error('not used')),
+  deleteChunk: async () => {},
   deleteDrop,
   healthCheck: async () => {},
 };

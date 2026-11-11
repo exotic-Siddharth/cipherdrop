@@ -6,8 +6,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
 import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
-import { isAppError } from '../../lib/errors';
 import {
+  chunkBlobFiles,
   createBody,
   createDropOk,
   createReadyDrop,
@@ -47,14 +47,9 @@ describe('admin API', () => {
     return res.body.id as string;
   }
 
+  /** Any blob of chunk 0 on disk, whatever its storage version (one per PUT attempt). */
   async function blobExists(dropId: string, fileId: string): Promise<boolean> {
-    try {
-      (await t.storage.getChunkStream(dropId, fileId, 0)).destroy();
-      return true;
-    } catch (err) {
-      if (isAppError(err) && err.code === 'NOT_FOUND') return false;
-      throw err;
-    }
+    return (await chunkBlobFiles(t.storageDir, dropId, fileId, 0)).length > 0;
   }
 
   describe('RBAC', () => {

@@ -3,7 +3,7 @@
  * CHUNK_IDLE_TIMEOUT_SEC without progress the stream is destroyed and the response dropped.
  */
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -77,5 +77,45 @@ describe('stalled chunk GET', () => {
     req.destroy();
     expect(streams.length).toBeGreaterThan(0);
     expect(streams.every((s) => s.destroyed)).toBe(true);
+  }, 20_000);
+
+  it('C-R2-03: keeps the keep-alive idle timeout after a chunk GET (the server closes the idle socket)', async () => {
+    const drop = await createReadyDrop(t.app);
+    const open = await openDrop(t.app, drop.dropId);
+    const token = open.body.downloadToken as string;
+    const plain = t.app.listen(0, '127.0.0.1');
+    await new Promise<void>((r) => plain.once('listening', () => r()));
+    plain.keepAliveTimeout = 500;
+    // A raw socket: only the SERVER can close it (an http.Agent would honour the Keep-Alive hint itself).
+    const CRLF = String.fromCharCode(13, 10);
+    const socket = net.connect((plain.address() as AddressInfo).port, '127.0.0.1');
+    try {
+      let received = '';
+      const closedByServer = new Promise<string>((r) => socket.once('end', () => r('closed')));
+      const answered = new Promise<void>((resolve) => {
+        socket.on('data', (c: Buffer) => {
+          received += c.toString('latin1');
+          if (received.includes(CRLF + CRLF)) resolve();
+        });
+      });
+      socket.write(
+        [
+          `GET /api/drops/${drop.dropId}/files/${drop.files[0]!.id}/chunks/0 HTTP/1.1`,
+          'Host: 127.0.0.1',
+          'Connection: keep-alive',
+          `Authorization: Bearer ${token}`,
+          '',
+          '',
+        ].join(CRLF),
+      );
+      await answered;
+      expect(received.startsWith('HTTP/1.1 200')).toBe(true);
+      const outcome = await Promise.race([closedByServer, sleep(4000).then(() => 'still open')]);
+      expect(outcome).toBe('closed');
+    } finally {
+      socket.destroy();
+      plain.closeAllConnections();
+      await new Promise<void>((r) => plain.close(() => r()));
+    }
   }, 20_000);
 });

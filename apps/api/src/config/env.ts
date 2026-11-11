@@ -97,11 +97,27 @@ const EnvSchema = z
     CLEANUP_INTERVAL_SEC: int(60, 1, 86_400),
     /** A chunk GET whose client reads nothing for this long is aborted (frees its storage socket). */
     CHUNK_IDLE_TIMEOUT_SEC: int(30, 1, 3_600),
+    /**
+     * Chunk GETs streaming in this process (each holds a storage stream, an S3 socket). The maximum keeps it
+     * below the S3 driver's 256-socket pool, so uploads, deletes and /readyz always find a socket.
+     */
+    MAX_CONCURRENT_CHUNK_DOWNLOADS: int(192, 1, 224),
+    /** Chunk GETs in flight per download grant / per client IP (the web downloader fetches one at a time). */
+    MAX_CHUNK_DOWNLOADS_PER_GRANT: int(8, 1, 10_000),
+    MAX_CHUNK_DOWNLOADS_PER_IP: int(32, 1, 10_000),
     /** Chunk PUTs in flight per API process (each buffers up to 4 MiB); more get 429 + Retry-After. */
     MAX_CONCURRENT_CHUNK_UPLOADS: int(64, 1, 10_000),
-    /** A chunk PUT whose body sends nothing for this long is hung up (slow-drip clients). */
+    /** Chunk PUTs in flight per upload token / per client IP (the web uploader sends 3 at a time). */
+    MAX_CHUNK_UPLOADS_PER_TOKEN: int(8, 1, 10_000),
+    MAX_CHUNK_UPLOADS_PER_IP: int(16, 1, 10_000),
+    /** A chunk PUT whose body sends nothing for this long is hung up (stalled clients). */
     CHUNK_UPLOAD_IDLE_TIMEOUT_SEC: int(30, 1, 3_600),
-    /** Ceiling on the ciphertext bytes of anonymous UPLOADING + READY drops together (0 = no ceiling). */
+    /**
+     * A chunk PUT whose body is still incomplete this long after it took its slot is hung up (slow-drip
+     * clients that send a byte now and then; a full 4 MiB chunk in 120 s needs about 35 KB/s).
+     */
+    CHUNK_UPLOAD_DEADLINE_SEC: int(120, 1, 3_600),
+    /** Ceiling on the ciphertext bytes of anonymous drops whose blobs are not purged yet (0 = no ceiling). */
     ANON_TOTAL_PENDING_BYTES: int(0, 0),
 
     TRUST_PROXY: hopCount,

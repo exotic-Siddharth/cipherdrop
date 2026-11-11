@@ -6,6 +6,8 @@
  * @cipherdrop/crypto end to end.
  */
 import { createHash, randomBytes } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { LIMITS, type CreateDropRequest } from '@cipherdrop/shared';
 import type { Express } from 'express';
 import request from 'supertest';
@@ -200,6 +202,27 @@ export function getChunk(
     res.on('data', (c: Buffer) => parts.push(c));
     res.on('end', () => cb(null, Buffer.concat(parts)));
   });
+}
+
+/**
+ * The blob files the local driver holds for one chunk: `<index>` (legacy) or `<index>.<version>` (one per
+ * PUT attempt, C-R2-01). Temp files are not counted. Independent of the DropChunk rows, so it also sees
+ * orphans.
+ */
+export async function chunkBlobFiles(
+  storageDir: string,
+  dropId: string,
+  fileId: string,
+  index: number,
+): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(path.join(storageDir, dropId, fileId));
+  } catch (err) {
+    if ((err as { code?: string }).code === 'ENOENT') return [];
+    throw err;
+  }
+  return names.filter((n) => n === String(index) || n.startsWith(`${index}.`));
 }
 
 /** A mutable clock for createTestApp({ now }). */

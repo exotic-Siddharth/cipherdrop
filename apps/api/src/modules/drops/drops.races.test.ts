@@ -9,7 +9,6 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
-import { isAppError } from '../../lib/errors';
 import type { StorageDriver } from '../../storage';
 import { bearer, registerViaApi } from '../auth/testkit';
 import {
@@ -18,7 +17,9 @@ import {
   createBody,
   createDropOk,
   createReadyDrop,
+  chunkBlobFiles,
   fakeWrappedKey,
+  getChunk,
   HOUR,
   putChunk,
   sha256Hex,
@@ -41,13 +42,13 @@ describe('drop upload lifecycle edges', () => {
     await resetTables(t.prisma);
     const storage: StorageDriver = {
       ...t.storage,
-      async putChunk(dropId, fileId, index, data) {
+      async putChunk(dropId, fileId, index, data, version) {
         if (gate.armed) {
           gate.armed = false;
           gate.enter();
           await gate.wait;
         }
-        return t.storage.putChunk(dropId, fileId, index, data);
+        return t.storage.putChunk(dropId, fileId, index, data, version);
       },
     };
     gated = await createTestApp({ now: clock.now, storage, prisma: t.prisma, redis: t.redis });
@@ -60,14 +61,9 @@ describe('drop upload lifecycle edges', () => {
     clock.set(T0);
   });
 
+  /** Any blob of the chunk on disk, whatever its storage version (C-R2-01: a key per PUT attempt). */
   async function blobExists(dropId: string, fileId: string, index = 0) {
-    try {
-      (await t.storage.getChunkStream(dropId, fileId, index)).destroy();
-      return true;
-    } catch (err) {
-      if (isAppError(err) && err.code === 'NOT_FOUND') return false;
-      throw err;
-    }
+    return (await chunkBlobFiles(t.storageDir, dropId, fileId, index)).length > 0;
   }
 
   /** Park the next putChunk of the gated app; `entered` resolves once it is parked. */
@@ -176,6 +172,73 @@ describe('drop upload lifecycle edges', () => {
       expect(delRes.status).toBe(204);
       expect(putRes.status).toBeLessThan(500);
       expect(await blobExists(drop.dropId, f.id)).toBe(false);
+    });
+  });
+
+  describe('C-R2-01: no DB connection, transaction or row lock is held during the storage write', () => {
+    /** Settles with the response, or with 'pending' if it has not arrived within `ms`. */
+    const within = <T>(p: Promise<T>, ms = 3000) =>
+      Promise.race([p, sleep(ms).then(() => 'pending' as const)]);
+
+    it('a delete completes while a chunk write is stalled, and the late blob is removed', async () => {
+      const f = testFile(1000);
+      const drop = await createDropOk(gated.app, createBody([f]));
+      const { entered, release } = parkNextPut();
+      const put = putChunk(gated.app, drop.dropId, drop.uploadToken, f.id, 0, chunkData(f, 0)).then(
+        (r) => r,
+      );
+      await entered;
+      try {
+        const del = await within(
+          request(gated.app)
+            .delete(`/api/drops/${drop.dropId}`)
+            .set('X-Owner-Token', drop.ownerToken)
+            .then((r) => r.status),
+        );
+        expect(del).toBe(204); // before the stalled write finished: it held no row lock
+      } finally {
+        release();
+      }
+      expect((await put).status).toBe(409);
+      expect(await blobExists(drop.dropId, f.id)).toBe(false);
+    });
+
+    it('a re-PUT stalled in storage cannot replace a chunk that complete() already verified', async () => {
+      const f = testFile(1000);
+      const drop = await createDropOk(gated.app, createBody([f]));
+      const original = chunkData(f, 0);
+      expect(
+        (await putChunk(gated.app, drop.dropId, drop.uploadToken, f.id, 0, original)).status,
+      ).toBe(204);
+      const { entered, release } = parkNextPut();
+      const again = putChunk(
+        gated.app,
+        drop.dropId,
+        drop.uploadToken,
+        f.id,
+        0,
+        chunkData(f, 0),
+      ).then((r) => r);
+      await entered;
+      try {
+        const done = await within(complete(gated.app, drop).then((r) => r.status));
+        expect(done).toBe(200);
+      } finally {
+        release();
+      }
+      expect((await again).status).toBe(409);
+      const open = await request(gated.app).post(`/api/drops/${drop.dropId}/open`).send({});
+      expect(open.status).toBe(200);
+      const got = await getChunk(
+        gated.app,
+        drop.dropId,
+        open.body.downloadToken as string,
+        f.id,
+        0,
+      );
+      expect(got.status).toBe(200);
+      expect((got.body as Buffer).equals(original)).toBe(true);
+      expect(await chunkBlobFiles(t.storageDir, drop.dropId, f.id, 0)).toHaveLength(1);
     });
   });
 

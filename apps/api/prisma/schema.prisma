@@ -182,12 +182,15 @@ model DropFile {
 }
 
 model DropChunk {
-  dropId String
-  fileId String
-  index  Int
-  size   Int
-  sha256 String // hex of ciphertext
-  drop   Drop   @relation(fields: [dropId], references: [id], onDelete: Cascade)
+  dropId      String
+  fileId      String
+  index       Int
+  size        Int
+  sha256      String // hex of ciphertext
+  /// Storage key suffix of the blob, fresh per PUT attempt (the blob is written before the row points at
+  /// it, and never over a verified chunk); null = the legacy key <index>.
+  blobVersion String?
+  drop        Drop    @relation(fields: [dropId], references: [id], onDelete: Cascade)
 
   @@id([dropId, fileId, index])
 }

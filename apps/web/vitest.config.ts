@@ -14,7 +14,8 @@ export default defineConfig({
     restoreMocks: true,
     unstubGlobals: true,
     unstubEnvs: true,
-    css: false,
+    // CSS is not processed, except raw reads of the theme tokens (contrast tests measure them, C-40).
+    css: { include: [/styles\/index\.css\?raw$/] },
     // Router tests import every lazy page cold (zxcvbn dictionaries, crypto); allow for a loaded laptop.
     testTimeout: 20_000,
   },

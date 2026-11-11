@@ -162,9 +162,13 @@ cipherdrop/
 | `CLEANUP_INTERVAL_SEC` | 60 | |
 | `TRUST_PROXY` | false | true behind nginx; in production it must be set explicitly (`0` = deliberate opt-out) |
 | `CHUNK_IDLE_TIMEOUT_SEC` | 30 (1-3600) | a chunk GET whose socket sees no activity for this long is aborted (stalled readers cannot hold the storage pool) |
-| `CHUNK_UPLOAD_IDLE_TIMEOUT_SEC` | 30 (1-3600) | a chunk PUT body with no data for this long is hung up |
+| `CHUNK_UPLOAD_IDLE_TIMEOUT_SEC` | 30 (1-3600) | a chunk PUT body with no data for this long is hung up (stalled body) |
+| `CHUNK_UPLOAD_DEADLINE_SEC` | 120 (1-3600) | total time a chunk PUT body may take; stops slow-drip clients whose idle timer never fires |
 | `MAX_CONCURRENT_CHUNK_UPLOADS` | 64 | per-process cap of in-flight chunk PUTs; above it the API answers 429 + `Retry-After` |
-| `ANON_TOTAL_PENDING_BYTES` | 0 (off) | optional ceiling on the bytes of all pending anonymous drops |
+| `MAX_CHUNK_UPLOADS_PER_TOKEN` / `MAX_CHUNK_UPLOADS_PER_IP` | 8 / 16 | in-flight chunk PUTs per upload token and per client IP (the web uploader sends 3 at a time); above them 429 + `Retry-After` |
+| `MAX_CONCURRENT_CHUNK_DOWNLOADS` | 192 (max 224) | per-process cap of streaming chunk GETs; the maximum stays below the 256-socket S3 pool; above it 429 + `Retry-After` |
+| `MAX_CHUNK_DOWNLOADS_PER_GRANT` / `MAX_CHUNK_DOWNLOADS_PER_IP` | 8 / 32 | in-flight chunk GETs per download grant and per client IP (the web downloader fetches one at a time) |
+| `ANON_TOTAL_PENDING_BYTES` | 0 (off) | optional ceiling on the bytes of all anonymous drops whose blobs are not purged (any status); check and insert are serialised by a Postgres advisory lock |
 
 With `NODE_ENV=production` the API refuses to start unless `DATABASE_URL`, `REDIS_URL`, `WEB_ORIGIN` (a bare origin) and `TRUST_PROXY` are set explicitly and `COOKIE_SECURE=true`; `apps/api/.env` is not loaded in production.
 | `SEED_ADMIN_PASSWORD` / `SEED_DEMO_PASSWORD` | dev values | |
@@ -404,6 +408,7 @@ model DropChunk {
   index  Int
   size   Int
   sha256 String                         // hex of ciphertext
+  blobVersion String?                   // storage key suffix <index>.<version>; null = legacy <index> key
   drop   Drop   @relation(fields: [dropId], references: [id], onDelete: Cascade)
   @@id([dropId, fileId, index])
 }
@@ -531,13 +536,13 @@ TOTP uses `otpauth`: SHA1, 6 digits, a 30 s period, a ±1 step window, and repla
 | Method & path | Auth | Request → Response |
 |---|---|---|
 | POST /drops | optional user | `CreateDropRequest {encryptedManifest, files:[{id, ciphertextBytes, chunkCount}], expiresInHours, maxDownloads, password?: {kdf, wrappedDropKey, authKeyHash}, ownerWrappedKey?}` → 201 `{dropId, ownerToken, uploadToken, expiresAt}` |
-| PUT /drops/:id/files/:fileId/chunks/:index | `Bearer uploadToken` | body `application/octet-stream` (raw, limit CHUNK_SIZE + 16), header `X-Chunk-SHA256` (lowercase hex of the ciphertext) → 204 |
+| PUT /drops/:id/files/:fileId/chunks/:index | `Bearer uploadToken` | body `application/octet-stream` (raw, limit CHUNK_SIZE + 16), header `X-Chunk-SHA256` (lowercase hex of the ciphertext) → 204 (429 `RATE_LIMITED` + `Retry-After` at the in-flight caps) |
 | GET /drops/:id/upload-status | `Bearer uploadToken` | → `{files:[{id, chunkCount, received:[{index, sha256}]}]}` |
 | POST /drops/:id/complete | `Bearer uploadToken` | → `{status:"READY"}` (409 with the missing chunks if incomplete) |
 | GET /drops/:id | – | → `DropMeta {id, status, fileCount, totalBytes, expiresAt, maxDownloads, downloadsRemaining, passwordProtected, encryptedManifest: string\|null /*null when password-protected*/, passwordKdf: KdfParams\|null, createdAt}`. 404 if unknown; **410** `GONE` with `details.reason` ∈ EXPIRED/EXHAUSTED/DELETED/DISABLED |
 | POST /drops/:id/unlock | – | `{authKey}` → `{wrappedDropKey, encryptedManifest}`. 401 on mismatch (audited to the owner as `DROP_UNLOCK_FAILED`). Rate limits: 5/15 min per drop+IP, 20/h per drop |
 | POST /drops/:id/open | – | `{authKey?}` (required for password drops) → `{downloadToken, expiresAt, downloadsRemaining}`. Atomic consumption (§9). Audited to the owner as `DROP_OPENED` (with ipPrefix + UA) |
-| GET /drops/:id/files/:fileId/chunks/:index | `Bearer downloadToken` | → ciphertext stream (`application/octet-stream`) |
+| GET /drops/:id/files/:fileId/chunks/:index | `Bearer downloadToken` | → ciphertext stream (`application/octet-stream`) (429 `RATE_LIMITED` + `Retry-After` at the in-flight caps) |
 | DELETE /drops/:id | owner (`X-Owner-Token` or owner session) | → 204 (blobs deleted) |
 | POST /drops/:id/report | – | `{reason, details?, decryptionKey?}` → 201. Rate limit 5/h per IP |
 
@@ -795,5 +800,6 @@ Internal module structure beyond §5, component APIs, copywriting details, chart
 - 2026-11-11 (review): the S3 client uses 256 sockets, a 5 s connect timeout and a 60 s idle-socket timeout (R17), and chunk GET aborts after `CHUNK_IDLE_TIMEOUT_SEC` of silence, so slow readers cannot exhaust the pool.
 - 2026-11-11 (review): audit writes after a committed change (create, open, complete, delete, report, admin disable) are best-effort: a failure is logged and never fails the request, so it cannot burn a burn-after-read download. The unlock-failure audit stays pre-commit.
 - 2026-11-11 (review): the reporter's decryption key is kept only while the report is OPEN; DISMISS, DISABLE_DROP and blob purge null it, and the admin list returns it only for OPEN reports. A report on a gone drop answers 410.
+- 2026-11-11 (round 2): reports are accepted while the ciphertext exists (READY, EXHAUSTED and EXPIRED until purged); DELETED, DISABLED and purged drops answer 410. Chunk blobs are `<dropId>/<fileId>/<index>.<version>`: each PUT writes a fresh version with no DB connection held, then a short `FOR SHARE` transaction points `DropChunk.blobVersion` at it (a refused write is deleted by the handler, the superseded version after commit); downloads read the version from the row; null means the legacy `<index>` key. Chunk PUT and GET answer 429 `RATE_LIMITED` + `Retry-After` when the in-flight caps per token/grant, per IP or per process are reached. Sign out during an upload asks first and cancels the upload (deleting the unfinished drop) before logging out.
 - 2026-11-11 (review): the chunk PUT in-flight cap is per process; behind several instances use reverse-proxy connection limits. `storage_free_bytes` is a metric refreshed by `/readyz`, not a readiness check.
 - 2026-11-11 (review, web): resume refuses drops whose files share size and `lastModified` (the match would be ambiguous), so a fresh drop is started and the old UPLOADING drop is deleted best-effort; drop passwords use the `validateNewPassword` floor (min length and zxcvbn); the Toaster is portalled outside `#root` so it is not inert under a dialog; the Receive page blocks Decrypt & download up front when a file over 256 MB cannot be saved (no `showSaveFilePicker`), so the download is not consumed first (§11.2).

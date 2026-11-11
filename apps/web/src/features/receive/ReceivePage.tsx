@@ -386,7 +386,8 @@ export function Component() {
       {body}
       <p className="mt-8 flex items-center justify-center gap-1.5 text-center text-xs text-muted-strong">
         <EyeOff className="size-3.5" aria-hidden="true" />
-        CipherDrop never sees the key, the file names or the contents.
+        CipherDrop never sees the key, the file names or the contents, unless you include the key in
+        an abuse report.
       </p>
     </>
   );

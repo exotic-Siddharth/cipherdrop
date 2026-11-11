@@ -22,7 +22,7 @@ import {
   VaultSchema,
 } from '@cipherdrop/shared';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { TEST_ACCOUNT, createUserRecord, uniqueEmail } from '../../../test/factories';
 import { isSidDenylisted } from '../../lib/redis';
@@ -260,6 +260,29 @@ describe('POST /auth/refresh and /auth/logout', () => {
     expect(claims.exp - claims.iat).toBe(900);
     expect((await vault(body.accessToken)).status).toBe(200);
     expect((await refresh(next)).status).toBe(200);
+  });
+
+  it('a failure while issuing the successor leaves the presented token usable (no false reuse)', async () => {
+    const s = await newSession(t.app, u);
+    // One-shot rejection, then the real $transaction (no mockRestore: it breaks the client Proxy).
+    const real = t.prisma.$transaction.bind(t.prisma);
+    vi.spyOn(t.prisma, '$transaction')
+      .mockRejectedValueOnce(new Error('db blip'))
+      .mockImplementation(real as never);
+    expect((await refresh(s.cookie)).status).toBe(500);
+    const retry = await refresh(s.cookie);
+    expect(retry.status).toBe(200);
+    const session = await t.prisma.session.findUniqueOrThrow({ where: { id: s.sid } });
+    expect(session.revokedAt).toBeNull();
+    expect(
+      await t.prisma.auditEvent.count({
+        where: {
+          userId: u.user.id,
+          action: 'SESSION_REUSE_DETECTED',
+          metadata: { path: ['sessionId'], equals: s.sid },
+        },
+      }),
+    ).toBe(0);
   });
 
   it('reuse of a rotated token revokes the session, denylists its sid and audits it', async () => {

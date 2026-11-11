@@ -107,5 +107,10 @@ export function createLocalStorage(storageDir: string): StorageDriver {
       const real = await fs.promises.realpath(configured);
       await fs.promises.access(real, fs.constants.R_OK | fs.constants.W_OK);
     },
+
+    async freeBytes() {
+      const st = await fs.promises.statfs(await fs.promises.realpath(configured));
+      return Number(st.bavail) * Number(st.bsize);
+    },
   };
 }

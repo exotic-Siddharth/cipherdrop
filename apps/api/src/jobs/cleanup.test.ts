@@ -175,6 +175,70 @@ describe('cleanup job', () => {
     expect(await usedBytes(user.id)).toBe(0);
   });
 
+  it('keeps the blobs of an expired drop while a download grant is live (R12), then deletes them', async () => {
+    const { user, drop } = await ownedReadyDrop({ expiresInHours: 1, maxDownloads: 2 });
+    const fileId = drop.files[0]!.id;
+    clock.set(at(59 * MIN));
+    const tok = (await openDrop(t.app, drop.dropId)).body.downloadToken as string; // grant to T+89 min
+
+    clock.set(at(61 * MIN));
+    const report = await runCleanup(at(61 * MIN), t.ctx);
+    expect(report.expired).toBe(1);
+    expect(report.bytesReleased).toBe(0);
+    const row = await t.prisma.drop.findUniqueOrThrow({ where: { id: drop.dropId } });
+    expect(row.status).toBe('EXPIRED');
+    expect(row.blobsDeletedAt).toBeNull();
+    expect(await blobExists(drop.dropId, fileId)).toBe(true);
+    expect(await usedBytes(user.id)).toBe(drop.files[0]!.ciphertextBytes);
+    // The download that started before expiry still completes; new opens and the meta are gone (410).
+    const chunk = await request(t.app)
+      .get(`/api/drops/${drop.dropId}/files/${fileId}/chunks/0`)
+      .set('Authorization', `Bearer ${tok}`);
+    expect(chunk.status).toBe(200);
+    expect((await openDrop(t.app, drop.dropId)).status).toBe(410);
+    expect((await request(t.app).get(`/api/drops/${drop.dropId}`)).status).toBe(410);
+
+    // The chunk GET slid the grant to T+91 min: still kept at T+90, deleted once it lapsed.
+    expect((await runCleanup(at(90 * MIN), t.ctx)).bytesReleased).toBe(0);
+    expect(await blobExists(drop.dropId, fileId)).toBe(true);
+    const later = await runCleanup(at(91 * MIN), t.ctx);
+    expect(later.bytesReleased).toBe(drop.files[0]!.ciphertextBytes);
+    expect(await blobExists(drop.dropId, fileId)).toBe(false);
+    expect(await usedBytes(user.id)).toBe(0);
+    clock.set(at(91 * MIN));
+    const gone = await request(t.app)
+      .get(`/api/drops/${drop.dropId}/files/${fileId}/chunks/0`)
+      .set('Authorization', `Bearer ${tok}`);
+    expect(gone.status).toBe(401); // the grant itself lapsed too
+  });
+
+  it('still deletes blobs of DELETED and DISABLED drops at once, grant or not', async () => {
+    const { drop } = await ownedReadyDrop();
+    await openDrop(t.app, drop.dropId);
+    await t.prisma.drop.update({ where: { id: drop.dropId }, data: { status: 'DISABLED' } });
+    await runCleanup(at(MIN), t.ctx);
+    expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
+  });
+
+  it('moves UPLOADING drops past their expiry to DELETED and frees their blobs', async () => {
+    const f = testFile(1000);
+    const user = await createUserRecord(t.prisma);
+    const drop = await createDropOk(
+      t.app,
+      createBody([f], { expiresInHours: 1, ownerWrappedKey: fakeWrappedKey() }),
+      { Authorization: authHeader(user) },
+    );
+    expect(
+      (await putChunk(t.app, drop.dropId, drop.uploadToken, f.id, 0, chunkData(f, 0))).status,
+    ).toBe(204);
+    expect((await runCleanup(at(HOUR - 1000), t.ctx)).staleDeleted).toBe(0);
+    expect((await runCleanup(at(HOUR), t.ctx)).staleDeleted).toBe(1);
+    const row = await t.prisma.drop.findUniqueOrThrow({ where: { id: drop.dropId } });
+    expect(row.status).toBe('DELETED');
+    expect(row.blobsDeletedAt).toBeInstanceOf(Date);
+    expect(await blobExists(drop.dropId, f.id)).toBe(false);
+  });
+
   it('retries blob deletion for drops whose earlier purge did not finish', async () => {
     const { user, drop } = await ownedReadyDrop();
     // Simulate a disable whose blob deletion failed: status set, blobs still there.
@@ -193,6 +257,93 @@ describe('cleanup job', () => {
     await runCleanup(at(2 * HOUR), t.ctx);
     expect((await metricValue(t.app, 'cleanup_runs_total')) - runs).toBe(1);
     expect((await metricValue(t.app, 'cleanup_deleted_drops_total')) - deleted).toBe(1);
+  });
+
+  describe('retention (C-13)', () => {
+    const DAY = 24 * HOUR;
+
+    it('prunes sessions revoked or expired more than 7 days ago (tokens cascade), keeps the rest', async () => {
+      const user = await createUserRecord(t.prisma);
+      const mk = (expiresAt: Date, revokedAt: Date | null = null) =>
+        t.prisma.session.create({
+          data: {
+            userId: user.id,
+            expiresAt,
+            revokedAt,
+            tokens: {
+              create: { tokenHash: `h-${Math.random()}`, expiresAt, usedAt: revokedAt },
+            },
+          },
+        });
+      const oldExpired = await mk(at(-8 * DAY));
+      const oldRevoked = await mk(at(20 * DAY), at(-8 * DAY));
+      const recentExpired = await mk(at(-2 * DAY));
+      const recentRevoked = await mk(at(20 * DAY), at(-1 * DAY));
+      const live = await mk(at(20 * DAY));
+      await runCleanup(T0, t.ctx);
+      const left = (await t.prisma.session.findMany()).map((s) => s.id).sort();
+      expect(left).toEqual([recentExpired.id, recentRevoked.id, live.id].sort());
+      expect(oldExpired.id).not.toBe(oldRevoked.id);
+      expect(await t.prisma.refreshToken.count()).toBe(3);
+    });
+
+    it('deletes refresh tokens that expired more than 7 days ago, keeps used ones that can still show reuse', async () => {
+      const user = await createUserRecord(t.prisma);
+      const session = await t.prisma.session.create({
+        data: { userId: user.id, expiresAt: at(20 * DAY) },
+      });
+      await t.prisma.refreshToken.createMany({
+        data: [
+          {
+            sessionId: session.id,
+            tokenHash: 'old',
+            expiresAt: at(-8 * DAY),
+            usedAt: at(-9 * DAY),
+          },
+          {
+            sessionId: session.id,
+            tokenHash: 'used',
+            expiresAt: at(10 * DAY),
+            usedAt: at(-1 * DAY),
+          },
+          { sessionId: session.id, tokenHash: 'fresh', expiresAt: at(30 * DAY) },
+        ],
+      });
+      await runCleanup(T0, t.ctx);
+      const hashes = (await t.prisma.refreshToken.findMany()).map((r) => r.tokenHash).sort();
+      expect(hashes).toEqual(['fresh', 'used']);
+    });
+
+    it('ages out audit events after 90 days and closed reports after 90 days; open reports stay', async () => {
+      const user = await createUserRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      await t.prisma.auditEvent.createMany({
+        data: [
+          { userId: user.id, action: 'LOGIN_SUCCESS', createdAt: at(-91 * DAY) },
+          { userId: user.id, action: 'LOGIN_SUCCESS', createdAt: at(-89 * DAY) },
+        ],
+      });
+      const rep = (status: 'OPEN' | 'RESOLVED' | 'DISMISSED', resolvedAt: Date | null) =>
+        t.prisma.report.create({
+          data: {
+            dropId: drop.dropId,
+            reason: 'OTHER',
+            status,
+            createdAt: at(-200 * DAY),
+            resolvedAt,
+          },
+        });
+      const oldClosed = await rep('DISMISSED', at(-91 * DAY));
+      const recentClosed = await rep('RESOLVED', at(-5 * DAY));
+      const oldOpen = await rep('OPEN', null);
+      await runCleanup(T0, t.ctx);
+      expect(
+        await t.prisma.auditEvent.count({ where: { userId: user.id, action: 'LOGIN_SUCCESS' } }),
+      ).toBe(1);
+      const ids = (await t.prisma.report.findMany()).map((r) => r.id).sort();
+      expect(ids).toEqual([recentClosed.id, oldOpen.id].sort());
+      expect(ids).not.toContain(oldClosed.id);
+    });
   });
 
   describe('scheduler', () => {

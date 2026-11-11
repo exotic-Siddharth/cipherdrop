@@ -1,11 +1,13 @@
 /**
  * Cleanup job (spec section 9, R12):
- * - READY drops past expiresAt -> EXPIRED, delete blobs;
+ * - READY drops past expiresAt -> EXPIRED; their blobs go as soon as no grant is live (R12: a download that
+ *   started before expiry may finish; a grant lives at most 24 h, so the delay is bounded);
  * - EXHAUSTED drops with no unexpired grant -> delete blobs (status stays EXHAUSTED);
- * - UPLOADING drops older than 24 h -> DELETED, delete blobs;
- * - EXPIRED / DELETED / DISABLED drops whose blobs are still there (an earlier purge failed) -> delete blobs;
+ * - UPLOADING drops older than 24 h or past their expiresAt -> DELETED, delete blobs;
+ * - DELETED / DISABLED drops, and EXPIRED ones without a live grant, whose blobs are still there -> delete blobs;
  * - release quota (storageUsedBytes), audit DROP_EXPIRED / DROP_EXHAUSTED to the owner, set blobsDeletedAt;
- * - grants expired for more than 24 h are removed;
+ * - grants expired for more than 24 h are removed; sessions / refresh tokens 7 days past expiry or revocation,
+ *   audit events and closed reports older than 90 days are removed (retention);
  * - metrics.cleanupRuns / metrics.cleanupDeletedDrops / metrics.storageBytes.
  * The scheduler runs runCleanup(now) every CLEANUP_INTERVAL_SEC under the Redis lock `${KEY_PREFIX}:lock:cleanup`
  * and is stopped on shutdown (index.ts calls stop()).
@@ -45,6 +47,10 @@ const BATCH = 100;
 const HOUR_MS = 3_600_000;
 const STALE_UPLOAD_MS = 24 * HOUR_MS;
 const GRANT_RETENTION_MS = 24 * HOUR_MS;
+/** Sessions and refresh tokens are kept this long past expiry/revocation (the sid denylist TTL is at most 24 h). */
+const SESSION_RETENTION_MS = 7 * 24 * HOUR_MS;
+/** Audit events and closed reports are kept this long (the Activity tab shows recent history only). */
+const RECORD_RETENTION_MS = 90 * 24 * HOUR_MS;
 const LOCK_NAME = 'cleanup';
 
 interface Candidate {
@@ -109,12 +115,11 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     return count === 1;
   };
 
-  // 1. READY past expiresAt -> EXPIRED.
+  // 1. READY past expiresAt -> EXPIRED (blobs: step 4, once no grant is live).
   const expiredWhere: Prisma.DropWhereInput = { status: 'READY', expiresAt: { lte: now } };
   for await (const d of candidates(c, expiredWhere)) {
     if (!(await transition(d.id, expiredWhere, { status: 'EXPIRED' }))) continue;
     report.expired += 1;
-    await purge(d.id);
     if (d.ownerId)
       await c.audit.record({ userId: d.ownerId, dropId: d.id, action: 'DROP_EXPIRED' });
   }
@@ -133,10 +138,13 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     }
   }
 
-  // 3. UPLOADING for more than 24 h -> DELETED.
+  // 3. UPLOADING for more than 24 h, or past its expiry (it could never be opened) -> DELETED.
   const staleWhere: Prisma.DropWhereInput = {
     status: 'UPLOADING',
-    createdAt: { lte: new Date(now.getTime() - STALE_UPLOAD_MS) },
+    OR: [
+      { createdAt: { lte: new Date(now.getTime() - STALE_UPLOAD_MS) } },
+      { expiresAt: { lte: now } },
+    ],
   };
   for await (const d of candidates(c, staleWhere)) {
     if (!(await transition(d.id, staleWhere, { status: 'DELETED', deletedAt: now }))) continue;
@@ -144,16 +152,32 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     await purge(d.id);
   }
 
-  // 4. Orphans: terminal drops whose blobs are still there (an earlier purge failed or was interrupted).
+  // 4. Terminal drops whose blobs are still there: EXPIRED ones once no grant is live (R12), DELETED and
+  //    DISABLED ones always (an earlier purge failed or was interrupted).
   const orphanWhere: Prisma.DropWhereInput = {
-    status: { in: ['EXPIRED', 'DELETED', 'DISABLED'] },
     blobsDeletedAt: null,
+    OR: [
+      { status: { in: ['DELETED', 'DISABLED'] } },
+      { status: 'EXPIRED', grants: { none: { expiresAt: { gt: now } } } },
+    ],
   };
   for await (const d of candidates(c, orphanWhere)) await purge(d.id);
 
   // 5. Housekeeping: grants long past their expiry are useless.
   await c.prisma.downloadGrant.deleteMany({
     where: { expiresAt: { lt: new Date(now.getTime() - GRANT_RETENTION_MS) } },
+  });
+
+  // 6. Retention: nothing else ever deletes these, so the tables would grow without bound.
+  const sessionCutoff = new Date(now.getTime() - SESSION_RETENTION_MS);
+  await c.prisma.refreshToken.deleteMany({ where: { expiresAt: { lte: sessionCutoff } } });
+  await c.prisma.session.deleteMany({
+    where: { OR: [{ expiresAt: { lte: sessionCutoff } }, { revokedAt: { lte: sessionCutoff } }] },
+  });
+  const recordCutoff = new Date(now.getTime() - RECORD_RETENTION_MS);
+  await c.prisma.auditEvent.deleteMany({ where: { createdAt: { lte: recordCutoff } } });
+  await c.prisma.report.deleteMany({
+    where: { status: { not: 'OPEN' }, resolvedAt: { lte: recordCutoff } },
   });
 
   if (purgedDrops > 0) metrics.cleanupDeletedDrops.inc(purgedDrops);

@@ -3,7 +3,9 @@
  * list of invalid variable NAMES (values are never printed: some are secrets).
  *
  * apps/api/.env is loaded with process.loadEnvFile() when present (variables already set in the environment
- * win). It is NOT loaded under NODE_ENV=test: tests are hermetic (test/setup.ts sets every value).
+ * win). It is NOT loaded under NODE_ENV=test (tests are hermetic: test/setup.ts sets every value) nor under
+ * NODE_ENV=production (the real environment is the only source there; DATABASE_URL, REDIS_URL, WEB_ORIGIN and
+ * TRUST_PROXY must be stated, COOKIE_SECURE must be true, WEB_ORIGIN a bare origin).
  * Secrets have no defaults here; local dev values live in apps/api/.env (template: .env.example).
  */
 import { existsSync } from 'node:fs';
@@ -93,6 +95,14 @@ const EnvSchema = z
     MAX_FILES_PER_DROP: int(20, 1, 20),
     DOWNLOAD_GRANT_TTL_MIN: int(30, 1, 24 * 60),
     CLEANUP_INTERVAL_SEC: int(60, 1, 86_400),
+    /** A chunk GET whose client reads nothing for this long is aborted (frees its storage socket). */
+    CHUNK_IDLE_TIMEOUT_SEC: int(30, 1, 3_600),
+    /** Chunk PUTs in flight per API process (each buffers up to 4 MiB); more get 429 + Retry-After. */
+    MAX_CONCURRENT_CHUNK_UPLOADS: int(64, 1, 10_000),
+    /** A chunk PUT whose body sends nothing for this long is hung up (slow-drip clients). */
+    CHUNK_UPLOAD_IDLE_TIMEOUT_SEC: int(30, 1, 3_600),
+    /** Ceiling on the ciphertext bytes of anonymous UPLOADING + READY drops together (0 = no ceiling). */
+    ANON_TOTAL_PENDING_BYTES: int(0, 0),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),
@@ -113,6 +123,21 @@ const EnvSchema = z
         message: 'rate limits cannot be disabled in production',
       });
     }
+    if (!env.COOKIE_SECURE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['COOKIE_SECURE'],
+        message: 'must be true in production (the refresh cookie must be Secure)',
+      });
+    }
+    // CORS compares the Origin header to this string exactly: no path, no trailing slash.
+    if (!URL.canParse(env.WEB_ORIGIN) || new URL(env.WEB_ORIGIN).origin !== env.WEB_ORIGIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['WEB_ORIGIN'],
+        message: 'must be a bare origin such as https://drop.example (no path, no trailing slash)',
+      });
+    }
     for (const key of ['JWT_ACCESS_SECRET', 'PRELOGIN_SECRET', 'TOTP_ENC_KEY'] as const) {
       const value = env[key];
       const decoded =
@@ -129,20 +154,34 @@ const EnvSchema = z
 
 export type Env = z.infer<typeof EnvSchema>;
 
+/** Variables that have a local-dev default in the schema and so must be stated in production. */
+const EXPLICIT_IN_PRODUCTION = [
+  ['DATABASE_URL', 'must be set explicitly in production (no dev default)'],
+  ['REDIS_URL', 'must be set explicitly in production (no dev default)'],
+  ['WEB_ORIGIN', 'must be set explicitly in production (no dev default)'],
+  ['TRUST_PROXY', 'must be set in production (hop count; 0 = no reverse proxy)'],
+] as const;
+
 /** Parse an environment record (tests can call this with a custom record). */
 export function parseEnv(source: Record<string, string | undefined>): Env {
   const result = EnvSchema.safeParse(source);
-  if (!result.success) {
-    const lines = result.error.issues.map(
-      (i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`,
-    );
+  const lines = result.success
+    ? []
+    : result.error.issues.map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`);
+  if (source.NODE_ENV === 'production') {
+    for (const [key, message] of EXPLICIT_IN_PRODUCTION) {
+      if ((source[key] ?? '').trim() === '') lines.push(`  - ${key}: ${message}`);
+    }
+  }
+  if (!result.success || lines.length > 0) {
     throw new Error(`Invalid environment configuration:\n${lines.join('\n')}`);
   }
   return result.data;
 }
 
 function loadDotEnv(): void {
-  if (process.env.NODE_ENV === 'test') return;
+  // Production configuration comes from the real environment only: a stray dev apps/api/.env must not fill it.
+  if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'production') return;
   const file = path.join(apiRoot, '.env');
   if (existsSync(file)) process.loadEnvFile(file);
 }

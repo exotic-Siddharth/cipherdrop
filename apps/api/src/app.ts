@@ -2,7 +2,7 @@
  * createApp(deps?) builds the Express 5 app (S4). Lanes never edit this file; they own their routes.ts.
  *
  * Order: requestId -> pino-http -> helmet -> CORS(WEB_ORIGIN) -> no-store on /api -> metrics ->
- * /healthz /readyz /metrics -> global limiter on /api (600/min per IP; chunk PUT/GET exempt) ->
+ * /healthz /readyz /metrics -> global limiter on /api (600/min per IP; chunk PUT/GET exempt, they have chunkIp 6000/min per IP + per-token limits) ->
  * cookies -> JSON (1 MB) -> /api/openapi.json + /api/docs -> /api/auth, /api/me (B1), /api/drops,
  * /api/admin (B2) -> 404 -> error handler.
  */
@@ -26,7 +26,7 @@ import { healthRoutes } from './modules/health/routes';
 import { meRoutes } from './modules/me/routes';
 import { getOpenApiDocument } from './openapi/document';
 
-/** Chunk transfer routes (relative to /api): limited per token instead of per IP (R10). */
+/** Chunk transfer routes (relative to /api): own limiters (per IP chunkIp, per token chunkPut/chunkGet; R10). */
 const CHUNK_PATH_RE = /^\/drops\/[^/]+\/files\/[^/]+\/chunks\/[^/]+\/?$/;
 
 function mount(app: Express, r: AppRouter): void {

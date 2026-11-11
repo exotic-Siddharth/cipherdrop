@@ -21,6 +21,8 @@ export interface StorageDriver {
   deleteDrop(dropId: string): Promise<void>;
   /** Used by /readyz; rejects when the backend is unreachable. */
   healthCheck(): Promise<void>;
+  /** Free bytes on the volume holding the blobs (local driver only; S3 has no such limit). */
+  freeBytes?(): Promise<number>;
 }
 
 export type StorageEnv = Pick<

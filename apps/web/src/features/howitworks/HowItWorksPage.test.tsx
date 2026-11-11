@@ -39,6 +39,23 @@ describe('HowItWorksPage', () => {
     expect(within(table).getByText(/file names, file types or your note/i)).toBeVisible();
   });
 
+  it('qualifies the never-sees claims with the opt-in abuse report key (C-39)', () => {
+    renderPage();
+    const table = screen.getByRole('table', { name: /what the server stores/i });
+    expect(within(table).getAllByText(/abuse report/i).length).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByRole('heading', { name: /abuse report can include the key/i }),
+    ).toBeVisible();
+    expect(screen.queryByText(/never have to fit in memory/i)).toBeNull();
+  });
+
+  it('keeps the CTA banner line at AA contrast (C-40)', () => {
+    renderPage();
+    expect(screen.getByText(/No account needed\. Drops up to 72 hours/)).toHaveClass(
+      'text-muted-strong',
+    );
+  });
+
   it('points to SECURITY.md and back to sending', () => {
     renderPage();
     expect(screen.getByText('docs/SECURITY.md')).toBeVisible();

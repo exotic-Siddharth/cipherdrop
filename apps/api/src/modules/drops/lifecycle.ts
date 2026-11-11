@@ -6,7 +6,7 @@
  * once even when cleanup, an owner delete and an admin disable race.
  */
 import type { GoneReason } from '@cipherdrop/shared';
-import type { DropStatus, PrismaClient } from '@prisma/client';
+import type { DropStatus, Prisma, PrismaClient } from '@prisma/client';
 import type { AppContext } from '../../context';
 import { metrics } from '../../lib/metrics';
 
@@ -52,6 +52,7 @@ export async function purgeDropBlobs(
 ): Promise<PurgeResult> {
   await ctx.storage.deleteDrop(dropId);
   const result = await ctx.prisma.$transaction(async (tx) => {
+    await scrubPurgedDrop(tx, dropId);
     const drop = await tx.drop.findUnique({
       where: { id: dropId },
       select: { ownerId: true, readyAt: true, totalCiphertextBytes: true },
@@ -69,6 +70,43 @@ export async function purgeDropBlobs(
   });
   if (result.counted > 0n) metrics.storageBytes.dec(Number(result.counted));
   return { purged: result.purged, quotaBytesReleased: Number(result.quota) };
+}
+
+/**
+ * What a drop row keeps once its blobs are gone (retention): status, expiresAt and the counters stay (the 410
+ * reason, the owner's history). The password verifier and wrapped drop key are useless then, so they go (a DB
+ * leak must not allow offline guessing for a deleted drop); chunk rows go; a reporter's key goes. The
+ * manifest and the owner's wrapped key are wiped for DELETED drops (never listed again) and anonymous ones
+ * (nobody can list them); EXPIRED / EXHAUSTED / DISABLED owned drops keep them for the owner's history.
+ */
+async function scrubPurgedDrop(
+  tx: Pick<Prisma.TransactionClient, 'drop' | 'dropChunk' | 'report'>,
+  dropId: string,
+): Promise<void> {
+  await tx.drop.updateMany({
+    where: { id: dropId, OR: [{ wrappedDropKey: { not: null } }, { authKeyHash: { not: null } }] },
+    data: {
+      wrappedDropKey: null,
+      authKeyHash: null,
+      pwKdfSalt: null,
+      pwKdfMemoryKiB: null,
+      pwKdfIterations: null,
+      pwKdfParallelism: null,
+    },
+  });
+  await tx.drop.updateMany({
+    where: {
+      id: dropId,
+      OR: [{ status: 'DELETED' }, { ownerId: null }],
+      NOT: { encryptedManifest: '' },
+    },
+    data: { encryptedManifest: '', ownerWrappedKey: null },
+  });
+  await tx.dropChunk.deleteMany({ where: { dropId } });
+  await tx.report.updateMany({
+    where: { dropId, providedKey: { not: null } },
+    data: { providedKey: null },
+  });
 }
 
 type Tx = Pick<PrismaClient, '$executeRaw'>;

@@ -218,6 +218,92 @@ describe('drop download', () => {
     });
   });
 
+  describe('password guess limits (/unlock and /open share failure buckets)', () => {
+    const unlockPost = (app: TestApp['app'], id: string, ip: string, authKey: string) =>
+      request(app).post(`/api/drops/${id}/unlock`).set('X-Forwarded-For', ip).send({ authKey });
+    const openPost = (app: TestApp['app'], id: string, ip: string, authKey: string) =>
+      openDrop(app, id, { authKey }, { 'X-Forwarded-For': ip });
+    const ips = (n: number) => Array.from({ length: n }, (_, i) => `198.51.100.${i + 1}`);
+
+    it('wrong keys on /open from many IPs hit the per-drop cap (20/h), like /unlock', async () => {
+      const rl = await createTestApp({ rateLimits: { unlockDropIp: true, unlockDrop: true } });
+      try {
+        const pw = passwordFixture();
+        const drop = await createReadyDrop(rl.app, { body: { password: pw.password } });
+        const statuses: number[] = [];
+        for (const ip of ips(25)) {
+          statuses.push((await openPost(rl.app, drop.dropId, ip, token32())).status);
+        }
+        expect(statuses.slice(0, 20).every((s) => s === 401)).toBe(true);
+        expect(statuses.slice(20).every((s) => s === 429)).toBe(true);
+        // The cap also blocks the right key, and says nothing about the password.
+        const blocked = await openPost(rl.app, drop.dropId, '198.51.100.99', pw.authKey);
+        expect(blocked.status).toBe(429);
+        expect(blocked.body.error.code).toBe('RATE_LIMITED');
+        expect(await rl.prisma.downloadGrant.count({ where: { dropId: drop.dropId } })).toBe(0);
+      } finally {
+        await rl.close();
+      }
+    });
+
+    it('guesses on /unlock and /open draw from one budget', async () => {
+      const rl = await createTestApp({ rateLimits: { unlockDropIp: true, unlockDrop: true } });
+      try {
+        const pw = passwordFixture();
+        const drop = await createReadyDrop(rl.app, { body: { password: pw.password } });
+        const list = ips(22);
+        for (const ip of list.slice(0, 10)) {
+          expect((await unlockPost(rl.app, drop.dropId, ip, token32())).status).toBe(401);
+        }
+        for (const ip of list.slice(10, 20)) {
+          expect((await openPost(rl.app, drop.dropId, ip, token32())).status).toBe(401);
+        }
+        expect((await unlockPost(rl.app, drop.dropId, list[20]!, token32())).status).toBe(429);
+        expect((await openPost(rl.app, drop.dropId, list[21]!, token32())).status).toBe(429);
+      } finally {
+        await rl.close();
+      }
+    });
+
+    it('correct keys never use up the budget (25 unlocks and 25 opens from 25 IPs)', async () => {
+      const rl = await createTestApp({ rateLimits: { unlockDropIp: true, unlockDrop: true } });
+      try {
+        const pw = passwordFixture();
+        const user = await createUserRecord(rl.prisma);
+        const drop = await createReadyDrop(rl.app, {
+          body: { password: pw.password, maxDownloads: 50, ownerWrappedKey: fakeWrappedKey() },
+          headers: { Authorization: authHeader(user) },
+        });
+        for (const ip of ips(25)) {
+          expect((await unlockPost(rl.app, drop.dropId, ip, pw.authKey)).status).toBe(200);
+          expect((await openPost(rl.app, drop.dropId, ip, pw.authKey)).status).toBe(200);
+        }
+        // ...and the first wrong guess afterwards is still a plain 401.
+        expect((await unlockPost(rl.app, drop.dropId, '198.51.100.200', token32())).status).toBe(
+          401,
+        );
+      } finally {
+        await rl.close();
+      }
+    });
+
+    it('does not throttle opens of a drop without a password', async () => {
+      const rl = await createTestApp({ rateLimits: { unlockDropIp: true, unlockDrop: true } });
+      try {
+        const user = await createUserRecord(rl.prisma);
+        const drop = await createReadyDrop(rl.app, {
+          body: { maxDownloads: 50, ownerWrappedKey: fakeWrappedKey() },
+          headers: { Authorization: authHeader(user) },
+        });
+        for (let i = 0; i < 25; i++) {
+          expect((await openDrop(rl.app, drop.dropId)).status).toBe(200);
+        }
+      } finally {
+        await rl.close();
+      }
+    });
+  });
+
   describe('POST /drops/:id/open', () => {
     it('10 concurrent opens on maxDownloads=1 give exactly one success', async () => {
       const drop = await createReadyDrop(t.app, { body: { maxDownloads: 1 } });

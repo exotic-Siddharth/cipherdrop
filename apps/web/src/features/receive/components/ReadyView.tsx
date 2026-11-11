@@ -81,8 +81,17 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
     () => sanitizeFilenames(manifest.files.map((f) => f.name)),
     [manifest],
   );
+  // C-03: a file over 256 MB cannot be saved without the save picker. Decide that from the manifest up
+  // front, so the click never spends a download (a burn-after-read link) on a drop this browser can't save.
   const [files, setFiles] = useState<Record<string, FileStatus>>(() =>
-    Object.fromEntries(manifest.files.map((f) => [f.id, { status: 'idle' } as FileStatus])),
+    Object.fromEntries(
+      manifest.files.map((f) => [
+        f.id,
+        (needsSavePicker(f.size) && !saveFilePickerAvailable()
+          ? { status: 'unsupported' }
+          : { status: 'idle' }) as FileStatus,
+      ]),
+    ),
   );
   const [remaining, setRemaining] = useState<number | null>(meta?.downloadsRemaining ?? null);
   const [started, setStarted] = useState(false);
@@ -113,6 +122,7 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
     setFiles(statusRef.current);
   };
   const nameOf = (f: ManifestFile) => savedNames[manifest.files.indexOf(f)] ?? 'file';
+  const isUnsupported = (f: ManifestFile) => needsSavePicker(f.size) && !saveFilePickerAvailable();
 
   /** Download one file. Rethrows GrantExpiredError so the caller can stop and ask (R12). */
   const runFile = async (f: ManifestFile, sink?: FileSink) => {
@@ -157,6 +167,7 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
   };
 
   const downloadAll = async () => {
+    if (!session.current!.currentGrant && manifest.files.some((f) => isUnsupported(f))) return;
     setStarted(true);
     setRunning(true);
     setOpenError(null);
@@ -234,6 +245,10 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
   const anyIntegrity = statuses.some((s) => s.status === 'integrity');
   const allVerified = statuses.every((s) => s.status === 'verified');
   const totalBytes = manifest.files.reduce((n, f) => n + f.size, 0);
+  // Nothing was opened yet and a file can't be saved here: keep the download untouched until the user
+  // switches browser. (Review mode and a session that already holds a grant are not blocked.)
+  const blockedUpfront =
+    !review && !session.current?.currentGrant && manifest.files.some((f) => isUnsupported(f));
 
   if (windowExpired) {
     return (
@@ -257,7 +272,12 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
         const ratio = f.size > 0 ? s.written / f.size : 0;
         detail = (
           <div className="space-y-1">
-            <ProgressBar label={`Decrypting ${f.name}`} hideLabel value={ratio * 100} size="sm" />
+            <ProgressBar
+              label={`Decrypting ${nameOf(f)}`}
+              hideLabel
+              value={ratio * 100}
+              size="sm"
+            />
             <p className="text-xs text-muted tabular-nums">
               Downloading and decrypting {formatPercent(ratio)}
             </p>
@@ -276,13 +296,13 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
                 variant="ghost"
                 size="icon-sm"
                 icon={Download}
-                aria-label={`Save ${f.name} again`}
+                aria-label={`Save ${nameOf(f)} again`}
                 onClick={() => saveBlob(s.blob!, nameOf(f))}
               />
             ) : null}
           </>
         );
-        detail = s.blob ? <FilePreview blob={s.blob} type={f.type} name={f.name} /> : null;
+        detail = s.blob ? <FilePreview blob={s.blob} type={f.type} name={nameOf(f)} /> : null;
         break;
       case 'integrity':
         trailing = (
@@ -326,7 +346,7 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
       case 'idle':
         break;
     }
-    return { key: f.id, name: f.name, size: f.size, type: f.type, detail, trailing };
+    return { key: f.id, name: nameOf(f), size: f.size, type: f.type, detail, trailing };
   });
 
   return (
@@ -384,6 +404,13 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
         />
         <CardContent className="space-y-4 pt-0">
           <FileList items={fileItems} label="Files in this drop" />
+          {blockedUpfront ? (
+            <Alert tone="warning" title="This browser can't save every file in this drop">
+              A file here is larger than 256 MB and this browser can't stream it straight to disk.
+              Nothing was downloaded and the link still has all its downloads. Open the link in
+              Chrome or Edge on a computer.
+            </Alert>
+          ) : null}
           {openError ? (
             <Alert tone="danger" live="assertive" title="The download could not start">
               {isApiError(openError) && openError.code === 'GONE'
@@ -398,7 +425,7 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
               icon={Eye}
               onClick={onDownloadClick}
               loading={running}
-              disabled={isApiError(openError) && openError.code === 'GONE'}
+              disabled={blockedUpfront || (isApiError(openError) && openError.code === 'GONE')}
             >
               Decrypt & download
             </Button>

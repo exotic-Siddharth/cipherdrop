@@ -32,13 +32,14 @@ import {
 } from '@cipherdrop/shared';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import type { AppContext } from '../../context';
-import { conflict, notFound, payloadTooLarge, validationError } from '../../lib/errors';
+import { notFound, payloadTooLarge, rateLimited, validationError } from '../../lib/errors';
 import { sha256B64url, sha256Hex, timingSafeEqualStr } from '../../lib/hash';
 import { ipKey } from '../../lib/ip';
 import { metrics } from '../../lib/metrics';
 import { createRouter, type AppRouter } from '../../lib/router';
 import { bearerToken } from '../../lib/tokens';
 import {
+  assertUploadable,
   availableDrop,
   completeDrop,
   createDrop,
@@ -49,6 +50,7 @@ import {
   grantForDownload,
   openDrop,
   reportDrop,
+  storeChunk,
   toDropMeta,
   unlockDrop,
   uploadStatus,
@@ -98,19 +100,62 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
   });
   const createLimiter: RequestHandler = (req, res, next) =>
     (req.user ? createUserLimiter : createAnonLimiter)(req, res, next);
+  const chunkIpLimiter = ctx.rateLimit({ name: 'chunkIp', key: (req) => ipKey(req.ip) });
   const chunkPutLimiter = ctx.rateLimit({ name: 'chunkPut', key: tokenKey });
   const chunkGetLimiter = ctx.rateLimit({ name: 'chunkGet', key: tokenKey });
   const openLimiter = ctx.rateLimit({ name: 'open', key: (req) => ipKey(req.ip) });
-  const unlockIpLimiter = ctx.rateLimit({
-    name: 'unlockDropIp',
-    key: (req) => `${paramId(req)}|${ipKey(req.ip)}`,
+  // Password guesses: /unlock and /open (password drops only) count their FAILURES in the same per-drop+IP
+  // and per-drop buckets. Both routes build limiters with the same names, so they share the Redis keys.
+  // Trade-off: an attacker who spends the per-drop budget also locks recipients out until the window ends.
+  const guessLimiters = (skip?: (req: Request) => Promise<boolean>): RequestHandler[] => [
+    ctx.rateLimit({
+      name: 'unlockDropIp',
+      key: (req) => `${paramId(req)}|${ipKey(req.ip)}`,
+      skip,
+      skipSuccessfulRequests: true,
+    }),
+    ctx.rateLimit({ name: 'unlockDrop', key: paramId, skip, skipSuccessfulRequests: true }),
+  ];
+  const unlockGuessLimiters = guessLimiters();
+  const openGuessLimiters = guessLimiters(async (req) => {
+    // Validation has already run, so the id is well formed. Only password drops have guesses to count.
+    const drop = await ctx.prisma.drop.findUnique({
+      where: { id: paramId(req) },
+      select: { passwordProtected: true },
+    });
+    return !drop?.passwordProtected;
   });
-  const unlockDropLimiter = ctx.rateLimit({ name: 'unlockDrop', key: paramId });
   const reportLimiter = ctx.rateLimit({ name: 'report', key: (req) => ipKey(req.ip) });
   const rawChunk = express.raw({
     type: 'application/octet-stream',
     limit: LIMITS.MAX_CHUNK_BYTES,
   });
+  // Chunk PUTs in flight in this process. A slot is taken after the cheap checks (only a verified uploader
+  // holds one), released when the response closes or the client aborts, and a body that stops arriving for
+  // CHUNK_UPLOAD_IDLE_TIMEOUT_SEC is hung up so a slow-drip client cannot pin its buffer.
+  let chunkUploadsInFlight = 0;
+  const chunkSlot: RequestHandler = (req, res, next) => {
+    if (chunkUploadsInFlight >= ctx.env.MAX_CONCURRENT_CHUNK_UPLOADS) {
+      res.setHeader('Connection', 'close'); // the unread body is not worth draining under load
+      throw rateLimited(1);
+    }
+    chunkUploadsInFlight += 1;
+    let timer: NodeJS.Timeout | undefined;
+    const stopTimer = () => clearTimeout(timer);
+    const hangUp = () => req.socket.destroy();
+    const arm = () => {
+      stopTimer();
+      timer = setTimeout(hangUp, ctx.env.CHUNK_UPLOAD_IDLE_TIMEOUT_SEC * 1000);
+    };
+    arm();
+    req.on('data', arm);
+    req.once('end', stopTimer);
+    res.once('close', () => {
+      stopTimer();
+      chunkUploadsInFlight -= 1;
+    });
+    next();
+  };
   const gone = { description: 'Expired, exhausted, deleted or disabled (GONE, details.reason)' };
 
   r.route(
@@ -154,9 +199,12 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       responses: {
         204: { description: 'Stored' },
         409: { description: 'The drop is no longer accepting uploads (CONFLICT)' },
+        410: { description: 'The drop expired before the upload finished (GONE, EXPIRED)' },
         413: { description: 'Chunk larger than CHUNK_SIZE+16 (PAYLOAD_TOO_LARGE)' },
+        429: { description: 'Too many chunk uploads in flight (RATE_LIMITED, Retry-After)' },
       },
     },
+    chunkIpLimiter,
     chunkPutLimiter,
     // 1. Everything that does not need the body, before reading it.
     async (req, res, next) => {
@@ -165,7 +213,7 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
         const { id, fileId, index } = req.validatedParams;
         const drop = await dropForUploadToken(ctx, id, bearerToken(req));
         authenticated = true;
-        if (drop.status !== 'UPLOADING') throw conflict('This drop is no longer accepting uploads');
+        assertUploadable(ctx, drop);
         const file = await ctx.prisma.dropFile.findUnique({
           where: { dropId_id: { dropId: id, id: fileId } },
         });
@@ -196,7 +244,8 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       }
       next();
     },
-    // 2. Buffer the body (at most CHUNK_SIZE + 16 bytes).
+    // 2. Take an in-flight slot (each buffers up to CHUNK_SIZE + 16 bytes), then buffer the body.
+    chunkSlot,
     rawChunk,
     // 3. Verify it, then write it atomically and record it.
     async (req, res) => {
@@ -210,12 +259,7 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       if (!timingSafeEqualStr(sha256Hex(body), sha)) {
         throw validationError('X-Chunk-SHA256 does not match the body');
       }
-      await ctx.storage.putChunk(id, fileId, index, body);
-      await ctx.prisma.dropChunk.upsert({
-        where: { dropId_fileId_index: { dropId: id, fileId, index } },
-        create: { dropId: id, fileId, index, size: body.length, sha256: sha },
-        update: { size: body.length, sha256: sha },
-      });
+      await storeChunk(ctx, { dropId: id, fileId, index, sha256: sha, body });
       metrics.chunkBytesUploaded.inc(body.length);
       res.status(204).end();
     },
@@ -288,8 +332,7 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
         410: gone,
       },
     },
-    unlockIpLimiter,
-    unlockDropLimiter,
+    ...unlockGuessLimiters,
     async (req, res) => {
       res.json(await unlockDrop(ctx, req.validatedParams.id, req.body.authKey, req));
     },
@@ -309,6 +352,7 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       },
     },
     openLimiter,
+    ...openGuessLimiters,
     async (req, res) => {
       res.json(await openDrop(ctx, req.validatedParams.id, req.body.authKey, req));
     },
@@ -326,6 +370,7 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
         404: { description: 'Unknown chunk' },
       },
     },
+    chunkIpLimiter,
     chunkGetLimiter,
     async (req, res) => {
       const { id, fileId, index } = req.validatedParams;
@@ -344,6 +389,13 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       res.status(200);
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Length', String(chunk.size));
+      // A client that stops reading must not hold the storage stream (an S3 socket) for ever: after
+      // CHUNK_IDLE_TIMEOUT_SEC without socket activity the stream is destroyed and the response dropped.
+      const onIdle = () => {
+        stream.destroy();
+        res.destroy();
+      };
+      res.setTimeout(ctx.env.CHUNK_IDLE_TIMEOUT_SEC * 1000, onIdle);
       try {
         await pipeline(stream, res);
         metrics.chunkBytesDownloaded.inc(chunk.size);
@@ -353,6 +405,9 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
         // Mid-stream failure or client abort: the length no longer matches, so drop the connection.
         res.destroy();
         ctx.logger.warn({ err: { code: (err as { code?: string }).code } }, 'chunk stream aborted');
+      } finally {
+        res.off('timeout', onIdle);
+        req.socket?.setTimeout(0); // the connection may be reused (keep-alive) for other routes
       }
     },
   );

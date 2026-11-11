@@ -32,6 +32,7 @@ import { decodeB64url, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
 import { ipPrefix } from '../../lib/ip';
 import { metrics } from '../../lib/metrics';
 import { randomToken } from '../../lib/tokens';
+import { recordAfterCommit } from '../audit/service';
 import type { AuthUser } from '../../types/express';
 import { downloadsRemaining, goneReason, purgeDropBlobs } from './lifecycle';
 
@@ -106,23 +107,18 @@ export async function createDrop(
     throw payloadTooLarge('The drop is larger than allowed', { maxBytes });
   }
 
-  if (user) {
-    const owner = await ctx.prisma.user.findUnique({
-      where: { id: user.id },
-      select: { storageQuotaBytes: true, storageUsedBytes: true },
-    });
-    if (!owner) throw unauthorized();
-    // Pending uploads count too, so parallel uploads cannot overshoot the quota.
-    const pending = await ctx.prisma.drop.aggregate({
+  if (anon && ctx.env.ANON_TOTAL_PENDING_BYTES > 0) {
+    const held = await ctx.prisma.drop.aggregate({
       _sum: { totalCiphertextBytes: true },
-      where: { ownerId: user.id, status: 'UPLOADING' },
+      where: { ownerId: null, status: { in: ['UPLOADING', 'READY'] }, blobsDeletedAt: null },
     });
-    const committed = owner.storageUsedBytes + (pending._sum.totalCiphertextBytes ?? 0n);
-    if (committed + BigInt(totalBytes) > owner.storageQuotaBytes) {
-      throw quotaExceeded('Storage quota exceeded', {
-        quotaBytes: Number(owner.storageQuotaBytes),
-        usedBytes: Number(committed),
-      });
+    if (
+      (held._sum.totalCiphertextBytes ?? 0n) + BigInt(totalBytes) >
+      ctx.env.ANON_TOTAL_PENDING_BYTES
+    ) {
+      throw quotaExceeded(
+        'Anonymous uploads are at capacity right now, try again later or sign in',
+      );
     }
   }
 
@@ -133,45 +129,116 @@ export async function createDrop(
   const expiresAt = new Date(now.getTime() + body.expiresInHours * HOUR_MS);
   const pw = body.password;
 
-  await ctx.prisma.drop.create({
-    data: {
-      id,
-      ownerId: user?.id ?? null,
-      ownerTokenHash: sha256B64url(ownerToken),
-      uploadTokenHash: sha256B64url(uploadToken),
-      encryptedManifest: body.encryptedManifest,
-      ownerWrappedKey: body.ownerWrappedKey ?? null,
-      passwordProtected: Boolean(pw),
-      pwKdfSalt: pw?.kdf.salt ?? null,
-      pwKdfMemoryKiB: pw?.kdf.memoryKiB ?? null,
-      pwKdfIterations: pw?.kdf.iterations ?? null,
-      pwKdfParallelism: pw?.kdf.parallelism ?? null,
-      wrappedDropKey: pw?.wrappedDropKey ?? null,
-      authKeyHash: pw?.authKeyHash ?? null,
-      totalCiphertextBytes: BigInt(totalBytes),
-      fileCount: body.files.length,
-      maxDownloads: body.maxDownloads,
-      expiresAt,
-      createdAt: now,
-      files: {
-        create: body.files.map((f) => ({
-          id: f.id,
-          ciphertextBytes: BigInt(f.ciphertextBytes),
-          chunkCount: f.chunkCount,
-        })),
+  const insert = (db: Pick<Prisma.TransactionClient, 'drop'>) =>
+    db.drop.create({
+      data: {
+        id,
+        ownerId: user?.id ?? null,
+        ownerTokenHash: sha256B64url(ownerToken),
+        uploadTokenHash: sha256B64url(uploadToken),
+        encryptedManifest: body.encryptedManifest,
+        ownerWrappedKey: body.ownerWrappedKey ?? null,
+        passwordProtected: Boolean(pw),
+        pwKdfSalt: pw?.kdf.salt ?? null,
+        pwKdfMemoryKiB: pw?.kdf.memoryKiB ?? null,
+        pwKdfIterations: pw?.kdf.iterations ?? null,
+        pwKdfParallelism: pw?.kdf.parallelism ?? null,
+        wrappedDropKey: pw?.wrappedDropKey ?? null,
+        authKeyHash: pw?.authKeyHash ?? null,
+        totalCiphertextBytes: BigInt(totalBytes),
+        fileCount: body.files.length,
+        maxDownloads: body.maxDownloads,
+        expiresAt,
+        createdAt: now,
+        files: {
+          create: body.files.map((f) => ({
+            id: f.id,
+            ciphertextBytes: BigInt(f.ciphertextBytes),
+            chunkCount: f.chunkCount,
+          })),
+        },
       },
-    },
-  });
+    });
+
+  if (user) {
+    // The quota check and the insert run under a per-user row lock: parallel creates queue on it, so each
+    // one sees the pending bytes of the creates before it (READ COMMITTED re-reads after the lock is won).
+    // complete() and purgeDropBlobs() update the same user row, so they serialise with it too.
+    await ctx.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+      if (locked.length === 0) throw unauthorized();
+      const owner = await tx.user.findUniqueOrThrow({
+        where: { id: user.id },
+        select: { storageQuotaBytes: true, storageUsedBytes: true },
+      });
+      // Pending uploads count too, so parallel uploads cannot overshoot the quota.
+      const pending = await tx.drop.aggregate({
+        _sum: { totalCiphertextBytes: true },
+        where: { ownerId: user.id, status: 'UPLOADING' },
+      });
+      const committed = owner.storageUsedBytes + (pending._sum.totalCiphertextBytes ?? 0n);
+      if (committed + BigInt(totalBytes) > owner.storageQuotaBytes) {
+        throw quotaExceeded('Storage quota exceeded', {
+          quotaBytes: Number(owner.storageQuotaBytes),
+          usedBytes: Number(committed),
+        });
+      }
+      await insert(tx);
+    });
+  } else {
+    await insert(ctx.prisma);
+  }
 
   metrics.dropsCreated.inc({ anon: anon ? 'true' : 'false' });
-  if (user) await ctx.audit.record({ userId: user.id, dropId: id, action: 'DROP_CREATED', req });
+  if (user)
+    await recordAfterCommit(ctx, { userId: user.id, dropId: id, action: 'DROP_CREATED', req });
   return { dropId: id, ownerToken, uploadToken, expiresAt: expiresAt.toISOString() };
 }
 
 /* ---------------------------------------------------------------- upload */
 
-export async function uploadStatus(ctx: AppContext, drop: Drop): Promise<UploadStatus> {
+/** An upload may not outlive the drop's expiry: 410 EXPIRED (the recipient could never open it anyway). */
+export function assertUploadable(ctx: Pick<AppContext, 'now'>, drop: Drop): void {
   if (drop.status !== 'UPLOADING') throw conflict('This drop is no longer accepting uploads');
+  if (drop.expiresAt.getTime() <= ctx.now().getTime()) throw gone('EXPIRED');
+}
+
+/**
+ * Write one verified chunk and record it, only while the drop is still UPLOADING and unexpired. The drop row
+ * is read FOR SHARE and kept locked until the blob and its row are written: delete, disable, complete and
+ * account deletion all update (or cascade-delete) that row, so they wait for an in-flight chunk and their
+ * blob purge then also removes it, and a chunk arriving after them sees the new status and is refused. Several
+ * chunks of one drop still run in parallel (share locks do not conflict).
+ */
+export async function storeChunk(
+  ctx: AppContext,
+  chunk: { dropId: string; fileId: string; index: number; sha256: string; body: Buffer },
+): Promise<void> {
+  const { dropId, fileId, index, sha256, body } = chunk;
+  const now = ctx.now();
+  await ctx.prisma.$transaction(
+    async (tx) => {
+      const rows = await tx.$queryRaw<{ status: string; expired: boolean }[]>`
+        SELECT "status"::text AS "status", ("expiresAt" <= ${utc(now)}) AS "expired"
+        FROM "Drop" WHERE "id" = ${dropId} FOR SHARE`;
+      const row = rows[0];
+      if (!row) throw notFound('Unknown drop');
+      if (row.status !== 'UPLOADING') throw conflict('This drop is no longer accepting uploads');
+      if (row.expired) throw gone('EXPIRED');
+      await ctx.storage.putChunk(dropId, fileId, index, body);
+      await tx.dropChunk.upsert({
+        where: { dropId_fileId_index: { dropId, fileId, index } },
+        create: { dropId, fileId, index, size: body.length, sha256 },
+        update: { size: body.length, sha256 },
+      });
+    },
+    { timeout: 60_000, maxWait: 10_000 },
+  );
+}
+
+export async function uploadStatus(ctx: AppContext, drop: Drop): Promise<UploadStatus> {
+  assertUploadable(ctx, drop);
   const [files, chunks] = await Promise.all([
     ctx.prisma.dropFile.findMany({ where: { dropId: drop.id }, orderBy: { id: 'asc' } }),
     ctx.prisma.dropChunk.findMany({
@@ -197,7 +264,7 @@ export async function completeDrop(
   req: Req,
 ): Promise<{ status: 'READY' }> {
   if (drop.status === 'READY') return { status: 'READY' };
-  if (drop.status !== 'UPLOADING') throw conflict('This drop is no longer accepting uploads');
+  assertUploadable(ctx, drop);
 
   const [files, chunks] = await Promise.all([
     ctx.prisma.dropFile.findMany({ where: { dropId: drop.id } }),
@@ -236,7 +303,7 @@ export async function completeDrop(
   const now = ctx.now();
   const completed = await ctx.prisma.$transaction(async (tx) => {
     const { count } = await tx.drop.updateMany({
-      where: { id: drop.id, status: 'UPLOADING' },
+      where: { id: drop.id, status: 'UPLOADING', expiresAt: { gt: now } },
       data: { status: 'READY', readyAt: now },
     });
     if (count !== 1) return false;
@@ -254,10 +321,11 @@ export async function completeDrop(
       select: { status: true },
     });
     if (current?.status === 'READY') return { status: 'READY' };
+    if (current?.status === 'UPLOADING') throw gone('EXPIRED'); // expired between the check and the update
     throw conflict('This drop is no longer accepting uploads');
   }
   metrics.storageBytes.inc(Number(drop.totalCiphertextBytes));
-  await ctx.audit.record({
+  await recordAfterCommit(ctx, {
     userId: drop.ownerId,
     dropId: drop.id,
     action: 'DROP_COMPLETED',
@@ -412,7 +480,7 @@ export async function openDrop(
   }
 
   metrics.dropOpens.inc();
-  await ctx.audit.record({ userId: drop.ownerId, dropId, action: 'DROP_OPENED', req });
+  await recordAfterCommit(ctx, { userId: drop.ownerId, dropId, action: 'DROP_OPENED', req });
   return {
     downloadToken,
     expiresAt: expiresAt.toISOString(),
@@ -422,7 +490,7 @@ export async function openDrop(
 
 /**
  * Resolve a download token for chunk GETs: the grant must exist, belong to this drop and be unexpired (401
- * otherwise); the drop must still have its blobs and be READY or EXHAUSTED (410 otherwise).
+ * otherwise); the drop must still have its blobs and be READY, EXHAUSTED or EXPIRED (410 otherwise).
  */
 export async function grantForDownload(
   ctx: AppContext,
@@ -441,8 +509,9 @@ export async function grantForDownload(
     throw unauthorized('The download window has expired or the token is invalid');
   }
   const { status, blobsDeletedAt } = grant.drop;
-  if (status === 'DELETED' || status === 'DISABLED' || status === 'EXPIRED') throw gone(status);
-  if (blobsDeletedAt || (status !== 'READY' && status !== 'EXHAUSTED')) {
+  if (status === 'DELETED' || status === 'DISABLED') throw gone(status);
+  // R12: EXPIRED and EXHAUSTED drops keep serving chunks to a live grant until cleanup deletes the blobs.
+  if (blobsDeletedAt || (status !== 'READY' && status !== 'EXHAUSTED' && status !== 'EXPIRED')) {
     throw gone(status === 'EXHAUSTED' ? 'EXHAUSTED' : 'EXPIRED');
   }
   return { grantId: grant.id, createdAt: grant.createdAt };
@@ -470,11 +539,14 @@ export async function deleteDrop(
 
   const now = ctx.now();
   if (drop.status !== 'DELETED') {
-    await ctx.prisma.drop.updateMany({
+    const { count } = await ctx.prisma.drop.updateMany({
       where: { id: dropId, status: { not: 'DELETED' } },
       data: { status: 'DELETED', deletedAt: now },
     });
-    await ctx.audit.record({ userId: drop.ownerId, dropId, action: 'DROP_DELETED', req });
+    // Only the request that made the change records it (concurrent deletes write one event).
+    if (count === 1) {
+      await recordAfterCommit(ctx, { userId: drop.ownerId, dropId, action: 'DROP_DELETED', req });
+    }
   }
   await purgeDropBlobs(ctx, dropId, now);
 }
@@ -487,9 +559,11 @@ export async function reportDrop(
 ): Promise<{ id: string }> {
   const drop = await ctx.prisma.drop.findUnique({
     where: { id: dropId },
-    select: { id: true, status: true, ownerId: true },
+    select: { id: true, status: true, ownerId: true, expiresAt: true },
   });
   if (!drop || drop.status === 'UPLOADING') throw notFound('Unknown drop');
+  const reason = goneReason(drop, ctx.now());
+  if (reason) throw gone(reason);
   const report = await ctx.prisma.report.create({
     data: {
       dropId,
@@ -503,7 +577,7 @@ export async function reportDrop(
   });
   if (drop.ownerId) {
     // No `req`: the owner must not learn the reporter's IP prefix.
-    await ctx.audit.record({ userId: drop.ownerId, dropId, action: 'DROP_REPORTED' });
+    await recordAfterCommit(ctx, { userId: drop.ownerId, dropId, action: 'DROP_REPORTED' });
   }
   return { id: report.id };
 }

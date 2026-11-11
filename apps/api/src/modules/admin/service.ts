@@ -23,6 +23,7 @@ import { ipPrefix } from '../../lib/ip';
 import { paginate, toPage } from '../../lib/pagination';
 import { randomToken } from '../../lib/tokens';
 import type { AuthUser } from '../../types/express';
+import { recordAfterCommit } from '../audit/service';
 import { goneReason, purgeDropBlobs } from '../drops/lifecycle';
 import { grantExpiry } from '../drops/service';
 
@@ -111,8 +112,9 @@ export async function listReports(
     details: r.details,
     status: r.status,
     createdAt: r.createdAt.toISOString(),
-    hasKey: r.providedKey !== null,
-    decryptionKey: r.providedKey,
+    // The key is only for reviewing an OPEN report; closed reports never serve one.
+    hasKey: r.status === 'OPEN' && r.providedKey !== null,
+    decryptionKey: r.status === 'OPEN' ? r.providedKey : null,
     drop: {
       id: r.drop.id,
       status: r.drop.status,
@@ -142,7 +144,7 @@ export async function resolveReport(
   if (action === 'DISMISS') {
     const { count } = await ctx.prisma.report.updateMany({
       where: { id: reportId, status: 'OPEN' },
-      data: { status: 'DISMISSED', resolvedAt: now, resolvedById: admin.id },
+      data: { status: 'DISMISSED', resolvedAt: now, resolvedById: admin.id, providedKey: null },
     });
     if (count !== 1) throw conflict('This report is already closed');
     return;
@@ -160,10 +162,14 @@ export async function resolveReport(
   });
   await ctx.prisma.report.updateMany({
     where: { dropId: drop.id, status: 'OPEN' },
-    data: { status: 'RESOLVED', resolvedAt: now, resolvedById: admin.id },
+    data: { status: 'RESOLVED', resolvedAt: now, resolvedById: admin.id, providedKey: null },
   });
   if (count === 1) {
-    await ctx.audit.record({ userId: drop.ownerId, dropId: drop.id, action: 'DROP_DISABLED' });
+    await recordAfterCommit(ctx, {
+      userId: drop.ownerId,
+      dropId: drop.id,
+      action: 'DROP_DISABLED',
+    });
   }
   await purgeDropBlobs(ctx, drop.id, now);
 }

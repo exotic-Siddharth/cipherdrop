@@ -1,6 +1,6 @@
-import { b64urlEncode, generateFileId, randomBytes } from '@cipherdrop/crypto';
+import { b64urlEncode, generateFileId, importAesKey, randomBytes } from '@cipherdrop/crypto';
 import type { Me } from '@cipherdrop/shared';
-import { configure, render, screen, waitFor } from '@testing-library/react';
+import { act, configure, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -75,6 +75,19 @@ function mockApi(extra?: (path: string, method: string) => Response | undefined)
 function renderSend() {
   const router = createMemoryRouter(routes, { initialEntries: ['/'] });
   render(<RouterProvider router={router} />);
+  return router;
+}
+
+/** An upload that never finishes until it is aborted. */
+function hangingUpload() {
+  vi.mocked(runUploadInWorker).mockImplementationOnce(
+    (_job, _onEvent, signal) =>
+      new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () =>
+          reject(new DOMException('The operation was aborted.', 'AbortError')),
+        );
+      }),
+  );
 }
 
 async function addFile(file: File) {
@@ -156,6 +169,26 @@ describe('SendPage', () => {
     expect(screen.getByLabelText('Expires after')).toHaveTextContent('30 days');
   });
 
+  it('Try again after the vault auto-locked asks to unlock instead of re-sending without an owner wrap (C-38)', async () => {
+    let creates = 0;
+    const { calls } = mockApi((path, method) => {
+      if (method === 'POST' && path === '/api/drops' && ++creates === 1) {
+        return json({ error: { code: 'INTERNAL', message: 'boom' } }, 500);
+      }
+      return undefined;
+    });
+    useAuth.setState({ status: 'authenticated', user, accessToken: 'access' });
+    useVault.getState().setAccountKey(await importAesKey(randomBytes(32)));
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    expect(await screen.findByText('The upload did not finish')).toBeVisible();
+    act(() => useVault.getState().lock('idle'));
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Your vault is locked')).toBeVisible();
+    expect(calls.filter((c) => c.method === 'POST' && c.path === '/api/drops')).toHaveLength(1);
+  });
+
   it('a password without text blocks the upload', async () => {
     mockApi();
     renderSend();
@@ -163,6 +196,72 @@ describe('SendPage', () => {
     await userEvent.click(screen.getByRole('switch', { name: /Protect with a password/ }));
     expect(screen.getByRole('button', { name: 'Encrypt & upload' })).toBeDisabled();
     expect(screen.getByText(/Enter a password/)).toBeVisible();
+  });
+
+  it('a weak or short drop password blocks the upload (C-20)', async () => {
+    mockApi();
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    await userEvent.click(screen.getByRole('switch', { name: /Protect with a password/ }));
+    await userEvent.type(screen.getByLabelText('Password'), '1');
+    expect(screen.getByRole('button', { name: 'Encrypt & upload' })).toBeDisabled();
+    expect(screen.getByText(/Use at least 10 characters/)).toBeVisible();
+    await userEvent.clear(screen.getByLabelText('Password'));
+    await userEvent.type(screen.getByLabelText('Password'), 'password123');
+    expect(await screen.findByText(/too easy to guess/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Encrypt & upload' })).toBeDisabled();
+    await userEvent.clear(screen.getByLabelText('Password'));
+    await userEvent.type(screen.getByLabelText('Password'), 'correct horse battery staple');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Encrypt & upload' })).toBeEnabled(),
+    );
+  });
+
+  it('leaving the page mid-upload asks first and keeps the upload running on Stay (C-17)', async () => {
+    mockApi();
+    hangingUpload();
+    const router = renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    expect(await screen.findByText('Encrypting and uploading')).toBeVisible();
+
+    await userEvent.click(screen.getAllByRole('link', { name: 'How it works' })[0]!);
+    const dialog = await screen.findByRole('dialog', { name: /Leave and cancel the upload/ });
+    expect(router.state.location.pathname).toBe('/');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Keep uploading' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(router.state.location.pathname).toBe('/');
+    expect(screen.getByText('Encrypting and uploading')).toBeVisible();
+
+    await userEvent.click(screen.getAllByRole('link', { name: 'How it works' })[0]!);
+    const again = await screen.findByRole('dialog', { name: /Leave and cancel the upload/ });
+    await userEvent.click(within(again).getByRole('button', { name: 'Leave' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/how-it-works'));
+  });
+
+  it('moves focus to the result and keeps one live region across view changes (C-23)', async () => {
+    mockApi();
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    const region = screen.getByTestId('send-status');
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    const heading = await screen.findByRole('heading', { name: 'Your encrypted link is ready' });
+    expect(heading).toHaveFocus();
+    expect(screen.getByTestId('send-status')).toBe(region);
+    expect(region).toHaveTextContent('Upload finished');
+    expect(region).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('moves focus to the error notice when the upload fails (C-23)', async () => {
+    mockApi();
+    vi.mocked(runUploadInWorker).mockRejectedValueOnce(
+      Object.assign(new Error('x'), { code: 'NETWORK_ERROR' }),
+    );
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    const title = await screen.findByText('The upload did not finish');
+    await waitFor(() => expect(title.closest('[tabindex="-1"]')).toHaveFocus());
   });
 
   it('resume after reload: matching files resume the same drop (R11)', async () => {
@@ -202,13 +301,14 @@ describe('SendPage', () => {
 
   it('resume mismatch (drop no longer uploading) abandons it and starts a fresh drop', async () => {
     const oldDrop = generateFileId();
+    const ownerToken = token();
     const file = new File(['resume me'], 'r.txt', { lastModified: 99 });
     writeResumeRecord({
       dropId: oldDrop,
       uploadToken: token(),
       dk: b64urlEncode(randomBytes(32)),
       files: [{ id: generateFileId(), size: file.size, lastModified: 99, chunkCount: 1 }],
-      ownerToken: token(),
+      ownerToken,
       expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
       createdAt: new Date().toISOString(),
       maxDownloads: 1,
@@ -230,6 +330,56 @@ describe('SendPage', () => {
       expect(calls.some((c) => c.method === 'POST' && c.path === '/api/drops')).toBe(true),
     );
     expect(vi.mocked(runUploadInWorker).mock.calls.at(-1)![0].dropId).toBe(dropId);
+    // C-35: the abandoned UPLOADING drop is deleted best-effort with its owner token.
+    const del = calls.find((c) => c.method === 'DELETE' && c.path === `/api/drops/${oldDrop}`);
+    expect(del).toBeDefined();
+    expect(del!.headers.get('x-owner-token')).toBe(ownerToken);
+  });
+
+  it('a new drop over an unmatched resume record deletes the old drop (C-35)', async () => {
+    const oldDrop = generateFileId();
+    const ownerToken = token();
+    writeResumeRecord({
+      dropId: oldDrop,
+      uploadToken: token(),
+      dk: b64urlEncode(randomBytes(32)),
+      files: [{ id: generateFileId(), size: 9, lastModified: 99, chunkCount: 1 }],
+      ownerToken,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      maxDownloads: 1,
+      passwordProtected: false,
+      anonymous: true,
+    });
+    const { calls } = mockApi();
+    renderSend();
+    await addFile(new File(['something else entirely'], 'other.txt', { lastModified: 5 }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Encrypt & upload' }));
+    expect(
+      await screen.findByRole('heading', { name: 'Your encrypted link is ready' }),
+    ).toBeVisible();
+    const del = calls.find((c) => c.method === 'DELETE' && c.path === `/api/drops/${oldDrop}`);
+    expect(del).toBeDefined();
+    expect(del!.headers.get('x-owner-token')).toBe(ownerToken);
+  });
+
+  it('Try again with changed files deletes the earlier drop before a new one (C-35)', async () => {
+    const { calls, dropId } = mockApi();
+    vi.mocked(runUploadInWorker).mockRejectedValueOnce(
+      Object.assign(new Error('x'), { code: 'NETWORK_ERROR' }),
+    );
+    renderSend();
+    await addFile(new File(['x'], 'a.txt', { lastModified: 1 }));
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    expect(await screen.findByText('The upload did not finish')).toBeVisible();
+    await addFile(new File(['y'], 'b.txt', { lastModified: 2 }));
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(
+      await screen.findByRole('heading', { name: 'Your encrypted link is ready' }),
+    ).toBeVisible();
+    expect(calls.some((c) => c.method === 'DELETE' && c.path === `/api/drops/${dropId}`)).toBe(
+      true,
+    );
   });
 
   it('a failed upload shows a retryable error state', async () => {

@@ -34,8 +34,16 @@ export const RATE_LIMIT_RULES = {
   /** Per upload token / download token (exempt from the global limiter). Key on sha256B64url(token). */
   chunkPut: { windowMs: MIN, limit: 1200 },
   chunkGet: { windowMs: MIN, limit: 1200 },
+  /**
+   * Per IP on chunk PUT/GET, in front of the per-token limiters (a random token gets a fresh bucket there).
+   * Generous on purpose: ~180 chunks/min is one fast upload, and NAT'd users share an IP.
+   */
+  chunkIp: { windowMs: MIN, limit: 6000 },
   open: { windowMs: HOUR, limit: 30 },
-  /** unlock: 5 per 15 min per drop+IP, and 20 per hour per drop. */
+  /**
+   * Password guesses (wrong authKey) on /unlock and /open, one shared budget: 5 failures per 15 min per
+   * drop+IP, and 20 failures per hour per drop. Correct keys are not counted.
+   */
   unlockDropIp: { windowMs: 15 * MIN, limit: 5 },
   unlockDrop: { windowMs: HOUR, limit: 20 },
   report: { windowMs: HOUR, limit: 5 },
@@ -54,7 +62,12 @@ export interface RateLimitOptions {
   limit?: number;
   /** Bucket key. Never put raw tokens or emails in clear text if avoidable: hash them (sha256B64url). */
   key: (req: Request) => string | Promise<string>;
-  skip?: (req: Request) => boolean;
+  skip?: (req: Request) => boolean | Promise<boolean>;
+  /**
+   * Count only failed requests (status >= 400): a request that finishes below 400 is taken back out of its
+   * bucket. A 429 is itself a failure, so a full bucket stays full.
+   */
+  skipSuccessfulRequests?: boolean;
 }
 
 export type RateLimitFactory = (options: RateLimitOptions) => RequestHandler;
@@ -98,6 +111,7 @@ export function createRateLimitFactory(deps: RateLimitDeps): RateLimitFactory {
       legacyHeaders: false,
       keyGenerator: options.key,
       skip: options.skip,
+      skipSuccessfulRequests: options.skipSuccessfulRequests ?? false,
       store: new RedisStore({
         prefix: `${deps.keyPrefix}:rl:${options.name}:`,
         sendCommand: (command: string, ...args: string[]) =>

@@ -218,29 +218,32 @@ export async function rotateRefresh(
   if (session.revokedAt || session.expiresAt <= now || found.expiresAt <= now) {
     throw unauthorized();
   }
-  // Claim the token atomically: a concurrent second presentation is reuse.
-  const claimed = await ctx.prisma.refreshToken.updateMany({
-    where: { id: found.id, usedAt: null },
-    data: { usedAt: now },
-  });
-  if (claimed.count !== 1) return handleReuse(ctx, session, req);
-
   const refreshToken = randomToken();
   const refreshExpiresAt = refreshExpiry(ctx, now);
-  await ctx.prisma.$transaction([
-    ctx.prisma.refreshToken.create({
+  // Claim the token and issue its successor in ONE transaction: a failure rolls the claim back, so a
+  // retry is not mistaken for reuse. A concurrent second presentation waits for the row lock, then finds
+  // the claim taken (count 0) and is reuse.
+  const claimed = await ctx.prisma.$transaction(async (tx) => {
+    const claim = await tx.refreshToken.updateMany({
+      where: { id: found.id, usedAt: null },
+      data: { usedAt: now },
+    });
+    if (claim.count !== 1) return false;
+    await tx.refreshToken.create({
       data: {
         sessionId: session.id,
         tokenHash: sha256B64url(refreshToken),
         createdAt: now,
         expiresAt: refreshExpiresAt,
       },
-    }),
-    ctx.prisma.session.update({
+    });
+    await tx.session.update({
       where: { id: session.id },
       data: { lastUsedAt: now, expiresAt: refreshExpiresAt },
-    }),
-  ]);
+    });
+    return true;
+  });
+  if (!claimed) return handleReuse(ctx, session, req);
   return {
     user: session.user,
     accessToken: signAccessToken(session.user, session.id),

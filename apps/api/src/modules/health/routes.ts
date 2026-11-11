@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 import type { AppContext } from '../../context';
-import { metricsRegistry } from '../../lib/metrics';
+import { metrics, metricsRegistry } from '../../lib/metrics';
 import { createRouter, type AppRouter } from '../../lib/router';
 
 const HealthSchema = z.object({ ok: z.literal(true) });
@@ -71,6 +71,14 @@ export function healthRoutes(ctx: AppContext): AppRouter {
         check(() => ctx.storage.healthCheck()),
       ]);
       const ok = db === 'ok' && redis === 'ok' && storage === 'ok';
+      // Free space is a metric (alert on it), not a readiness failure: a full disk should not take the
+      // API out of rotation, downloads and deletes still work.
+      if (storage === 'ok' && ctx.storage.freeBytes) {
+        await ctx.storage
+          .freeBytes()
+          .then((n) => metrics.storageFreeBytes.set(n))
+          .catch(() => undefined);
+      }
       res.status(ok ? 200 : 503).json({ ok, checks: { db, redis, storage } });
     },
   );

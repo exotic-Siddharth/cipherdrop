@@ -1,5 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Toaster } from 'sonner';
 import { queryClient } from '../lib/queryClient';
 import { useTheme } from '../stores/theme';
@@ -10,12 +11,16 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       {children}
-      <Toaster
-        theme={theme}
-        position="bottom-right"
-        closeButton
-        toastOptions={{ classNames: { toast: 'font-sans', description: 'text-[13px]' } }}
-      />
+      {/* Outside #root: Dialog makes #root inert while open, and toasts raised then must stay reachable. */}
+      {createPortal(
+        <Toaster
+          theme={theme}
+          position="bottom-right"
+          closeButton
+          toastOptions={{ classNames: { toast: 'font-sans', description: 'text-[13px]' } }}
+        />,
+        document.body,
+      )}
     </QueryClientProvider>
   );
 }

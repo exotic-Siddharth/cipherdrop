@@ -30,7 +30,7 @@ export function AutoLockCard() {
     <Card as="section" aria-labelledby="autolock-title">
       <CardHeader
         title={<span id="autolock-title">Auto-lock</span>}
-        description="When you are idle, your account key is wiped from this tab's memory. You unlock it again with your password."
+        description="When you are idle, your account key is removed from this tab and the vault locks. You unlock it again with your password."
         icon={Timer}
       />
       <CardContent className="pt-5">

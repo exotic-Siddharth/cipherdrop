@@ -257,6 +257,65 @@ describe('admin API', () => {
       expect(again.status).toBe(409);
     });
 
+    describe("reporter's decryption key is kept only while it is needed (C-14)", () => {
+      const keyOf = async (id: string) =>
+        (await t.prisma.report.findUniqueOrThrow({ where: { id } })).providedKey;
+
+      it('DISMISS erases the key', async () => {
+        const admin = await createAdminRecord(t.prisma);
+        const drop = await createReadyDrop(t.app);
+        const id = await report(drop.dropId, { reason: 'OTHER', decryptionKey: token32() });
+        expect(await keyOf(id)).not.toBeNull();
+        await request(t.app)
+          .post(`/api/admin/reports/${id}/resolve`)
+          .set(as(admin))
+          .send({ action: 'DISMISS' })
+          .expect(204);
+        expect(await keyOf(id)).toBeNull();
+        const list = await request(t.app).get('/api/admin/reports').set(as(admin));
+        expect(list.body.items[0]).toMatchObject({ hasKey: false, decryptionKey: null });
+      });
+
+      it('DISABLE_DROP erases the key of every report of the drop', async () => {
+        const admin = await createAdminRecord(t.prisma);
+        const drop = await createReadyDrop(t.app);
+        const r1 = await report(drop.dropId, { reason: 'OTHER', decryptionKey: token32() });
+        const r2 = await report(drop.dropId, { reason: 'MALWARE', decryptionKey: token32() });
+        await request(t.app)
+          .post(`/api/admin/reports/${r1}/resolve`)
+          .set(as(admin))
+          .send({ action: 'DISABLE_DROP' })
+          .expect(204);
+        expect(await keyOf(r1)).toBeNull();
+        expect(await keyOf(r2)).toBeNull();
+      });
+
+      it('an owner delete erases the key of the still OPEN reports', async () => {
+        const admin = await createAdminRecord(t.prisma);
+        const drop = await createReadyDrop(t.app);
+        const id = await report(drop.dropId, { reason: 'OTHER', decryptionKey: token32() });
+        await request(t.app)
+          .delete(`/api/drops/${drop.dropId}`)
+          .set('x-owner-token', drop.ownerToken)
+          .expect(204);
+        expect(await keyOf(id)).toBeNull();
+        const list = await request(t.app).get('/api/admin/reports').set(as(admin));
+        expect(list.body.items[0]).toMatchObject({ status: 'OPEN', hasKey: false });
+      });
+
+      it('never serves a key for a closed report, even a legacy row that still holds one', async () => {
+        const admin = await createAdminRecord(t.prisma);
+        const drop = await createReadyDrop(t.app);
+        const id = await report(drop.dropId, { reason: 'OTHER' });
+        await t.prisma.report.update({
+          where: { id },
+          data: { status: 'DISMISSED', providedKey: token32() },
+        });
+        const list = await request(t.app).get('/api/admin/reports').set(as(admin));
+        expect(list.body.items[0]).toMatchObject({ hasKey: false, decryptionKey: null });
+      });
+    });
+
     it('DISMISS closes the report and leaves the drop alone', async () => {
       const admin = await createAdminRecord(t.prisma);
       const drop = await createReadyDrop(t.app);

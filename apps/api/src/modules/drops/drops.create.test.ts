@@ -278,6 +278,34 @@ describe('POST /api/drops', () => {
       expect(pending.body.error.code).toBe('QUOTA_EXCEEDED');
     });
 
+    it('parallel creates cannot overshoot the quota (check and insert are serialised per user)', async () => {
+      const user = await createUserRecord(t.prisma, { storageQuotaBytes: BigInt(10_000) });
+      const auth = { Authorization: authHeader(user) };
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          postDrop(
+            t.app,
+            createBody([], {
+              files: [fileWithCiphertext(4_000)],
+              ownerWrappedKey: fakeWrappedKey(),
+            }),
+            auth,
+          ),
+        ),
+      );
+      const ok = results.filter((r) => r.status === 201);
+      expect(ok).toHaveLength(2); // floor(10000 / 4000)
+      for (const r of results.filter((x) => x.status !== 201)) {
+        expect(r.status).toBe(413);
+        expect(r.body.error.code).toBe('QUOTA_EXCEEDED');
+      }
+      const pending = await t.prisma.drop.aggregate({
+        _sum: { totalCiphertextBytes: true },
+        where: { ownerId: user.id, status: 'UPLOADING' },
+      });
+      expect(Number(pending._sum.totalCiphertextBytes)).toBeLessThanOrEqual(10_000);
+    });
+
     it('rejects an invalid or revoked access token instead of acting anonymously', async () => {
       const res = await postDrop(t.app, createBody([testFile(5)]), {
         Authorization: 'Bearer nope',

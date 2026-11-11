@@ -3,8 +3,11 @@
  * Adds the jest-dom matchers, unmounts after each test, and fills the few browser APIs jsdom lacks.
  */
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach } from 'vitest';
+
+// Lazy route chunks (crypto, workers) can take over 1 s to import in jsdom on a loaded machine.
+configure({ asyncUtilTimeout: 5000 });
 
 afterEach(() => {
   cleanup();

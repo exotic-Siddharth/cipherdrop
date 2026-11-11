@@ -61,6 +61,7 @@ export const AuditActionSchema = z.enum([
   'DROP_EXHAUSTED',
   'DROP_REPORTED',
   'DROP_DISABLED',
+  'ADMIN_REVIEW_GRANT',
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 

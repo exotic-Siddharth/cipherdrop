@@ -64,6 +64,7 @@ enum AuditAction {
   DROP_EXHAUSTED
   DROP_REPORTED
   DROP_DISABLED
+  ADMIN_REVIEW_GRANT
 }
 
 model User {

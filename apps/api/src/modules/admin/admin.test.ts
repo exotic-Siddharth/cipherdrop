@@ -324,7 +324,7 @@ describe('admin API', () => {
       const ev = await t.prisma.auditEvent.findFirstOrThrow({
         where: { userId: admin.id, dropId: drop.dropId },
       });
-      expect(ev.action).toBe('DROP_OPENED');
+      expect(ev.action).toBe('ADMIN_REVIEW_GRANT');
       expect(ev.metadata).toMatchObject({ adminReview: true });
       expect(ev.ipPrefix).toBe('198.51.100.0/24');
 

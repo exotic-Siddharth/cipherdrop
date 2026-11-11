@@ -3,6 +3,7 @@ import {
   Ban,
   CircleCheck,
   Download,
+  Eye,
   FileLock2,
   Flag,
   Flame,
@@ -56,6 +57,7 @@ export const AUDIT_PRESENTATION: Readonly<Record<AuditAction, AuditPresentation>
   DROP_EXHAUSTED: { icon: Flame, tone: 'neutral' },
   DROP_REPORTED: { icon: Flag, tone: 'warning' },
   DROP_DISABLED: { icon: Ban, tone: 'danger' },
+  ADMIN_REVIEW_GRANT: { icon: Eye, tone: 'neutral' },
 });
 
 export const TONE_CLASSES: Record<AuditPresentation['tone'], string> = {

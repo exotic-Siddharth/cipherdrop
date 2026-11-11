@@ -1,6 +1,6 @@
 /**
  * /api/admin routes (spec section 10 "Admin", R13). Every route is auth 'admin' (requireAuth + requireRole
- * with a DB re-check). S4 STUB: every handler answers 501. B2 owns this file: replace the handlers, keep the defs.
+ * with a DB re-check). Logic lives in service.ts.
  */
 import {
   AdminGrantResponseSchema,
@@ -17,16 +17,14 @@ import {
   UserIdParamsSchema,
 } from '@cipherdrop/shared';
 import type { AppContext } from '../../context';
-import { notImplemented } from '../../lib/errors';
+import { authUser } from '../../middleware/auth';
 import { createRouter, type AppRouter } from '../../lib/router';
+import { getStats, listReports, listUsers, patchUser, resolveReport, reviewGrant } from './service';
 
-export function adminRoutes(_ctx: AppContext): AppRouter {
+export function adminRoutes(ctx: AppContext): AppRouter {
   const r = createRouter('/api/admin');
   const tags = ['admin'];
   const auth = 'admin' as const;
-  const stub = () => {
-    throw notImplemented();
-  };
 
   r.route(
     {
@@ -37,7 +35,9 @@ export function adminRoutes(_ctx: AppContext): AppRouter {
       auth,
       responses: { 200: { description: 'Stats', schema: AdminStatsSchema } },
     },
-    stub,
+    async (_req, res) => {
+      res.json(await getStats(ctx));
+    },
   );
   r.route(
     {
@@ -49,7 +49,9 @@ export function adminRoutes(_ctx: AppContext): AppRouter {
       request: { query: AdminReportsQuerySchema },
       responses: { 200: { description: 'Page of reports', schema: AdminReportPageSchema } },
     },
-    stub,
+    async (req, res) => {
+      res.json(await listReports(ctx, req.validatedQuery));
+    },
   );
   r.route(
     {
@@ -61,7 +63,10 @@ export function adminRoutes(_ctx: AppContext): AppRouter {
       request: { params: ReportIdParamsSchema, body: AdminResolveRequestSchema },
       responses: { 204: { description: 'Resolved' }, 404: { description: 'Unknown report' } },
     },
-    stub,
+    async (req, res) => {
+      await resolveReport(ctx, req.validatedParams.id, req.body.action, authUser(req));
+      res.status(204).end();
+    },
   );
   r.route(
     {
@@ -76,7 +81,9 @@ export function adminRoutes(_ctx: AppContext): AppRouter {
         404: { description: 'Unknown drop' },
       },
     },
-    stub,
+    async (req, res) => {
+      res.json(await reviewGrant(ctx, req.validatedParams.id, authUser(req), req));
+    },
   );
   r.route(
     {
@@ -88,7 +95,9 @@ export function adminRoutes(_ctx: AppContext): AppRouter {
       request: { query: AdminUsersQuerySchema },
       responses: { 200: { description: 'Page of users', schema: AdminUserPageSchema } },
     },
-    stub,
+    async (req, res) => {
+      res.json(await listUsers(ctx, req.validatedQuery));
+    },
   );
   r.route(
     {
@@ -103,7 +112,9 @@ export function adminRoutes(_ctx: AppContext): AppRouter {
         404: { description: 'Unknown user' },
       },
     },
-    stub,
+    async (req, res) => {
+      res.json({ user: await patchUser(ctx, req.validatedParams.id, req.body, authUser(req)) });
+    },
   );
 
   return r;

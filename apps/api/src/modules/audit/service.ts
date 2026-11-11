@@ -1,6 +1,6 @@
 /**
  * Audit service. `record()` is REAL (S4, R4): one Prisma insert with the caller's IP prefix and a UA summary.
- * `list()` is a stub: B1 implements it (GET /me/audit) together with the audit tests.
+ * `list()` (B1) pages a user's events newest first for GET /me/audit.
  *
  * NEVER put plaintext names, notes, keys, tokens or manifests in `metadata`.
  */
@@ -27,7 +27,7 @@ export interface AuditListOptions {
 
 export interface AuditService {
   record(input: AuditRecordInput): Promise<void>;
-  /** Newest first. Implemented by B1. */
+  /** Newest first (createdAt, then id). */
   list(userId: string, options: AuditListOptions): Promise<Page<AuditEvent>>;
 }
 
@@ -47,9 +47,22 @@ export function createAuditService(prisma: PrismaClient): AuditService {
       });
     },
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- S4 stub: B1 implements audit.list
     async list(userId, options) {
-      throw new Error('not implemented: audit.list (B1)');
+      const where: Prisma.AuditEventWhereInput = {
+        userId,
+        ...(options.action ? { action: options.action } : {}),
+      };
+      const skip = (options.page - 1) * options.pageSize;
+      const [total, items] = await prisma.$transaction([
+        prisma.auditEvent.count({ where }),
+        prisma.auditEvent.findMany({
+          where,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip,
+          take: options.pageSize,
+        }),
+      ]);
+      return { items, total, page: options.page, pageSize: options.pageSize };
     },
   };
 }

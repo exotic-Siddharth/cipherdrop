@@ -15,5 +15,7 @@ export default defineConfig({
     unstubGlobals: true,
     unstubEnvs: true,
     css: false,
+    // Router tests import every lazy page cold (zxcvbn dictionaries, crypto); allow for a loaded laptop.
+    testTimeout: 20_000,
   },
 });

@@ -1,13 +1,14 @@
 /**
- * Blob storage interface + factory (S4). The implementations are B2's: storage/local.ts (atomic temp+rename,
- * R21 Windows retries, realpath'd root with a traversal guard) and storage/s3.ts (forcePathStyle,
- * WHEN_REQUIRED checksums, CreateBucket at init, DeleteObjects; R17). Until then createStorage() returns a
- * stub whose operations reject with "not implemented" (init() resolves so the API can boot).
+ * Blob storage interface + factory. Implementations: storage/local.ts (atomic temp+rename, R21 Windows
+ * retries, realpath'd root with a traversal guard) and storage/s3.ts (forcePathStyle, WHEN_REQUIRED
+ * checksums, CreateBucket at init, DeleteObjects; R17).
  *
  * Blobs are ciphertext chunks addressed by (dropId, fileId, index). The driver never sees plaintext.
  */
 import type { Readable } from 'node:stream';
 import { env, type Env } from '../config/env';
+import { createLocalStorage } from './local';
+import { createS3Storage } from './s3';
 
 export interface StorageDriver {
   /** Prepare the backend at startup (local: mkdir the root; s3: create the bucket if missing). */
@@ -34,17 +35,27 @@ export type StorageEnv = Pick<
   | 'S3_FORCE_PATH_STYLE'
 >;
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- S4 stub: B2 implements the factory
+/** Drop and file ids are b64url (22 chars); allow up to 64 base64url characters and nothing else. */
+const BLOB_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_CHUNK_INDEX = 2 ** 32 - 1;
+
+/** Throws unless `id` is a safe blob path segment (no separators, dots or other characters). */
+export function assertDropId(id: string): void {
+  if (typeof id !== 'string' || !BLOB_ID_RE.test(id)) throw new TypeError('invalid blob id');
+}
+
+/** Throws unless (dropId, fileId, index) is a valid blob address. */
+export function assertBlobAddress(dropId: string, fileId: string, index: number): void {
+  assertDropId(dropId);
+  assertDropId(fileId);
+  if (!Number.isInteger(index) || index < 0 || index > MAX_CHUNK_INDEX) {
+    throw new TypeError('invalid chunk index');
+  }
+}
+
 export function createStorage(storageEnv: StorageEnv): StorageDriver {
-  const notImplemented = (op: string) => () =>
-    Promise.reject(new Error(`not implemented: storage.${op} (B2)`));
-  return {
-    init: async () => {},
-    putChunk: notImplemented('putChunk'),
-    getChunkStream: notImplemented('getChunkStream'),
-    deleteDrop: notImplemented('deleteDrop'),
-    healthCheck: notImplemented('healthCheck'),
-  };
+  if (storageEnv.STORAGE_DRIVER === 's3') return createS3Storage(storageEnv);
+  return createLocalStorage(storageEnv.STORAGE_DIR);
 }
 
 let shared: StorageDriver | undefined;

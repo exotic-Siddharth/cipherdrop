@@ -60,7 +60,7 @@ function isFilter(value: string): value is MeDropsStatus {
 function ListSkeleton() {
   return (
     <div role="status" className="divide-y divide-border">
-      <span className="sr-only">Loading your drops…</span>
+      <span className="sr-only">Loading your dropsâ€¦</span>
       {[0, 1, 2].map((i) => (
         <div key={i} aria-hidden="true" className="flex items-center gap-3 p-5">
           <Skeleton className="size-9 rounded-lg" />
@@ -95,6 +95,9 @@ export function Component() {
         query: { status, page, pageSize: PAGE_SIZE },
       }),
     placeholderData: keepPreviousData,
+    // Recipients change a drop's state (downloads used up, expired) behind the owner's back: revalidate when a
+    // filter tab is shown again instead of trusting a list that is up to 30 s old.
+    staleTime: 0,
   });
   const items = drops.data?.items ?? [];
   const nameOf = useOwnerDropNames(items, accountKey);

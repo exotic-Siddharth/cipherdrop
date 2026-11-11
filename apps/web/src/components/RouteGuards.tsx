@@ -17,6 +17,18 @@ function useReturnPath(): string {
   return `${pathname}${search}`;
 }
 
+/**
+ * Where an anonymous visitor on a guarded route goes. A deliberate sign-out or an account deletion lands on
+ * the home page: the guard can still be mounted for one render after `logout()` while the navigation to `/`
+ * commits, and it must not bounce that user to /login?next=<the page they just left>.
+ */
+function anonymousRedirect(
+  reason: ReturnType<typeof useAuth.getState>['logoutReason'],
+  returnPath: string,
+): string {
+  return reason === 'user' || reason === 'account-deleted' ? '/' : loginPath(returnPath);
+}
+
 export interface RequireAuthProps {
   /**
    * The route needs the unlocked vault (the dashboard). R7: only a boot without a key redirects to
@@ -30,11 +42,14 @@ export interface RequireAuthProps {
 /** Signed-in routes: waits for the boot refresh, then sends anonymous visitors to /login?next=. */
 export function RequireAuth({ needsVault = false, children }: RequireAuthProps) {
   const status = useAuth((s) => s.status);
+  const logoutReason = useAuth((s) => s.logoutReason);
   const redirectToUnlock = useVault((s) => shouldRedirectToUnlock(s));
   const returnPath = useReturnPath();
 
   if (status === 'booting') return <PageLoader label="Restoring your session…" />;
-  if (status !== 'authenticated') return <Navigate to={loginPath(returnPath)} replace />;
+  if (status !== 'authenticated') {
+    return <Navigate to={anonymousRedirect(logoutReason, returnPath)} replace />;
+  }
   if (needsVault && redirectToUnlock) return <Navigate to={unlockPath(returnPath)} replace />;
   return children ?? <Outlet />;
 }
@@ -47,10 +62,13 @@ export interface RequireAdminProps {
 export function RequireAdmin({ children }: RequireAdminProps) {
   const status = useAuth((s) => s.status);
   const role = useAuth((s) => s.user?.role);
+  const logoutReason = useAuth((s) => s.logoutReason);
   const returnPath = useReturnPath();
 
   if (status === 'booting') return <PageLoader label="Restoring your session…" />;
-  if (status !== 'authenticated') return <Navigate to={loginPath(returnPath)} replace />;
+  if (status !== 'authenticated') {
+    return <Navigate to={anonymousRedirect(logoutReason, returnPath)} replace />;
+  }
   if (role !== 'ADMIN') {
     return (
       <EmptyState

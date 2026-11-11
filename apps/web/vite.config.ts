@@ -36,6 +36,8 @@ export default defineConfig(({ mode }) => {
     build: {
       target: 'es2022',
       sourcemap: false,
+      // The CSP says font-src 'self': a font inlined as a data: URI would be blocked, so never inline assets.
+      assetsInlineLimit: 0,
       // The lazily loaded password-strength dictionaries form one large on-demand chunk by design.
       chunkSizeWarningLimit: 1600,
     },

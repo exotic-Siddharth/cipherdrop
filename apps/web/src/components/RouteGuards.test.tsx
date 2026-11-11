@@ -30,6 +30,7 @@ function Where({ name }: { name: string }) {
 function renderAt(path: string) {
   const router = createMemoryRouter(
     [
+      { path: '/', element: <Where name="home" /> },
       { path: '/login', element: <Where name="login" /> },
       { path: '/unlock', element: <Where name="unlock" /> },
       {
@@ -83,6 +84,24 @@ describe('RequireAuth', () => {
     const router = renderAt('/settings?tab=sessions');
     expect(await screen.findByText(/^login at/)).toBeInTheDocument();
     expect(router.state.location.search).toBe('?next=%2Fsettings%3Ftab%3Dsessions');
+  });
+
+  it.each(['user', 'account-deleted'] as const)(
+    'a deliberate %s logout lands on the home page, not on /login?next=',
+    async (reason) => {
+      useAuth.setState({ status: 'anonymous', logoutReason: reason });
+      const router = renderAt('/settings?tab=account');
+      expect(await screen.findByText(/^home at/)).toBeInTheDocument();
+      expect(router.state.location.pathname).toBe('/');
+      expect(router.state.location.search).toBe('');
+    },
+  );
+
+  it('a session that expired elsewhere still goes to /login with next', async () => {
+    useAuth.setState({ status: 'anonymous', logoutReason: 'session-expired' });
+    const router = renderAt('/settings');
+    await screen.findByText(/^login at/);
+    expect(router.state.location.search).toBe('?next=%2Fsettings');
   });
 
   it('never copies the #fragment (keys) into ?next', async () => {

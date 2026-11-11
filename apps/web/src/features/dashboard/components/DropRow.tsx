@@ -82,7 +82,12 @@ function NameBlock({ drop, names }: Pick<DropRowProps, 'drop' | 'names'>) {
 
 /** One drop of the owner's list: decrypted name (or a locked state), status, downloads, expiry and actions. */
 export function DropRow({ drop, names, onCopy, onDelete }: DropRowProps) {
-  const live = drop.status === 'READY' || drop.status === 'UPLOADING';
+  // The server flips READY to EXPIRED in a cleanup pass (every minute); until then the clock decides.
+  const status =
+    drop.status === 'READY' && new Date(drop.expiresAt).getTime() <= Date.now()
+      ? 'EXPIRED'
+      : drop.status;
+  const live = status === 'READY' || status === 'UPLOADING';
   const locked = names.kind === 'locked';
   // A password drop's link carries no key, so it can be copied even while the vault is locked.
   const copyDisabled =
@@ -129,7 +134,7 @@ export function DropRow({ drop, names, onCopy, onDelete }: DropRowProps) {
         <div className="flex items-center gap-2">
           <dt className="sr-only">Status</dt>
           <dd>
-            <StatusBadge status={drop.status} />
+            <StatusBadge status={status} />
           </dd>
         </div>
         <div className="flex items-center gap-1.5">
@@ -142,7 +147,7 @@ export function DropRow({ drop, names, onCopy, onDelete }: DropRowProps) {
           <div className="flex items-center gap-1.5">
             <dt className="sr-only">Expiry</dt>
             <dd>
-              <ExpiryBadge expiresAt={drop.expiresAt} status={drop.status} />
+              <ExpiryBadge expiresAt={drop.expiresAt} status={status} />
             </dd>
           </div>
         ) : null}

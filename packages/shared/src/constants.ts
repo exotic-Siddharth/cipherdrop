@@ -109,6 +109,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<AuditAction, string>> = Object
   DROP_EXHAUSTED: 'Drop reached its download limit',
   DROP_REPORTED: 'Drop reported for abuse',
   DROP_DISABLED: 'Drop disabled by a moderator',
+  ADMIN_REVIEW_GRANT: 'Reviewed a reported drop',
 });
 
 /* ---- Wire details ---- */

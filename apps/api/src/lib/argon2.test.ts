@@ -12,6 +12,13 @@ describe('R3 server-side Argon2id', () => {
     expect(await verifyAuthKey(phc, other)).toBe(false);
   });
 
+  it('verifyAuthKey accepts binary (non-UTF-8) keys such as real authKeys', async () => {
+    const binary = Uint8Array.from({ length: 32 }, (_, i) => 0x80 + i * 3);
+    const phc = await hashAuthKey(binary);
+    expect(await verifyAuthKey(phc, binary)).toBe(true);
+    expect(await verifyAuthKey(phc, key)).toBe(false);
+  });
+
   it('verifyAuthKey never throws on malformed hashes; the dummy path always fails', async () => {
     expect(await verifyAuthKey('not-a-phc-string', key)).toBe(false);
     expect(await verifyAuthKeyOrDummy(null, key)).toBe(false);

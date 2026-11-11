@@ -2,7 +2,7 @@
  * Admin logic (spec section 10 "Admin", R13). Every caller is already an ADMIN (requireRole re-checks the DB).
  *
  * The reporter-supplied decryption key (Report.providedKey) is returned ONLY by listReports. Review grants
- * never consume a download and are audited (DROP_OPENED with metadata {adminReview: true} on the admin).
+ * never consume a download and are audited (ADMIN_REVIEW_GRANT with metadata {adminReview: true} on the admin).
  */
 import type {
   AdminGrantResponse,
@@ -196,11 +196,11 @@ export async function reviewGrant(
       expiresAt,
     },
   });
-  // No dedicated audit action exists: recorded on the admin's own log, flagged as a review.
+  // Recorded on the admin's own log (never the owner's), so it is not mistaken for a download.
   await ctx.audit.record({
     userId: admin.id,
     dropId,
-    action: 'DROP_OPENED',
+    action: 'ADMIN_REVIEW_GRANT',
     req,
     metadata: { adminReview: true },
   });

@@ -129,7 +129,7 @@ export function SuccessCard({
           {showQr ? (
             <div
               id="send-qr"
-              className="mt-3 flex justify-center rounded-lg border border-border bg-white p-4 sm:justify-start"
+              className="mx-auto mt-3 flex w-fit rounded-lg border border-border bg-white p-1 sm:mx-0"
             >
               <QrCode value={link} size={192} label="QR code of the share link" />
             </div>

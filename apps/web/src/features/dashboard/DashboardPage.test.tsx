@@ -162,6 +162,19 @@ describe('DashboardPage', () => {
     expect(meter).toHaveAttribute('aria-valuetext', '300 MB of 1 GB used');
   });
 
+  it('a READY drop past its expiry shows as Expired and cannot be copied (cleanup has not run yet)', async () => {
+    const stale = await makeDrop(accountKey, ['stale-offer.pdf'], {
+      expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
+    });
+    mockApi({ active: [stale.summary] });
+    renderDashboard();
+    expect(await screen.findByText('stale-offer.pdf')).toBeVisible();
+    const list = screen.getByRole('list', { name: 'Drops' });
+    expect(within(list).queryByText('Active')).toBeNull();
+    expect(within(list).getAllByText('Expired').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /Copy link/ })).toBeDisabled();
+  });
+
   it('lock() while mounted shows locked rows', async () => {
     const a = await makeDrop(accountKey, ['secret-plans.docx']);
     const router = mockApiAndRender([a.summary]);

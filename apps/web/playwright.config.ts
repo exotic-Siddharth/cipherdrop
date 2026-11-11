@@ -6,12 +6,15 @@ import { defineConfig, devices } from '@playwright/test';
 /**
  * E2E (spec section 14, R2): Playwright drives `vite build && vite preview` (production headers, CSP on)
  * against an isolated API: port 4101, database cipherdrop_e2e, Redis DB 9, rate limits off.
- * Both servers start fresh (reuseExistingServer: false) on fixed strict ports, so a stray dev server can never
- * be tested by mistake. The specs live in ./e2e (I2). The cipherdrop_e2e database must exist and be migrated
- * before the specs touch it (e2e global setup, I2).
+ * Both servers start fresh (reuseExistingServer: reuse) on fixed strict ports, so a stray dev server can never
+ * be tested by mistake. The specs live in ./e2e (I2). e2e/support/start-api.ts creates, migrates and wipes
+ * cipherdrop_e2e before the API boots (Playwright starts webServers before any globalSetup).
  */
 export const E2E_API_PORT = 4101;
 export const E2E_WEB_PORT = 5184;
+
+// E2E_REUSE=1 (local iteration only) reuses servers you started yourself on the strict e2e ports.
+const reuse = process.env.E2E_REUSE === '1';
 
 const API_URL = `http://localhost:${E2E_API_PORT}`;
 const WEB_URL = `http://localhost:${E2E_WEB_PORT}`;
@@ -47,10 +50,11 @@ export default defineConfig({
   webServer: [
     {
       name: 'api',
-      command: `${node} --import tsx apps/api/src/index.ts`,
+      // start-api.ts prepares cipherdrop_e2e (create, migrate, wipe) and then starts the real API entry point.
+      command: `${node} --import tsx apps/web/e2e/support/start-api.ts`,
       cwd: repoRoot,
       url: `${API_URL}/healthz`,
-      reuseExistingServer: false,
+      reuseExistingServer: reuse,
       timeout: 120_000,
       stdout: 'ignore',
       stderr: 'pipe',
@@ -67,6 +71,8 @@ export default defineConfig({
         STORAGE_DIR: './data/e2e-blobs',
         STORAGE_DRIVER: 'local',
         LOG_LEVEL: 'warn',
+        // e2e drops stay in the states the specs put them in: the cleanup job runs rarely.
+        CLEANUP_INTERVAL_SEC: '3600',
       },
     },
     {
@@ -74,7 +80,7 @@ export default defineConfig({
       command: `${node} ${vite} build && ${node} ${vite} preview --port ${E2E_WEB_PORT} --strictPort`,
       cwd: webDir,
       url: WEB_URL,
-      reuseExistingServer: false,
+      reuseExistingServer: reuse,
       timeout: 180_000,
       stdout: 'ignore',
       stderr: 'pipe',

@@ -86,7 +86,8 @@ export function CopyField({
   const id = idProp ?? autoId;
   return (
     <Field id={id} label={label} hideLabel={hideLabel} hint={hint} className={className}>
-      <div className="flex items-center gap-2">
+      {/* Stacked on phones: beside the button, a 100-character link would show only its first 20. */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <input
           id={id}
           readOnly
@@ -96,10 +97,15 @@ export function CopyField({
           onFocus={(e) => e.currentTarget.select()}
           className={controlClasses({
             mono,
-            className: 'flex-1 [&[readonly]]:bg-surface text-[13px]',
+            className: 'w-full sm:flex-1 [&[readonly]]:bg-surface text-[13px]',
           })}
         />
-        <CopyButton value={value} label={copyLabel} onCopied={onCopied} />
+        <CopyButton
+          value={value}
+          label={copyLabel}
+          onCopied={onCopied}
+          className="w-full sm:w-auto"
+        />
       </div>
     </Field>
   );

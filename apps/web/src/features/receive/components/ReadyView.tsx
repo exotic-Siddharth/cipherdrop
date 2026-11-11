@@ -414,11 +414,13 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
         </CardContent>
       </Card>
 
-      <div className="flex justify-center">
-        <Button variant="ghost" size="sm" icon={Flag} onClick={() => setReportOpen(true)}>
-          Report abuse
-        </Button>
-      </div>
+      {review ? null : (
+        <div className="flex justify-center">
+          <Button variant="ghost" size="sm" icon={Flag} onClick={() => setReportOpen(true)}>
+            Report abuse
+          </Button>
+        </div>
+      )}
 
       <ReportDialog dropId={dropId} dk={dk} open={reportOpen} onOpenChange={setReportOpen} />
 

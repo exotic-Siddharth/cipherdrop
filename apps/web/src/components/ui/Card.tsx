@@ -44,8 +44,9 @@ export function CardHeader({
   return (
     <div className={cn('flex flex-col gap-1.5 p-5 pb-0 sm:p-6 sm:pb-0', className)} {...props}>
       {title || actions || Icon ? (
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 items-start gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+          {/* basis-56: when the actions do not fit beside 14 rem of text (phones), they wrap below it */}
+          <div className="flex min-w-0 flex-1 basis-56 items-start gap-3">
             {Icon ? (
               <span className="mt-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary-ink">
                 <Icon className="size-5" aria-hidden="true" />

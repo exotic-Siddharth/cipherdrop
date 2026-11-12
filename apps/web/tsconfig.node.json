@@ -9,6 +9,8 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "securityHeaders.ts",
-    "e2e"
+    "e2e",
+    "deploy-checks",
+    "playwright.prod.config.ts"
   ]
 }

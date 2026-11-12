@@ -1,0 +1,169 @@
+# CipherDrop production stack (spec section 16): postgres, redis, api, web (nginx), plus optional minio and caddy.
+#
+#   cp .env.production.example .env.production      # then fill in every value (see the comments in that file)
+#   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+#
+# Optional profiles:   --profile minio   S3-compatible storage in this stack (STORAGE_DRIVER=s3, S3_ENDPOINT=http://minio:9000)
+#                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS and TRUST_PROXY=2)
+# Nothing but the web port (and Caddy's 80/443 with the tls profile) is published. The dev stack is docker-compose.yml.
+name: cipherdrop-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cipherdrop
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: cipherdrop
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cipherdrop -d cipherdrop']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
+    logging: *logging
+
+  # Redis holds rate-limit counters, the revoked-session denylist and cleanup locks. The denylist is what makes a
+  # password change or "revoke session" effective at once, so it is persisted (AOF) and survives a restart.
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
+    logging: *logging
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: cipherdrop-api:${IMAGE_TAG:-latest}
+    # Every API setting comes from .env.production (docs/DEPLOYMENT.md); the values below are fixed by this
+    # stack's topology and take precedence over the file.
+    env_file: ${ENV_FILE:-.env.production}
+    environment:
+      NODE_ENV: production
+      API_PORT: '4100'
+      DATABASE_URL: postgresql://cipherdrop:${POSTGRES_PASSWORD}@postgres:5432/cipherdrop?schema=public
+      REDIS_URL: redis://redis:6379/0
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      STORAGE_DIR: /data/blobs
+    volumes:
+      - blobs:/data/blobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Readiness (database, Redis and blob storage), unlike the image's liveness-only HEALTHCHECK.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4100/readyz').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    init: true
+    stop_grace_period: 15s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: cipherdrop-web:${IMAGE_TAG:-latest}
+    ports:
+      # Loopback by default: put TLS in front (Caddy profile, or a host-level proxy). Use WEB_BIND=0.0.0.0 to expose it.
+      - '${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt: ['no-new-privileges:true']
+    logging: *logging
+
+  # Optional: S3-compatible storage in the stack (set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY; empty values make MinIO
+  # refuse to start). minio/minio left Docker Hub; the Chainguard image runs as uid 65532.
+  minio:
+    profiles: [minio]
+    image: cgr.dev/chainguard/minio:latest
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
+    logging: *logging
+
+  # Optional: automatic HTTPS in front of nginx (set SITE_ADDRESS; an empty value makes Caddy refuse the config).
+  caddy:
+    profiles: [tls]
+    image: caddy:2-alpine
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
+    logging: *logging
+
+volumes:
+  postgres-data:
+  redis-data:
+  blobs:
+  minio-data:
+  caddy-data:
+  caddy-config:

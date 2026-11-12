@@ -1,0 +1,18 @@
+# Build context for apps/api/Dockerfile and apps/web/Dockerfile (context = repository root).
+# Keep every .env out of the images: apps/web/.env would bake VITE_DEMO_CREDENTIALS into the SPA bundle.
+**/.env
+**/.env.*
+!**/.env.example
+
+.git
+.github
+**/node_modules
+**/dist
+**/coverage
+**/playwright-report
+**/test-results
+apps/api/data
+docs
+*.log
+.vscode
+.idea

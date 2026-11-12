@@ -75,7 +75,7 @@ Every error has the same shape:
 | 429 | `RATE_LIMITED` | a rate limit or an in-flight cap; the `Retry-After` header gives the wait in seconds |
 | 500 | `INTERNAL` | unexpected error; the response carries no stack trace, the log has the request id |
 
-Every response has an `X-Request-Id` header and `Cache-Control: no-store`. Paged lists take `?page&pageSize`
+Every response has an `X-Request-Id` header, and every `/api` response also has `Cache-Control: no-store`. Paged lists take `?page&pageSize`
 and return `{items, total, page, pageSize}`.
 
 ## Rate limits

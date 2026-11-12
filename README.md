@@ -7,7 +7,7 @@ server stores only ciphertext it has no key for.
 
 ## What it does
 
-- **Send** up to 20 files per drop (100 MiB anonymously, 2 GiB with an account). The browser encrypts them
+- **Send** up to 20 files per drop (100 MiB of ciphertext anonymously, 2 GiB with an account). The browser encrypts them
   with AES-256-GCM in 4 MiB chunks and uploads only ciphertext. The share link carries the key after `#`, which browsers never send to a server.
 - **Password links** as an alternative: the link has no key, and the drop key is unwrapped with a key derived
   from the password through Argon2id.
@@ -52,13 +52,14 @@ These are the problems that took the most work, and the parts an interviewer is 
    minimum body rate of 4,096 bytes/s against slow-drip uploads, and an idle timeout on downloads so slow readers
    cannot exhaust the 256-socket S3 pool.
 6. **Proving that no plaintext reaches the server.** The Playwright suite runs the production build under the
-   production CSP and records every request of every browser context. A leak guard fails the run if a test file
+   production CSP and records every API request of every browser context, the upload worker's included. A leak
+   guard fails the run if a test file
    name (raw, URL-encoded, JSON-escaped, base64 or base64url), plaintext bytes or key material appear in any URL,
    header or body. A tamper test flips one byte of a chunk in flight and expects the UI to block the save.
 7. **Measuring honestly.** In headless Chromium the app uploads at 13.0 MiB/s (median of 9 runs), while the same
-   API takes 82.3 MiB/s from Node. A control with no CipherDrop code shows that Chromium itself reaches only 17.7 to
-   20.5 MiB/s on this machine, so the bottleneck is the browser, not the crypto or the server
-   ([BENCHMARKS.md](docs/BENCHMARKS.md)).
+   API takes 82.3 MiB/s from Node. A control with no CipherDrop code shows that headless Chromium itself uploads
+   only 17.7 to 20.5 MiB/s on this machine, so most of the gap is the browser's own upload path, not the server; the
+   app reaches roughly 70 to 85 % of that ceiling ([BENCHMARKS.md](docs/BENCHMARKS.md) section 5).
 
 ## Architecture
 
@@ -104,17 +105,23 @@ hierarchy, the drop lifecycle and the session flow as diagrams, plus the design 
 
 ## Quick start
 
-Prerequisites: Node 22.12 or later with npm 10, and Docker with Compose v2.
+Prerequisites: Node 22.12 or later with npm 10, and Docker with Compose v2. On Node 22.12, `npm ci` warns that
+`eslint-visitor-keys` (an ESLint dependency) wants 22.13; the warning is harmless, and Node 22.13 or later avoids it.
 
 ```bash
 npm ci
 cp apps/api/.env.example apps/api/.env      # local dev values only
 cp apps/web/.env.example apps/web/.env      # enables "Use demo account" on the login page
-docker compose up -d                        # Postgres :55433, Redis :56380, MinIO :59000 (console :59001)
+docker compose up -d --wait                 # Postgres :55433, Redis :56380, MinIO :59000 (console :59001)
 npm run db:deploy                           # apply the Prisma migrations
 npm run db:seed                             # demo accounts and drops; safe to re-run
 npm run dev                                 # web http://localhost:5174, API http://localhost:4100
 ```
+
+`--wait` returns once the containers are healthy, so the migrations do not race a Postgres that is still
+starting. `npm run dev` needs ports 5174 and 4100 free (Vite runs with `strictPort`). To use other ports, change
+`API_PORT` and `WEB_ORIGIN` in `apps/api/.env`, set `API_PROXY_TARGET` in `apps/web/.env`, and start the two
+servers separately (`npm run dev -w @cipherdrop/api` and `npm run dev -w @cipherdrop/web -- --port <port>`).
 
 The seed creates two accounts (dev data only) and prints the share links of its drops:
 
@@ -125,8 +132,10 @@ The seed creates two accounts (dev data only) and prints the share links of its 
 
 The demo account owns four drops: welcome.txt and sample.csv (10 downloads, 7 days), a password-protected
 diagram.png (password `correct horse battery staple`, 5 downloads, 3 days), a one-download burn-note.txt (1 day)
-and an expired old-report.pdf. One open abuse report on diagram.png is waiting in the admin queue. Expiry counts
-from the first seed run; re-running the seed reprints the links but does not renew the drops.
+and an expired old-report.pdf (the dashboard shows it under **Expired** or **All**; the default tab is **Active**).
+One open abuse report on diagram.png is waiting in the admin queue. Expiry counts from the first seed run;
+re-running the seed reprints the links but does not renew the drops. On the login page, **Use demo account** fills
+in the form; press **Log in** to sign in.
 
 [docs/DEMO.md](docs/DEMO.md) is a two-minute demo script built on this data. The API's Swagger UI is at
 http://localhost:5174/api/docs.

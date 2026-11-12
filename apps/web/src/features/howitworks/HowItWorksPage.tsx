@@ -19,7 +19,7 @@ const STEPS = [
   {
     icon: ShieldCheck,
     title: 'The server sees ciphertext',
-    text: 'We store encrypted bytes, sizes and timestamps. Never names, notes, keys or passwords, unless you choose to include the key in an abuse report.',
+    text: 'We store encrypted bytes, sizes and timestamps. Never names, notes, passwords or a key we could use, unless you choose to include the key in an abuse report.',
   },
 ];
 
@@ -27,7 +27,7 @@ const SERVER_SEES = [
   'Encrypted file bytes, in numbered chunks',
   'How big the drop is, and how many files it has',
   'When it was made, when it expires, and how many downloads are left',
-  'A hash of the drop password, if you set one (never the password)',
+  'A hash of a key derived from the drop password, if you set one (never the password)',
   'For accounts: your email, a hash of a derived login proof, and your keys in wrapped form',
   'A network prefix and browser summary for security events, such as "203.0.113.0/24, Chrome"',
 ];
@@ -47,7 +47,7 @@ const LIMITATIONS = [
   },
   {
     title: 'You have to trust the code your browser runs.',
-    text: 'CipherDrop serves the app that does the encrypting. A compromised server could in theory serve a modified app, as with any web app. A strict content security policy, no third-party scripts and open source code reduce that risk but do not remove it.',
+    text: 'CipherDrop serves the app that does the encrypting. A compromised server could in theory serve a modified app, as with any web app. A strict content security policy and no third-party scripts reduce that risk but do not remove it.',
   },
   {
     title: 'Lose your password and recovery key, lose your account.',
@@ -55,11 +55,11 @@ const LIMITATIONS = [
   },
   {
     title: 'Metadata is not hidden.',
-    text: 'The server knows that a drop of a given size exists, when it was created and when it was fetched, and the network prefix that did it.',
+    text: 'The server knows that a drop of a given size exists, when it was created and when it was fetched, and from which network address (the activity log keeps only a prefix).',
   },
   {
     title: 'An abuse report can include the key.',
-    text: 'When you report a drop you may tick a box to send its decryption key, so a moderator can open it. It is off by default, and it is the only way we ever receive a key.',
+    text: 'When you report a drop you may tick a box to send its decryption key, so a moderator can open it. It is off by default, and it is the only way we ever receive the key to a drop.',
   },
   {
     title: 'A recipient can keep what they download.',

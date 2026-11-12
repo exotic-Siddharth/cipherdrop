@@ -107,7 +107,7 @@ drift apart.
 Other behaviour worth knowing:
 
 - `/api/*` is proxied to `api:4100` with `client_max_body_size 5m` (a chunk PUT is 4 MiB + 16 bytes, JSON bodies are at
-  most 1 MB). API responses keep their own helmet headers; nginx adds HSTS (replacing the API's weaker one) and
+  most 1 MiB). API responses keep their own helmet headers; nginx adds HSTS (replacing the API's weaker one) and
   `Permissions-Policy`.
 - `/assets/*` is cached for a year (content-hashed names), `index.html` and the unhashed root files are `no-cache`, unknown
   paths fall back to `index.html` (client-side routes such as `/d/<id>`), a missing `/assets/` file is a 404.
@@ -119,8 +119,8 @@ Other behaviour worth knowing:
 - JSON is not gzip-compressed (BREACH), static types are.
 - `limit_conn` allows at most 400 in-flight `/api` requests in total (429 beyond that); see [Per-process caps](#4-per-process-caps-and-multi-instance-deployments).
 - The container runs with a read-only root filesystem (tmpfs for nginx's cache and pid file).
-- nginx re-resolves `api` through Docker's resolver (`127.0.0.11`) on each request, so recreating the API container does not
-  leave nginx pointing at a dead address.
+- nginx resolves `api` through Docker's resolver (`127.0.0.11`) and caches the answer for 10 s (`valid=10s`), so
+  recreating the API container leaves nginx pointing at a dead address for at most about 10 s.
 
 ### Operations
 

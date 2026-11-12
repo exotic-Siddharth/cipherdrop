@@ -11,10 +11,11 @@
  *   put the account key into the vault store themselves.
  */
 import type { AuthSuccess, Me } from '@cipherdrop/shared';
-import { RefreshResponseSchema } from '@cipherdrop/shared';
+import { OWNER_TOKEN_HEADER, RefreshResponseSchema } from '@cipherdrop/shared';
 import { toast } from 'sonner';
 import { create } from 'zustand';
 import { resetKdfWorker } from '../crypto/kdfClient';
+import { takeResumeRecordNotOwnedBy } from '../features/send/resumeRecord';
 import { apiUrl } from '../lib/http';
 import { queryClient } from '../lib/queryClient';
 import { useVault } from './vault';
@@ -125,6 +126,21 @@ function notifySessionEnded(reason: LogoutReason) {
   }
 }
 
+/**
+ * The interrupted upload of an account that is no longer signed in here is forgotten wherever the session
+ * changes, not only on the Send page (C-R4-04), and its drop is deleted best-effort with the owner token.
+ */
+function forgetResumeNotOwnedBy(ownerId: string | null) {
+  const record = takeResumeRecordNotOwnedBy(ownerId);
+  if (!record) return;
+  void fetch(apiUrl(`/drops/${encodeURIComponent(record.dropId)}`), {
+    method: 'DELETE',
+    headers: { [OWNER_TOKEN_HEADER]: record.ownerToken },
+    credentials: 'same-origin',
+    cache: 'no-store',
+  }).catch(() => undefined);
+}
+
 export const useAuth = create<AuthState>()((set, get) => {
   /** Local part of every logout: forget the token, lock the vault, drop cached (decrypted) data. */
   const endSession = (reason: LogoutReason) => {
@@ -137,6 +153,7 @@ export const useAuth = create<AuthState>()((set, get) => {
       logoutReason: reason,
     });
     useVault.getState().lock('logout');
+    forgetResumeNotOwnedBy(null);
     // A derivation still running would otherwise hand its key to the vault after sign-out.
     resetKdfWorker();
     queryClient.clear();
@@ -156,6 +173,7 @@ export const useAuth = create<AuthState>()((set, get) => {
         // is locked even with no previous user, so a stale key cannot carry over into a new session.
         if (previous || useVault.getState().accountKey) useVault.getState().lock('logout');
         if (previous) queryClient.clear();
+        forgetResumeNotOwnedBy(session.user.id);
       }
       epoch += 1;
       set({

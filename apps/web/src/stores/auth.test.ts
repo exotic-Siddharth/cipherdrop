@@ -1,6 +1,7 @@
 import type { AuthSuccess, Me } from '@cipherdrop/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { kdfClient, resetKdfWorker } from '../crypto/kdfClient';
+import { readResumeRecord, writeResumeRecord } from '../features/send/resumeRecord';
 import { queryClient } from '../lib/queryClient';
 import { useAuth } from './auth';
 import { useVault } from './vault';
@@ -62,5 +63,54 @@ describe('auth store', () => {
     const settled = expect(pending).rejects.toThrow(/cancelled/);
     await useAuth.getState().logout('session-expired');
     await settled;
+  });
+
+  /** An interrupted upload of user_a, as the Send page left it in sessionStorage. */
+  const storeUserARecord = () =>
+    writeResumeRecord({
+      dropId: 'drop_a',
+      uploadToken: 'upload_a',
+      dk: 'A'.repeat(43),
+      files: [{ id: 'file_a', size: 1, lastModified: 1, chunkCount: 1 }],
+      ownerToken: 'owner_a',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      maxDownloads: 1,
+      passwordProtected: false,
+      anonymous: false,
+      ownerId: 'user_a',
+      expiresInHours: 24,
+      hasNote: false,
+    });
+
+  it.each(['user', 'session-expired', 'account-deleted'] as const)(
+    'a session end (%s) forgets the interrupted upload and deletes its drop, wherever it happens (C-R4-04)',
+    async (reason) => {
+      const fetchMock = vi.fn(
+        async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response(null, { status: 204 }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      useAuth.getState().setSession(session('user_a'));
+      storeUserARecord();
+      await useAuth.getState().logout(reason);
+      expect(readResumeRecord()).toBeNull();
+      const del = fetchMock.mock.calls.find(([, init]) => init?.method === 'DELETE');
+      expect(String(del?.[0])).toContain('/drops/drop_a');
+      expect(new Headers(del![1]?.headers).get('x-owner-token')).toBe('owner_a');
+    },
+  );
+
+  it('another account signing in forgets the interrupted upload; a refresh of the same one keeps it (C-R4-04)', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 204 })),
+    );
+    useAuth.getState().setSession(session('user_a'));
+    storeUserARecord();
+    useAuth.getState().setSession(session('user_a'));
+    expect(readResumeRecord()).not.toBeNull();
+    useAuth.getState().setSession(session('user_b'));
+    expect(readResumeRecord()).toBeNull();
   });
 });

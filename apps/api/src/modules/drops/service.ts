@@ -222,9 +222,11 @@ export function assertUploadable(ctx: Pick<AppContext, 'now'>, drop: Drop): void
  * cascade-delete) that row, so they serialise with this short transaction only:
  * - the transaction commits first: the blob already exists, so their later purge removes it;
  * - they commit first: the re-check fails and the blob just written (referenced by nothing) is deleted here.
- *   When the drop is gone or DELETED / DISABLED, its purge may already have run and will not run again, so
+ *   When the drop is gone, DELETED / DISABLED, or already purged whatever its status (an EXPIRED or
+ *   EXHAUSTED drop cleanup has purged, C-R4-01), its purge may already have run and will not run again, so
  *   the whole drop prefix is deleted (with retries), which also removes the directories the write recreated
- *   (C-R3-02). A crash between the write and this delete still leaves the blob behind (no sweep).
+ *   (C-R3-02). A crash between the write and this delete, or a storage error that outlasts every retry,
+ *   still leaves the blob behind (no sweep).
  * A re-PUT never touches the blob complete() verified; the superseded version is deleted after the commit.
  * Several chunks of one drop still run in parallel (share locks do not conflict); PUTs of the SAME chunk
  * serialise on an advisory lock so each one learns the version it replaces.
@@ -237,8 +239,8 @@ export async function storeChunk(
   const version = randomBytes(12).toString('base64url');
   const dropBlob = (v: string | undefined, what: string) =>
     ctx.storage.deleteChunk(dropId, fileId, index, v).catch((err: unknown) => {
-      // Garbage under the prefix of a drop that is still to be purged (UPLOADING, READY or EXPIRED): the
-      // drop purge removes it.
+      // Garbage under the prefix of a drop whose purge has not run yet (blobsDeletedAt still null): that
+      // purge removes it.
       ctx.logger.warn({ err: { code: (err as { code?: string }).code } }, what);
     });
   /** The drop's purge may be over: delete the whole prefix ourselves, retrying a failed delete. */
@@ -262,11 +264,12 @@ export async function storeChunk(
   try {
     superseded = await ctx.prisma.$transaction(async (tx) => {
       const now = ctx.now();
-      const rows = await tx.$queryRaw<{ status: string; expired: boolean }[]>`
-        SELECT "status"::text AS "status", ("expiresAt" <= ${utc(now)}) AS "expired"
+      const rows = await tx.$queryRaw<{ status: string; expired: boolean; purged: boolean }[]>`
+        SELECT "status"::text AS "status", ("expiresAt" <= ${utc(now)}) AS "expired",
+          ("blobsDeletedAt" IS NOT NULL) AS "purged"
         FROM "Drop" WHERE "id" = ${dropId} FOR SHARE`;
       const row = rows[0];
-      purged = !row || row.status === 'DELETED' || row.status === 'DISABLED';
+      purged = !row || row.status === 'DELETED' || row.status === 'DISABLED' || row.purged;
       if (!row) throw notFound('Unknown drop');
       if (row.status !== 'UPLOADING') throw conflict('This drop is no longer accepting uploads');
       if (row.expired) throw gone('EXPIRED');

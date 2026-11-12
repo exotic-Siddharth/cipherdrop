@@ -64,6 +64,14 @@ describe('deploy/nginx.conf', () => {
     expect(apiBlock).toMatch(/proxy_pass\s+\$api_upstream;/);
   });
 
+  it('serves /SECURITY.md (linked from /how-it-works) as UTF-8 plain text, never the SPA', () => {
+    const block = conf.slice(at('location = /SECURITY.md '), at('location / '));
+    expect(block).toMatch(/types \{ \}/);
+    expect(block).toMatch(/default_type text\/plain;/);
+    expect(block).toMatch(/charset utf-8;/);
+    expect(block).toMatch(/try_files \$uri =404;/);
+  });
+
   it('does not compress JSON (BREACH) and serves the SPA fallback', () => {
     expect(conf).not.toMatch(/gzip_types[^;]*json/);
     expect(conf).toMatch(/try_files \$uri \$uri\/ \/index\.html;/);

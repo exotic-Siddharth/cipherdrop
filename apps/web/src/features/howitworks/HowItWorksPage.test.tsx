@@ -119,9 +119,12 @@ describe('HowItWorksPage', () => {
     }
   });
 
-  it('points to SECURITY.md and back to sending', () => {
+  it('links to SECURITY.md (served by the app as plain text) and back to sending', () => {
     renderPage();
-    expect(screen.getByText('docs/SECURITY.md')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'docs/SECURITY.md' })).toHaveAttribute(
+      'href',
+      '/SECURITY.md',
+    );
     expect(screen.getByRole('link', { name: 'Send files' })).toHaveAttribute('href', '/');
   });
 });

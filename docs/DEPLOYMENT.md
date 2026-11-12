@@ -6,7 +6,7 @@ storage). It follows `docs/DESIGN.md` section 16. Everything marked **verified**
 recorded in [Verification record](#verification-record); everything else is described, not tested.
 
 CipherDrop is zero-knowledge: the server only ever stores ciphertext, wrapped keys and hashes (DESIGN sections 7 and 12;
-`docs/SECURITY.md` is a separate deliverable). Deployment therefore protects availability, metadata and the integrity of the
+the threat model is [SECURITY.md](SECURITY.md)). Deployment therefore protects availability, metadata and the integrity of the
 JavaScript that the browser runs; it cannot protect a file from a user who loses the link or the password.
 
 ## 1. Single-host stack (`docker-compose.prod.yml`)
@@ -113,6 +113,9 @@ Other behaviour worth knowing:
   paths fall back to `index.html` (client-side routes such as `/d/<id>`), a missing `/assets/` file is a 404.
 - `/healthz` is nginx's own liveness. `/readyz` and `/metrics` answer 404 from nginx; scrape the API's `/metrics` inside the
   Docker network (`api:4100`), see DESIGN section 15 for the metric list.
+- `/SECURITY.md` serves the threat model (`docs/SECURITY.md`, copied into the build) as UTF-8 plain text; the
+  `/how-it-works` page links to it. The web image's build stage copies that one file from `docs/`, which
+  `.dockerignore` otherwise excludes.
 - JSON is not gzip-compressed (BREACH), static types are.
 - `limit_conn` allows at most 400 in-flight `/api` requests in total (429 beyond that); see [Per-process caps](#4-per-process-caps-and-multi-instance-deployments).
 - The container runs with a read-only root filesystem (tmpfs for nginx's cache and pid file).

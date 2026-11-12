@@ -127,6 +127,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run e2e:install -w @cipherdrop/web -- --with-deps
+      # The e2e API is a real process: it reads apps/api/.env like a fresh clone does (the example holds
+      # dev-only values; the unit and integration jobs use their test defaults).
+      - name: Use the example environment
+        run: |
+          cp apps/api/.env.example apps/api/.env
+          cp apps/web/.env.example apps/web/.env
       # playwright.config.ts builds the SPA, serves it with `vite preview` (production headers, CSP on), starts the
       # API on cipherdrop_e2e and runs every spec in apps/web/e2e.
       - run: npm run e2e

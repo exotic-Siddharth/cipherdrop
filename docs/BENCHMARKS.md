@@ -177,7 +177,7 @@ bodies to a bare Node http server that discards them reaches only (3 runs after 
 
 So the app's 13.0 to 15.3 MiB/s (invocations 2 and 3) is roughly 70 to 85 % of the most this browser could upload at all
 on this machine (the control ran at a different moment and load, so this ratio is approximate). The cause inside Chromium or Windows loopback was not investigated. Download is much faster than
-upload in the same browser (66 against 13 MiB/s) for the same reason, and a real browser on a real network will have
+upload in the same browser (66 against 13 MiB/s), which fits a limit on the browser's upload path, and a real browser on a real network will have
 different limits; do not read these as the throughput of the design.
 
 ## 6. Comparison with the integration measurements

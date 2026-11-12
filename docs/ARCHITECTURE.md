@@ -45,7 +45,7 @@ flowchart LR
   W -->|"/api/* (body max 5 MiB,<br/>400 in-flight requests)"| M
   subgraph API process
     M["requestId, pino-http, helmet,<br/>CORS (WEB_ORIGIN), no-store, metrics"] --> G["global rate limit<br/>(chunk routes exempt)"]
-    G --> J["cookies, JSON body (1 MB)"]
+    G --> J["cookies, JSON body (1 MiB)"]
     J --> RT["route: auth, zod validation,<br/>route rate limits"]
     RT --> SV[service]
     SV --> E["error handler<br/>{error:{code,message,details?}}"]
@@ -131,7 +131,7 @@ sequenceDiagram
     S-->>B: ciphertext
     B->>B: STREAM decryptor: position and last-chunk checks
   end
-  B->>B: Blob + a[download] (up to 256 MB) or showSaveFilePicker stream
+  B->>B: Blob + a[download] (up to 256 MiB) or showSaveFilePicker stream
 ```
 
 - A sink only produces a file on close: Blob parts are dropped on failure, and an aborted
@@ -139,7 +139,7 @@ sequenceDiagram
   close). A tampered chunk (an `IntegrityError`) therefore blocks the save, and the UI says the file was modified.
 - One grant serves every file of the drop and is reused while valid; the client never re-opens on its own,
   because opening consumes a download.
-- Files above 256 MB need `showSaveFilePicker`. Without it the page refuses before calling `/open`, so a
+- Files above 256 MiB need `showSaveFilePicker`. Without it the page refuses before calling `/open`, so a
   burn-after-read download is not wasted (review C-03).
 
 ## 5. Key hierarchy

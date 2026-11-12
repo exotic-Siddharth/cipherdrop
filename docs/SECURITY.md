@@ -19,8 +19,9 @@ The running app links this file from `/how-it-works` and serves it at `/SECURITY
 | The account key (decrypts the owner's drop keys) | Stored only wrapped, under the password-derived key and under the recovery key |
 
 The single rule behind the design: the server must not learn plaintext, file names, MIME types, notes, keys or
-passwords, through storage, logs, errors or analytics. The Playwright suite enforces it for every browser request
-it makes: a leak guard (`apps/web/e2e/support/fixtures.ts`) scans URLs, headers and bodies of every request for the
+passwords, through storage, logs, errors or analytics. The Playwright suite enforces it for every API request the
+browser makes, the upload worker's included: a leak guard (`apps/web/e2e/support/fixtures.ts`) scans URLs, headers
+and bodies of every such request for the
 test file names (raw, URL-encoded, JSON-escaped, base64, base64url), the plaintext bytes and the key material, and
 fails the test on any hit. Its own self-test is `apps/web/e2e/leakguard.spec.ts`.
 
@@ -94,7 +95,7 @@ An XSS in the SPA would run with the user's keys in memory, so XSS prevention is
   bidirectional-override characters and Windows-reserved names (review C-16: a name with a right-to-left override
   could otherwise disguise its extension);
 - previews are rendered from the decrypted Blob for raster images (PNG, JPEG, GIF, WebP) and for text and JSON up
-  to 1 MB only; SVG is never previewed because it can carry script.
+  to 1 MiB only; SVG is never previewed because it can carry script.
 
 ## 3. Cryptographic design in brief
 
@@ -166,9 +167,9 @@ paths (never the fragment). Operators who want prefix-only logs must change `acc
 | Audit log | Logins, failures, lockouts, 2FA changes, password and recovery events, session revocations, and per drop: created, opened (with IP prefix and browser), unlock failures, expiry, reports. Visible to the user in Settings, Activity |
 | Admin | Role checked again in the database on every admin request; admin review of a reported drop uses a non-consuming grant and is audited as `ADMIN_REVIEW_GRANT` |
 
-Other server controls: zod validation of every request; a 1 MB JSON body limit and an exact size check on
+Other server controls: zod validation of every request; a 1 MiB JSON body limit and an exact size check on
 chunk uploads (4 MiB + 16 bytes, `X-Chunk-SHA256` must match); constant-time comparison of every token and hash;
-`Cache-Control: no-store` on every API response; helmet headers on the API and the CSP and related headers on
+`Cache-Control: no-store` on every `/api` response; helmet headers on the API and the CSP and related headers on
 the SPA ([DESIGN.md section 12](DESIGN.md#12-security-requirements)). Rate limits and in-flight caps are listed
 in [API.md](API.md#rate-limits).
 
@@ -214,7 +215,7 @@ Further limitations, also shown on `/how-it-works`:
 - a link with the key in the fragment is a bearer secret;
 - the security of browser-delivered cryptography depends on the server delivering honest JavaScript
   ([section 2.1](#21-the-server-operator-or-anyone-who-controls-the-server));
-- files above 256 MB are saved through the File System Access API (`showSaveFilePicker`), which only Chromium-based
+- files above 256 MiB are saved through the File System Access API (`showSaveFilePicker`), which only Chromium-based
   browsers provide; elsewhere the receive page refuses before consuming a download (review C-03).
 
 ## 8. Reporting a vulnerability

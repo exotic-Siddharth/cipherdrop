@@ -5,7 +5,7 @@ from `npm run db:seed` (see the [README quick start](../README.md#quick-start)).
 
 ## Before you start
 
-- Stack running: `docker compose up -d`, then `npm run dev` (web on http://localhost:5174, API on port 4100).
+- Stack running: `docker compose up -d --wait`, then `npm run dev` (web on http://localhost:5174, API on port 4100).
 - `apps/web/.env` contains `VITE_DEMO_CREDENTIALS` (copied from `apps/web/.env.example`), so the login page shows
   **Use demo account**.
 - Seed accounts (dev only, passwords from `apps/api/.env`):
@@ -34,7 +34,7 @@ from `npm run db:seed` (see the [README quick start](../README.md#quick-start)).
 | 0:45 | **Decrypt & download**, confirm **Download now** in the "last download" dialog. Show **Integrity verified** and the preview. | "Every chunk is authenticated while it streams in. If one byte had changed in transit or in storage, the page would block the save; an automated Playwright test does exactly that." |
 | 0:55 | Reload the private window. | "It was burn after reading: the server consumed the only download with one atomic database update. In the integration test, 10 concurrent opens give exactly one success." |
 | 1:05 | Private window: open the **diagram.png** link. Type a wrong password, then `correct horse battery staple`. | "This link carries no key. The password goes through Argon2id in a Web Worker; the server only checks a hash of a derived key and releases the wrapped drop key, with rate limits on failures." |
-| 1:20 | Normal window: **Log in**, **Use demo account**. The dashboard lists the seeded drops with their names and statuses, including the expired one. | "Accounts are zero-knowledge too. The password never leaves the browser; it unwraps an account key, which unwraps each drop key, so the dashboard decrypts names on any device." |
+| 1:20 | Normal window: **Log in** in the header, then **Use demo account** (it fills in the form) and **Log in**. The dashboard lists the active seeded drops with their names and statuses; the **All** tab adds the expired one. | "Accounts are zero-knowledge too. The password never leaves the browser; it unwraps an account key, which unwraps each drop key, so the dashboard decrypts names on any device." |
 | 1:35 | Reload the dashboard. The vault is locked; enter the demo password on **Unlock**. | "The session survives a reload, but the key lives only in memory, so the vault locks. The unlock is checked locally, without a request." |
 | 1:45 | **Settings**, **Activity** tab. | "The audit log shows that a drop was opened, by IP prefix and browser only, never the full address." |
 | 1:55 | **How it works**, scroll to **Honest limitations**, click the `docs/SECURITY.md` link. | "And the limits are written down: the server sees sizes and timing, and browser crypto trusts the JavaScript the server delivers. The threat model covers each adversary." |
@@ -59,5 +59,5 @@ from `npm run db:seed` (see the [README quick start](../README.md#quick-start)).
   see [SECURITY.md section 2.1](SECURITY.md#21-the-server-operator-or-anyone-who-controls-the-server).
 - *What happens if I forget my password?* The recovery key resets it. Without both, the data is lost by design.
 - *How fast is it?* See [BENCHMARKS.md](BENCHMARKS.md): 13.0 MiB/s encrypt and upload and 66.2 MiB/s download
-  and decrypt (medians, headless Chromium, 96 MiB, on a 4-core laptop), where the upload figure is bounded by the
-  browser itself.
+  and decrypt (medians, headless Chromium, 96 MiB, on a 4-core laptop), where the upload figure is roughly 70 to 85 %
+  of what headless Chromium itself uploads on that machine with no CipherDrop code.

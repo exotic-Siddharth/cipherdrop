@@ -13,6 +13,9 @@ function record(files: Array<{ id: string; size: number; lastModified: number }>
     maxDownloads: 1,
     passwordProtected: false,
     anonymous: true,
+    ownerId: null,
+    expiresInHours: 24,
+    hasNote: false,
   };
 }
 

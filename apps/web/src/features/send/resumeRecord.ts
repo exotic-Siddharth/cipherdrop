@@ -5,7 +5,10 @@
  *
  * R11 fields: dropId, uploadToken, dk (b64url), files [{id, size, lastModified, chunkCount}]. Display-only
  * additions (2026-11-08 decision): ownerToken (Delete now / Sent from this device), expiresAt, maxDownloads,
- * passwordProtected, anonymous and createdAt.
+ * passwordProtected, anonymous and createdAt. Creation options and owner (C-R4-02, C-R4-04): expiresInHours,
+ * hasNote and ownerId. Only whether a note or a password was set is kept, never the note, the password or a
+ * hash of it: a resume requires the form to show the drop's options, and a note or password the record cannot
+ * vouch for counts as a change.
  */
 
 export const RESUME_STORAGE_KEY = 'cd-upload-resume';
@@ -31,6 +34,10 @@ export interface ResumeRecord {
   maxDownloads: number;
   passwordProtected: boolean;
   anonymous: boolean;
+  /** The signed-in user who created the drop; null for an anonymous drop. Nobody else is offered it. */
+  ownerId: string | null;
+  expiresInHours: number;
+  hasNote: boolean;
 }
 
 const B64URL_RE = /^[A-Za-z0-9_-]+$/;
@@ -56,6 +63,9 @@ function isResumeRecord(v: unknown): v is ResumeRecord {
     isNonNegInt(r.maxDownloads) &&
     typeof r.passwordProtected === 'boolean' &&
     typeof r.anonymous === 'boolean' &&
+    (r.ownerId === null || typeof r.ownerId === 'string') &&
+    isNonNegInt(r.expiresInHours) &&
+    typeof r.hasNote === 'boolean' &&
     Array.isArray(r.files) &&
     r.files.length > 0 &&
     r.files.every((f: unknown) => {
@@ -113,6 +123,9 @@ export function writeResumeRecord(record: ResumeRecord): void {
     maxDownloads: record.maxDownloads,
     passwordProtected: record.passwordProtected,
     anonymous: record.anonymous,
+    ownerId: record.ownerId,
+    expiresInHours: record.expiresInHours,
+    hasNote: record.hasNote,
   };
   try {
     window.sessionStorage.setItem(RESUME_STORAGE_KEY, JSON.stringify(clean));
@@ -127,6 +140,17 @@ export function clearResumeRecord(): void {
   } catch {
     // ignore
   }
+}
+
+/**
+ * Remove the stored record unless `ownerId` (a user id, or null for signed out) owns it, and return what was
+ * removed so its drop can be deleted: the next person at this browser is never offered it (C-R4-04).
+ */
+export function takeResumeRecordNotOwnedBy(ownerId: string | null): ResumeRecord | null {
+  const record = readResumeRecord();
+  if (!record || record.ownerId === ownerId) return null;
+  clearResumeRecord();
+  return record;
 }
 
 /**

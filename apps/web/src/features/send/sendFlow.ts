@@ -59,6 +59,8 @@ export interface NewDropInput {
   /** Signed in: the unlocked vault key (owner wrap computed before the upload starts, R7). */
   accountKey: CryptoKey | null;
   anonymous: boolean;
+  /** The signed-in user's id (null when anonymous): the resume record is offered to nobody else. */
+  ownerId: string | null;
 }
 
 function origin(): string {
@@ -164,6 +166,9 @@ export async function startNewDrop(
     maxDownloads: input.maxDownloads,
     passwordProtected: Boolean(input.password),
     anonymous: input.anonymous,
+    ownerId: input.ownerId,
+    expiresInHours: input.expiresInHours,
+    hasNote: input.note !== '',
   };
   writeResumeRecord(record);
   cb.onCreated?.(record);

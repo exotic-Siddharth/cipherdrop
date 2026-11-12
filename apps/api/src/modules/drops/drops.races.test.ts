@@ -11,6 +11,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
+import { runCleanup } from '../../jobs/cleanup';
 import type { StorageDriver } from '../../storage';
 import { bearer, registerViaApi } from '../auth/testkit';
 import {
@@ -257,6 +258,54 @@ describe('drop upload lifecycle edges', () => {
 
     it('C-R3-02: a write refused after the drop was purged is removed even when a delete fails once', async () => {
       const drop = await lateWriteAfterPurge(() => {
+        faults.deleteChunk = 5;
+        faults.deleteDrop = 1;
+      });
+      expect(await dropDirExists(drop.dropId)).toBe(false);
+    });
+
+    /**
+     * Re-PUT a recorded chunk that parks in storage, complete() the drop, let it expire and let cleanup
+     * purge it (EXPIRED, blobsDeletedAt set), then let the write land (C-R4-01).
+     */
+    async function lateWriteAfterExpiredPurge(beforeRelease: () => void = () => {}) {
+      const f = testFile(1000);
+      const drop = await createDropOk(gated.app, createBody([f], { expiresInHours: 1 }));
+      expect(
+        (await putChunk(gated.app, drop.dropId, drop.uploadToken, f.id, 0, chunkData(f, 0))).status,
+      ).toBe(204);
+      const { entered, release } = parkNextPut();
+      const again = putChunk(
+        gated.app,
+        drop.dropId,
+        drop.uploadToken,
+        f.id,
+        0,
+        chunkData(f, 0),
+      ).then((r) => r);
+      await entered;
+      try {
+        expect(await within(complete(gated.app, drop).then((r) => r.status))).toBe(200);
+        clock.advance(2 * HOUR);
+        await runCleanup(clock.now(), gated.ctx);
+        const row = await t.prisma.drop.findUniqueOrThrow({ where: { id: drop.dropId } });
+        expect(row.status).toBe('EXPIRED');
+        expect(row.blobsDeletedAt).not.toBeNull(); // no later purge will visit this drop
+        beforeRelease();
+      } finally {
+        release();
+      }
+      expect((await again).status).toBe(409);
+      return drop;
+    }
+
+    it('C-R4-01: a write refused after an EXPIRED drop was purged leaves no directory of the drop', async () => {
+      const drop = await lateWriteAfterExpiredPurge();
+      expect(await dropDirExists(drop.dropId)).toBe(false);
+    });
+
+    it('C-R4-01: ... and its blob is removed even when a delete fails once', async () => {
+      const drop = await lateWriteAfterExpiredPurge(() => {
         faults.deleteChunk = 5;
         faults.deleteDrop = 1;
       });

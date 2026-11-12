@@ -208,6 +208,11 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
 - **Shared per-IP shares (C-R3-03).** Clients behind one IPv4 NAT or one IPv6 /48 share the per-IP in-flight caps.
 - **Test coverage.** Signing out mid-upload is covered by unit tests only; the resume flow after the round-4
   changes has one browser-level test.
+- **Dependency advisories (`npm audit --omit=dev`, 2026-11-12).** Two are rated high, and both fixes are major
+  upgrades. zod below 4.6.6 can exhaust memory on oversized collections; JSON bodies are capped at 1 MiB, and chunk
+  uploads are raw bytes that zod never parses. Prisma 6 pulls in a vulnerable `deepmerge-ts` through
+  `@prisma/config`, which runs when Prisma loads its configuration, not on request data. The fixes are the zod 4
+  migration (with zod-to-openapi 8 or later) and the Prisma 7 migration.
 
 Further limitations, also shown on `/how-it-works`:
 

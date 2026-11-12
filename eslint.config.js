@@ -123,7 +123,7 @@ export default defineConfig(
   },
   // Web tooling that runs in Node.
   {
-    files: ['apps/web/*.config.ts', 'apps/web/e2e/**/*.ts'],
+    files: ['apps/web/*.config.ts', 'apps/web/e2e/**/*.ts', 'apps/web/bench/**/*.ts'],
     languageOptions: { globals: { ...globals.node } },
   },
 );

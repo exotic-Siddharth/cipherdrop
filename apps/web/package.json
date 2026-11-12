@@ -13,7 +13,9 @@
     "test:watch": "vitest",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
-    "smoke:prod": "playwright test -c playwright.prod.config.ts"
+    "smoke:prod": "playwright test -c playwright.prod.config.ts",
+    "bench:browser": "tsx bench/bench-browser.ts",
+    "bench:ceiling": "tsx bench/chromium-upload-ceiling.ts"
   },
   "dependencies": {
     "@cipherdrop/crypto": "*",

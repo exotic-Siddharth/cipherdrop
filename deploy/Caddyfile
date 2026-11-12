@@ -1,0 +1,6 @@
+# Optional TLS terminator (docker compose --profile tls). Caddy obtains and renews the certificate for SITE_ADDRESS
+# (a public DNS name pointing at this host, ports 80 and 443 reachable) and forwards everything to the web container.
+# Behind Caddy there are two proxy hops before the API (Caddy, nginx): set TRUST_PROXY=2.
+{$SITE_ADDRESS} {
+	reverse_proxy web:80
+}

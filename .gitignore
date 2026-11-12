@@ -5,10 +5,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# env files: real values live in .env (gitignored); only *.env.example is committed
+# env files: real values live in .env (gitignored); only the *.example templates are committed
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # tests and reports
 coverage/

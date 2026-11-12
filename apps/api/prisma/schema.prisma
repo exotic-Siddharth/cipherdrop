@@ -169,6 +169,7 @@ model Drop {
 
   @@index([status, expiresAt])
   @@index([ownerId, createdAt])
+  @@index([ownerId, blobsDeletedAt]) // C-R3-04: the anonymous capacity sum (ownerId and blobsDeletedAt NULL)
 }
 
 model DropFile {

@@ -177,6 +177,23 @@ describe('upload capacity limits', () => {
     }
   });
 
+  it('C-R3-04: the anonymous capacity sum uses an index, however many purged drops history holds', async () => {
+    await t.prisma.$executeRaw`
+      INSERT INTO "Drop" ("id", "ownerTokenHash", "uploadTokenHash", "status", "encryptedManifest",
+        "totalCiphertextBytes", "fileCount", "maxDownloads", "expiresAt", "blobsDeletedAt")
+      SELECT 'purged-' || g, 'x', 'x', 'DELETED'::"DropStatus", 'm', 1000, 1, 1, now(), now()
+      FROM generate_series(1, 5000) AS g`;
+    for (let i = 0; i < 3; i++) await createDropOk(t.app, createBody([testFile(10)]));
+    await t.prisma.$executeRawUnsafe('ANALYZE "Drop"');
+    const rows = await t.prisma.$queryRaw<{ 'QUERY PLAN': unknown }[]>`
+      EXPLAIN (FORMAT JSON) SELECT SUM("totalCiphertextBytes") FROM "Drop"
+      WHERE "ownerId" IS NULL AND "blobsDeletedAt" IS NULL`;
+    const plan = JSON.stringify(rows[0]?.['QUERY PLAN']);
+    expect(plan).not.toContain('Seq Scan');
+    expect(plan).toMatch(/"Index Cond":"[^}]*blobsDeletedAt/);
+    expect(plan).toContain('Drop_ownerId_blobsDeletedAt_idx');
+  });
+
   it('exposes the free space of the blob volume as a gauge after /readyz', async () => {
     expect((await request(t.app).get('/readyz')).status).toBe(200);
     const metrics = await request(t.app).get('/metrics');
@@ -186,7 +203,7 @@ describe('upload capacity limits', () => {
   });
 });
 
-describe('C-R2-02: chunk PUT body deadline and per-token / per-IP shares of the in-flight slots', () => {
+describe('C-R2-02: chunk PUT minimum body rate and per-token / per-IP shares of the in-flight slots', () => {
   let t: TestApp;
   let server: ReturnType<TestApp['app']['listen']>;
   let port = 0;
@@ -199,7 +216,7 @@ describe('C-R2-02: chunk PUT body deadline and per-token / per-IP shares of the 
         MAX_CHUNK_UPLOADS_PER_TOKEN: 1,
         MAX_CHUNK_UPLOADS_PER_IP: 2,
         CHUNK_UPLOAD_IDLE_TIMEOUT_SEC: 1,
-        CHUNK_UPLOAD_DEADLINE_SEC: 2,
+        CHUNK_UPLOAD_MIN_BYTES_PER_SEC: 64 * 1024,
       },
     });
     await resetTables(t.prisma);
@@ -262,7 +279,7 @@ describe('C-R2-02: chunk PUT body deadline and per-token / per-IP shares of the 
       ip,
     );
 
-  it('hangs up a slow-drip body that misses CHUNK_UPLOAD_DEADLINE_SEC even though bytes keep arriving', async () => {
+  it('hangs up a slow-drip body below CHUNK_UPLOAD_MIN_BYTES_PER_SEC even though bytes keep arriving', async () => {
     const f = testFile(2000);
     const drop = await createDropOk(t.app, createBody([f]));
     const data = chunkData(f, 0);
@@ -279,6 +296,31 @@ describe('C-R2-02: chunk PUT body deadline and per-token / per-IP shares of the 
       expect(outcome).toBe('closed');
     } finally {
       clearInterval(drip);
+    }
+  });
+
+  it('C-R3-01: a steady slow sender above the minimum rate is not hung up, however long its body takes', async () => {
+    // 600 KiB at about 200 KiB/s takes about 3 s: longer than any fixed 2 s body deadline, but every 1 s
+    // window carries far more than the 64 KiB/s minimum.
+    const f = testFile(600 * 1024);
+    const drop = await createDropOk(t.app, createBody([f]));
+    const data = chunkData(f, 0);
+    const step = 20 * 1024;
+    const steady = heldPut(drop, f.id, data, '198.51.100.6', step);
+    let sent = step;
+    const pump = setInterval(() => {
+      if (sent >= data.length) return clearInterval(pump);
+      const next = Math.min(data.length, sent + step);
+      steady.req.write(data.subarray(sent, next));
+      sent = next;
+      if (sent >= data.length) steady.req.end();
+    }, 100);
+    const started = Date.now();
+    try {
+      expect(await steady.status).toBe(204);
+      expect(Date.now() - started).toBeGreaterThan(2500);
+    } finally {
+      clearInterval(pump);
     }
   });
 
@@ -300,6 +342,20 @@ describe('C-R2-02: chunk PUT body deadline and per-token / per-IP shares of the 
     const g = testFile(10);
     const other = await createDropOk(t.app, createBody([g]));
     expect((await smallPut(other, g, '198.51.100.2')).status).toBe(204);
+  });
+
+  it('C-R3-03: the per-IP share of chunk PUTs covers an IPv6 /48, not each /64 inside it', async () => {
+    for (const ip of ['2001:db8:7:1::1', '2001:db8:7:2::1']) {
+      const f = testFile(2000);
+      const drop = await createDropOk(t.app, createBody([f]));
+      heldPut(drop, f.id, chunkData(f, 0), ip);
+    }
+    await sleep(300);
+    const g = testFile(10);
+    const third = await createDropOk(t.app, createBody([g]));
+    const refused = await smallPut(third, g, '2001:db8:7:3::1');
+    expect(refused.status).toBe(429);
+    expect((await smallPut(third, g, '2001:db8:8::1')).status).toBe(204);
   });
 
   it('caps in-flight chunk PUTs per IP (429 + Retry-After) and frees the share when a client aborts', async () => {

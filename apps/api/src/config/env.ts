@@ -102,21 +102,27 @@ const EnvSchema = z
      * below the S3 driver's 256-socket pool, so uploads, deletes and /readyz always find a socket.
      */
     MAX_CONCURRENT_CHUNK_DOWNLOADS: int(192, 1, 224),
-    /** Chunk GETs in flight per download grant / per client IP (the web downloader fetches one at a time). */
+    /**
+     * Chunk GETs in flight per download grant / per client IP, IPv6 per /48 (the web downloader fetches one
+     * at a time).
+     */
     MAX_CHUNK_DOWNLOADS_PER_GRANT: int(8, 1, 10_000),
     MAX_CHUNK_DOWNLOADS_PER_IP: int(32, 1, 10_000),
     /** Chunk PUTs in flight per API process (each buffers up to 4 MiB); more get 429 + Retry-After. */
     MAX_CONCURRENT_CHUNK_UPLOADS: int(64, 1, 10_000),
-    /** Chunk PUTs in flight per upload token / per client IP (the web uploader sends 3 at a time). */
+    /** Chunk PUTs in flight per upload token / per client IP, IPv6 per /48 (the web uploader sends 3). */
     MAX_CHUNK_UPLOADS_PER_TOKEN: int(8, 1, 10_000),
     MAX_CHUNK_UPLOADS_PER_IP: int(16, 1, 10_000),
     /** A chunk PUT whose body sends nothing for this long is hung up (stalled clients). */
     CHUNK_UPLOAD_IDLE_TIMEOUT_SEC: int(30, 1, 3_600),
     /**
-     * A chunk PUT whose body is still incomplete this long after it took its slot is hung up (slow-drip
-     * clients that send a byte now and then; a full 4 MiB chunk in 120 s needs about 35 KB/s).
+     * A chunk PUT whose body brings fewer than this many bytes per second, measured over each
+     * CHUNK_UPLOAD_IDLE_TIMEOUT_SEC window, is hung up (slow-drip clients that send a byte now and then).
+     * A progress rule, not a total deadline, so a slow but steady uplink is never cut: the binding limit for
+     * honest clients stays Node's 300 s requestTimeout, a full 4 MiB chunk in 300 s, about 14 KB/s per PUT
+     * or about 42 KB/s (0.34 Mbit/s) for the web uploader's 3 parallel PUTs.
      */
-    CHUNK_UPLOAD_DEADLINE_SEC: int(120, 1, 3_600),
+    CHUNK_UPLOAD_MIN_BYTES_PER_SEC: int(4096, 1, 1_048_576),
     /** Ceiling on the ciphertext bytes of anonymous drops whose blobs are not purged yet (0 = no ceiling). */
     ANON_TOTAL_PENDING_BYTES: int(0, 0),
 

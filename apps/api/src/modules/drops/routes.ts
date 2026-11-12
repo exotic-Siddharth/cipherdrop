@@ -34,7 +34,7 @@ import express, { type Request, type RequestHandler, type Response } from 'expre
 import type { AppContext } from '../../context';
 import { notFound, payloadTooLarge, rateLimited, validationError } from '../../lib/errors';
 import { sha256B64url, sha256Hex, timingSafeEqualStr } from '../../lib/hash';
-import { ipKey } from '../../lib/ip';
+import { ipKey, ipShareKey } from '../../lib/ip';
 import { metrics } from '../../lib/metrics';
 import { createRouter, type AppRouter } from '../../lib/router';
 import { bearerToken } from '../../lib/tokens';
@@ -162,14 +162,15 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
   // Chunk PUTs in flight: per process, per upload token and per IP, so one client cannot take every slot.
   // A slot is taken after the cheap checks (only a verified uploader holds one) and released when the
   // response closes. The body is hung up when nothing arrives for CHUNK_UPLOAD_IDLE_TIMEOUT_SEC (a stalled
-  // client) or when it is still incomplete CHUNK_UPLOAD_DEADLINE_SEC after the slot was taken (a slow-drip
-  // client that sends a byte now and then), so no client pins a slot and its buffer for long.
+  // client) or when one such window brings fewer than CHUNK_UPLOAD_MIN_BYTES_PER_SEC per second (a
+  // slow-drip client that sends a byte now and then), so no client pins a slot and its buffer cheaply. A
+  // slow but steady uplink keeps its PUTs, however long they take (C-R3-01).
   const uploadSlots = slotPool(() => ctx.env.MAX_CONCURRENT_CHUNK_UPLOADS);
   const chunkSlot: RequestHandler = (req, res, next) => {
     try {
       uploadSlots.take(req, res, [
         { key: `token:${tokenKey(req)}`, max: ctx.env.MAX_CHUNK_UPLOADS_PER_TOKEN },
-        { key: `ip:${ipKey(req.ip)}`, max: ctx.env.MAX_CHUNK_UPLOADS_PER_IP },
+        { key: `ip:${ipShareKey(req.ip)}`, max: ctx.env.MAX_CHUNK_UPLOADS_PER_IP },
       ]);
     } catch (err) {
       res.setHeader('Connection', 'close'); // the unread body is not worth draining under load
@@ -177,17 +178,26 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
     }
     let timer: NodeJS.Timeout | undefined;
     const hangUp = () => req.socket.destroy();
-    const deadline = setTimeout(hangUp, ctx.env.CHUNK_UPLOAD_DEADLINE_SEC * 1000);
+    const windowSec = ctx.env.CHUNK_UPLOAD_IDLE_TIMEOUT_SEC;
+    const minPerWindow = ctx.env.CHUNK_UPLOAD_MIN_BYTES_PER_SEC * windowSec;
+    let received = 0;
+    const progress = setInterval(() => {
+      if (received < minPerWindow) hangUp();
+      received = 0;
+    }, windowSec * 1000);
     const stopTimers = () => {
       clearTimeout(timer);
-      clearTimeout(deadline);
+      clearInterval(progress);
     };
     const arm = () => {
       clearTimeout(timer);
-      timer = setTimeout(hangUp, ctx.env.CHUNK_UPLOAD_IDLE_TIMEOUT_SEC * 1000);
+      timer = setTimeout(hangUp, windowSec * 1000);
     };
     arm();
-    req.on('data', arm);
+    req.on('data', (data: Buffer) => {
+      received += data.length;
+      arm();
+    });
     req.once('end', stopTimers);
     res.once('close', stopTimers);
     next();
@@ -421,7 +431,7 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
       if (!chunk) throw notFound('Unknown chunk');
       downloadSlots.take(req, res, [
         { key: `grant:${grant.grantId}`, max: ctx.env.MAX_CHUNK_DOWNLOADS_PER_GRANT },
-        { key: `ip:${ipKey(req.ip)}`, max: ctx.env.MAX_CHUNK_DOWNLOADS_PER_IP },
+        { key: `ip:${ipShareKey(req.ip)}`, max: ctx.env.MAX_CHUNK_DOWNLOADS_PER_IP },
       ]);
       // R12: every successful chunk GET slides the grant, capped at createdAt + 24 h.
       await ctx.prisma.downloadGrant.update({

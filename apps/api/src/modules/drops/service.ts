@@ -16,6 +16,7 @@ import {
 } from '@cipherdrop/shared';
 import { Prisma, type Drop } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Request } from 'express';
 import type { AppContext } from '../../context';
 import {
@@ -221,6 +222,9 @@ export function assertUploadable(ctx: Pick<AppContext, 'now'>, drop: Drop): void
  * cascade-delete) that row, so they serialise with this short transaction only:
  * - the transaction commits first: the blob already exists, so their later purge removes it;
  * - they commit first: the re-check fails and the blob just written (referenced by nothing) is deleted here.
+ *   When the drop is gone or DELETED / DISABLED, its purge may already have run and will not run again, so
+ *   the whole drop prefix is deleted (with retries), which also removes the directories the write recreated
+ *   (C-R3-02). A crash between the write and this delete still leaves the blob behind (no sweep).
  * A re-PUT never touches the blob complete() verified; the superseded version is deleted after the commit.
  * Several chunks of one drop still run in parallel (share locks do not conflict); PUTs of the SAME chunk
  * serialise on an advisory lock so each one learns the version it replaces.
@@ -233,9 +237,25 @@ export async function storeChunk(
   const version = randomBytes(12).toString('base64url');
   const dropBlob = (v: string | undefined, what: string) =>
     ctx.storage.deleteChunk(dropId, fileId, index, v).catch((err: unknown) => {
-      // Garbage under the drop's prefix only: the drop purge still removes it.
+      // Garbage under the prefix of a drop that is still to be purged (UPLOADING, READY or EXPIRED): the
+      // drop purge removes it.
       ctx.logger.warn({ err: { code: (err as { code?: string }).code } }, what);
     });
+  /** The drop's purge may be over: delete the whole prefix ourselves, retrying a failed delete. */
+  const dropPrefix = async () => {
+    for (const delay of [200, 1000, 0]) {
+      try {
+        return await ctx.storage.deleteDrop(dropId);
+      } catch (err) {
+        ctx.logger.warn(
+          { err: { code: (err as { code?: string }).code } },
+          'could not delete the prefix of a purged drop after a refused chunk write',
+        );
+        if (delay) await sleep(delay);
+      }
+    }
+  };
+  let purged = false;
 
   await ctx.storage.putChunk(dropId, fileId, index, body, version);
   let superseded: { blobVersion: string | null } | null;
@@ -246,6 +266,7 @@ export async function storeChunk(
         SELECT "status"::text AS "status", ("expiresAt" <= ${utc(now)}) AS "expired"
         FROM "Drop" WHERE "id" = ${dropId} FOR SHARE`;
       const row = rows[0];
+      purged = !row || row.status === 'DELETED' || row.status === 'DISABLED';
       if (!row) throw notFound('Unknown drop');
       if (row.status !== 'UPLOADING') throw conflict('This drop is no longer accepting uploads');
       if (row.expired) throw gone('EXPIRED');
@@ -263,7 +284,8 @@ export async function storeChunk(
       return previous;
     });
   } catch (err) {
-    await dropBlob(version, 'could not delete a refused chunk blob');
+    if (purged) await dropPrefix();
+    else await dropBlob(version, 'could not delete a refused chunk blob');
     throw err;
   }
   if (superseded) {

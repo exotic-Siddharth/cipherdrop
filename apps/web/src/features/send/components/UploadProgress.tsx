@@ -25,8 +25,8 @@ export interface UploadProgressProps {
   retryNotice: string | null;
   onCancel: () => void;
   cancelling: boolean;
-  /** Send moves focus here when the upload view replaces the form (C-23). */
-  cancelRef?: Ref<HTMLButtonElement>;
+  /** Send focuses the heading when the upload view replaces the form (C-23); not Cancel (C-R3-08). */
+  headingRef?: Ref<HTMLSpanElement>;
 }
 
 const PHASE_TEXT: Record<SendPhase, string> = {
@@ -55,7 +55,7 @@ export function UploadProgress({
   retryNotice,
   onCancel,
   cancelling,
-  cancelRef,
+  headingRef,
 }: UploadProgressProps) {
   const total = files.reduce((n, f) => n + f.size, 0);
   const uploaded = files.reduce((n, f) => n + Math.min(f.size, f.uploaded), 0);
@@ -68,17 +68,14 @@ export function UploadProgress({
   return (
     <Card>
       <CardHeader
-        title="Encrypting and uploading"
+        title={
+          <span ref={headingRef} tabIndex={-1} className="outline-none">
+            Encrypting and uploading
+          </span>
+        }
         description="Files are encrypted in your browser before a single byte is sent."
         actions={
-          <Button
-            ref={cancelRef}
-            variant="outline"
-            size="sm"
-            icon={X}
-            onClick={onCancel}
-            loading={cancelling}
-          >
+          <Button variant="outline" size="sm" icon={X} onClick={onCancel} loading={cancelling}>
             Cancel
           </Button>
         }

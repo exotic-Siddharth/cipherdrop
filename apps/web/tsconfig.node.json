@@ -10,6 +10,7 @@
     "playwright.config.ts",
     "securityHeaders.ts",
     "e2e",
+    "bench",
     "deploy-checks",
     "playwright.prod.config.ts"
   ]

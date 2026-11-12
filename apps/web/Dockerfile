@@ -17,6 +17,8 @@ RUN npm ci -w @cipherdrop/web --ignore-scripts
 COPY packages packages
 # .dockerignore keeps apps/web/.env out: no VITE_DEMO_CREDENTIALS is ever baked into a production bundle.
 COPY apps/web apps/web
+# Served at /SECURITY.md (linked from /how-it-works); the build copies it into dist.
+COPY docs/SECURITY.md docs/SECURITY.md
 RUN npm run build -w @cipherdrop/web
 
 FROM ${NGINX_IMAGE} AS runtime

@@ -182,7 +182,7 @@ different limits; do not read these as the throughput of the design.
 
 ## 6. Comparison with the integration measurements
 
-Measured earlier (lane I1, `docs/lanes/i1.md`) on the Vite **dev** server with its proxy, same laptop, load not
+Measured earlier (integration step I1, recorded in the [DESIGN.md](DESIGN.md#decisions-log) Decisions log) on the Vite **dev** server with its proxy, same laptop, load not
 recorded:
 
 | Metric | Integration (dev server) | Now (production build, `vite preview`) |

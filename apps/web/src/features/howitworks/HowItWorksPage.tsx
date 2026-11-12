@@ -332,9 +332,13 @@ export function Component() {
           </ul>
           <p className="text-sm leading-relaxed text-muted-strong">
             The full threat model, with what is and is not protected, is written down in{' '}
-            <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[13px] text-foreground">
+            {/* Served as plain text from the repository's docs/SECURITY.md (vite.config.ts, deploy/nginx.conf). */}
+            <a
+              href="/SECURITY.md"
+              className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[13px] text-foreground underline underline-offset-4 hover:text-primary"
+            >
               docs/SECURITY.md
-            </code>{' '}
+            </a>{' '}
             in the project repository.
           </p>
         </Section>

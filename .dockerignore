@@ -13,6 +13,8 @@
 **/test-results
 apps/api/data
 docs
+# The web image serves the threat model at /SECURITY.md (apps/web/Dockerfile).
+!docs/SECURITY.md
 *.log
 .vscode
 .idea

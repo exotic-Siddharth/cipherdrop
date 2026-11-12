@@ -148,6 +148,16 @@ describe('C-R2-04: chunk GET in-flight caps', () => {
     expect((await smallGet(drop, g3, '192.0.2.3')).status).toBe(200);
   });
 
+  it('C-R3-03: the per-IP share of chunk GETs covers an IPv6 /48, not each /64 inside it', async () => {
+    const drop = await twoFileDrop();
+    await hold(drop, await grant(drop), '2001:db8:9:1::1');
+    await hold(drop, await grant(drop), '2001:db8:9:2::1');
+    const g3 = await grant(drop);
+    const refused = await smallGet(drop, g3, '2001:db8:9:3::1');
+    expect(refused.status).toBe(429);
+    expect((await smallGet(drop, g3, '2001:db8:a::1')).status).toBe(200);
+  });
+
   it('caps chunk GETs per process (below the S3 socket pool)', async () => {
     const drop = await twoFileDrop();
     for (const ip of ['192.0.2.4', '192.0.2.5', '192.0.2.6'])

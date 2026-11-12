@@ -2,8 +2,10 @@
  * Upload lifecycle edges: chunk PUT racing delete / account deletion (a blob must never be written after
  * the drop left UPLOADING), and uploads that outlive their expiry (410 EXPIRED, nothing completes).
  */
+import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -36,6 +38,9 @@ describe('drop upload lifecycle edges', () => {
 
   /** putChunk of the next armed call parks until released (see parkNextPut). */
   const gate = { armed: false, enter: () => {}, wait: Promise.resolve() };
+  /** The next N deleteChunk / deleteDrop calls of the gated app fail (an S3 error, a sharing violation). */
+  const faults = { deleteChunk: 0, deleteDrop: 0 };
+  const eperm = () => Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
 
   beforeAll(async () => {
     t = await createTestApp({ now: clock.now });
@@ -50,6 +55,14 @@ describe('drop upload lifecycle edges', () => {
         }
         return t.storage.putChunk(dropId, fileId, index, data, version);
       },
+      async deleteChunk(dropId, fileId, index, version) {
+        if (faults.deleteChunk > 0 && faults.deleteChunk--) throw eperm();
+        return t.storage.deleteChunk(dropId, fileId, index, version);
+      },
+      async deleteDrop(dropId) {
+        if (faults.deleteDrop > 0 && faults.deleteDrop--) throw eperm();
+        return t.storage.deleteDrop(dropId);
+      },
     };
     gated = await createTestApp({ now: clock.now, storage, prisma: t.prisma, redis: t.redis });
   });
@@ -59,6 +72,8 @@ describe('drop upload lifecycle edges', () => {
   });
   beforeEach(() => {
     clock.set(T0);
+    faults.deleteChunk = 0;
+    faults.deleteDrop = 0;
   });
 
   /** Any blob of the chunk on disk, whatever its storage version (C-R2-01: a key per PUT attempt). */
@@ -201,6 +216,51 @@ describe('drop upload lifecycle edges', () => {
       }
       expect((await put).status).toBe(409);
       expect(await blobExists(drop.dropId, f.id)).toBe(false);
+    });
+
+    /** PUT a chunk that parks in storage, delete the drop (purged at once), then let the write land. */
+    async function lateWriteAfterPurge(beforeRelease: () => void = () => {}) {
+      const f = testFile(1000);
+      const drop = await createDropOk(gated.app, createBody([f]));
+      const { entered, release } = parkNextPut();
+      const put = putChunk(gated.app, drop.dropId, drop.uploadToken, f.id, 0, chunkData(f, 0)).then(
+        (r) => r,
+      );
+      await entered;
+      try {
+        const del = await within(
+          request(gated.app)
+            .delete(`/api/drops/${drop.dropId}`)
+            .set('X-Owner-Token', drop.ownerToken)
+            .then((r) => r.status),
+        );
+        expect(del).toBe(204);
+        const row = await t.prisma.drop.findUnique({ where: { id: drop.dropId } });
+        expect(row?.blobsDeletedAt).not.toBeNull(); // no later purge will visit this drop
+        beforeRelease();
+      } finally {
+        release();
+      }
+      expect((await put).status).toBe(409);
+      return drop;
+    }
+    const dropDirExists = (dropId: string) =>
+      fs.promises.stat(path.join(t.storageDir, dropId)).then(
+        () => true,
+        () => false,
+      );
+
+    it('C-R3-02: a write refused after the drop was purged leaves no directory of the drop', async () => {
+      const drop = await lateWriteAfterPurge();
+      expect(await dropDirExists(drop.dropId)).toBe(false);
+    });
+
+    it('C-R3-02: a write refused after the drop was purged is removed even when a delete fails once', async () => {
+      const drop = await lateWriteAfterPurge(() => {
+        faults.deleteChunk = 5;
+        faults.deleteDrop = 1;
+      });
+      expect(await dropDirExists(drop.dropId)).toBe(false);
     });
 
     it('a re-PUT stalled in storage cannot replace a chunk that complete() already verified', async () => {

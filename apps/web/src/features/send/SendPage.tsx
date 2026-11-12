@@ -100,6 +100,25 @@ function sameFile(a: File, b: File): boolean {
   return a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
 }
 
+/** The form options a drop is created with. A resume keeps them, so changed options start a new drop (C-R3-05). */
+interface DropOptions {
+  note: string;
+  password: string | null;
+  expiresInHours: number;
+  maxDownloads: DownloadOption;
+  anonymous: boolean;
+}
+
+function sameOptions(a: DropOptions, b: DropOptions): boolean {
+  return (
+    a.note === b.note &&
+    a.password === b.password &&
+    a.expiresInHours === b.expiresInHours &&
+    a.maxDownloads === b.maxDownloads &&
+    a.anonymous === b.anonymous
+  );
+}
+
 export function Component() {
   const authStatus = useAuth((s) => s.status);
   const user = useAuth((s) => s.user);
@@ -114,7 +133,12 @@ export function Component() {
   const [password, setPassword] = useState('');
   const [passwordScore, setPasswordScore] = useState<StrengthScore | null>(null);
   const [note, setNote] = useState('');
+  // The interrupted drop on offer (banner, Resume upload, Try again); a failed run hands its drop over here.
   const [resume, setResume] = useState<ResumeRecord | null>(() => readResumeRecord());
+  // The options of the last drop created in this tab (not known for a record restored after a reload).
+  const [createdWith, setCreatedWith] = useState<{ dropId: string; options: DropOptions } | null>(
+    null,
+  );
   const [view, setView] = useState<View>({ kind: 'compose' });
 
   // Running state.
@@ -146,7 +170,22 @@ export function Component() {
   const cipherTotal = dropCiphertextBytes(files);
   const overLimit = cipherTotal > maxBytes;
   const vaultLocked = signedIn && accountKey === null;
-  const resumeMatch = resume ? matchResumeFiles(resume, files) : null;
+  const options: DropOptions = {
+    note,
+    password: usePassword ? password : null,
+    expiresInHours: effectiveExpiry,
+    maxDownloads: effectiveDownloads,
+    anonymous: !signedIn,
+  };
+  /** The files to resume `record` with, or null when sending would start a new drop instead. */
+  const resumeFilesFor = (record: ResumeRecord | null) => {
+    if (!record) return null;
+    if (createdWith?.dropId === record.dropId && !sameOptions(createdWith.options, options)) {
+      return null;
+    }
+    return matchResumeFiles(record, files);
+  };
+  const resumeMatch = resumeFilesFor(resume);
   const passwordMissing = usePassword && password.length === 0;
   // Same floor as account passwords: a database copy lets an attacker guess the drop password offline.
   const passwordProblem = usePassword ? validateNewPassword(password, passwordScore) : null;
@@ -189,6 +228,11 @@ export function Component() {
   useEffect(() => {
     if (!running && blocker.state === 'blocked') blocker.reset();
   }, [running, blocker]);
+  // While the sign-out question is open, a Back or Forward is not a second question: undo it, so the dialog's
+  // Sign out still signs out (C-R3-09).
+  useEffect(() => {
+    if (signOutAsked && blocker.state === 'blocked') blocker.reset();
+  }, [signOutAsked, blocker]);
 
   // Leaving mid-upload loses the in-memory files; warn (resume after reload still works, R11).
   useEffect(() => {
@@ -204,14 +248,15 @@ export function Component() {
   // SuccessCard focuses its own heading.
   const headerRef = useRef<HTMLDivElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
-  const cancelRef = useRef<HTMLButtonElement>(null);
+  const progressRef = useRef<HTMLSpanElement>(null);
   const unlockRef = useRef<HTMLInputElement>(null);
   const previousKind = useRef<View['kind']>(view.kind);
   useEffect(() => {
     const before = previousKind.current;
     previousKind.current = view.kind;
     if (before === view.kind) return;
-    if (view.kind === 'running') cancelRef.current?.focus();
+    // Not Cancel: it needs no confirmation, so a second Enter on Encrypt & upload would cancel (C-R3-08).
+    if (view.kind === 'running') progressRef.current?.focus();
     else if (view.kind === 'error') errorRef.current?.focus();
     else if (view.kind === 'compose') {
       ((view.after === 'unlock' ? unlockRef.current : null) ?? headerRef.current)?.focus();
@@ -285,12 +330,14 @@ export function Component() {
     return ctrl;
   };
 
-  const callbacksFor = (selected: readonly File[]) => ({
+  /** `created`: the options of a new drop; a resume leaves the drop's original options on record. */
+  const callbacksFor = (selected: readonly File[], created?: DropOptions) => ({
     onPhase: setPhase,
     onEvent,
     onCreated: (record: ResumeRecord) => {
       activeRecord.current = record;
       setResume(null);
+      if (created) setCreatedWith({ dropId: record.dropId, options: created });
       setProgress(
         record.files.map((rf, i) => ({
           id: rf.id,
@@ -308,6 +355,7 @@ export function Component() {
   const finish = (result: SendResult) => {
     controller.current = null;
     activeRecord.current = null; // completed: never resume or abandon it
+    setCreatedWith(null);
     if (result.anonymous) {
       useDeviceDrops.getState().add({
         dropId: result.dropId,
@@ -326,7 +374,12 @@ export function Component() {
   const fail = (err: unknown, ctrl: AbortController) => {
     if (ctrl.signal.aborted || isAbortError(err)) return; // cancel() already reset the view
     controller.current = null;
-    setView({ kind: 'error', error: err, canResume: activeRecord.current !== null });
+    // The interrupted drop now has one owner, `resume`: the main button's label, Try again and Discard it all
+    // act on it (C-R3-05, C-R3-06).
+    const record = activeRecord.current;
+    activeRecord.current = null;
+    if (record) setResume(record);
+    setView({ kind: 'error', error: err, canResume: record !== null });
   };
 
   /** Best-effort delete of an UPLOADING drop that a new drop replaces (DESIGN W2A: the old one is abandoned). */
@@ -350,18 +403,19 @@ export function Component() {
     }
     const ctrl = beginRun();
     if (replaced) await deleteDrop(replaced.dropId, replaced.ownerToken).catch(() => undefined);
+    const created = options;
     try {
       const result = await startNewDrop(
         {
           files: selected,
-          note,
-          expiresInHours: effectiveExpiry,
-          maxDownloads: effectiveDownloads,
-          password: usePassword ? password : null,
+          note: created.note,
+          expiresInHours: created.expiresInHours,
+          maxDownloads: created.maxDownloads,
+          password: created.password,
           accountKey,
           anonymous,
         },
-        callbacksFor(selected),
+        callbacksFor(selected, created),
         ctrl.signal,
       );
       finish(result);
@@ -390,12 +444,12 @@ export function Component() {
     }
   };
 
-  /** The interrupted drop, if any: after a failed upload it lives only in activeRecord and sessionStorage. */
-  const liveRecord = () => activeRecord.current ?? resume ?? readResumeRecord();
-
-  /** Same files resume the interrupted drop; other files replace it (deleted with the owner token, C-35). */
+  /**
+   * Same files (and, for a drop made in this tab, the same options) resume the interrupted drop; otherwise a
+   * new drop replaces it (deleted with the owner token, C-35).
+   */
   const resumeOrReplace = (record: ResumeRecord | null) => {
-    const matched = record ? matchResumeFiles(record, files) : null;
+    const matched = resumeFilesFor(record);
     if (record && matched) {
       void runResume(record, matched);
       return;
@@ -409,7 +463,7 @@ export function Component() {
 
   const submit = () => {
     if (!canSubmit) return;
-    resumeOrReplace(liveRecord());
+    resumeOrReplace(resume);
   };
 
   const cancel = async () => {
@@ -426,20 +480,41 @@ export function Component() {
   };
 
   // A locked vault is handled in runNew (R7, C-38), the one path every fresh drop takes.
-  const retryAfterError = () => resumeOrReplace(liveRecord());
+  const retryAfterError = () => resumeOrReplace(resume);
 
   /** Back to the form; an interrupted drop shows its banner again, so Resume upload stays on offer. */
-  const dismissError = () => {
-    setResume(liveRecord());
-    setView({ kind: 'compose', after: 'dismiss' });
-  };
+  const dismissError = () => setView({ kind: 'compose', after: 'dismiss' });
 
   const discardResume = () => {
     const record = resume;
     clearResumeRecord();
     setResume(null);
+    setCreatedWith(null);
     if (record) abandonDrop(record);
   };
+
+  // Signing out (or the session ending) empties the form: the next person at this browser must not be able to
+  // send the previous user's files, note or password, see their link, or resume their drop (C-R3-07).
+  const userId = user?.id ?? null;
+  const lastUserId = useRef(userId);
+  useEffect(() => {
+    const before = lastUserId.current;
+    lastUserId.current = userId;
+    if (before === null || before === userId) return;
+    controller.current?.abort();
+    controller.current = null;
+    const record = activeRecord.current ?? readResumeRecord();
+    activeRecord.current = null;
+    clearResumeRecord();
+    if (record) abandonDrop(record);
+    setResume(null);
+    setCreatedWith(null);
+    setFiles([]);
+    setNote('');
+    setPassword('');
+    setUsePassword(false);
+    setView({ kind: 'compose' });
+  }, [userId]);
 
   const reset = () => {
     setFiles([]);
@@ -491,14 +566,14 @@ export function Component() {
       cancelLabel="Keep uploading"
       tone="danger"
       onConfirm={async () => {
-        if (blocker.state === 'blocked') blocker.proceed();
-        else if (signOutAsked) {
+        if (signOutAsked) {
           // Cancel (abort and delete the drop) while the session still exists, then let sign-out go on.
           const resolve = leaveAsk.current;
           leaveAsk.current = null;
+          if (blocker.state === 'blocked') blocker.reset();
           await cancel();
           resolve?.(true);
-        }
+        } else if (blocker.state === 'blocked') blocker.proceed();
         return false; // the dialog closes with the blocker or view state; never reset() after proceed()
       }}
     />
@@ -539,7 +614,7 @@ export function Component() {
             retryNotice={retryNotice}
             onCancel={() => void cancel()}
             cancelling={cancelling}
-            cancelRef={cancelRef}
+            headingRef={progressRef}
           />
         </div>
         {leaveDialog}
@@ -627,14 +702,14 @@ export function Component() {
             }
           >
             {errorText(view.error)}
-            {view.canResume
+            {view.canResume && resumeMatch
               ? ' Chunks that already arrived are kept, so trying again continues where it stopped.'
               : ''}
           </Alert>
         </div>
       ) : null}
 
-      {resume ? (
+      {resume && view.kind !== 'error' ? (
         <Alert
           tone="info"
           title={

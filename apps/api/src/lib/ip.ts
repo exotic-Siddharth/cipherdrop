@@ -78,3 +78,15 @@ export function ipKey(ip: string | null | undefined): string {
   const h = expandIPv6(s);
   return `${compressIPv6([h[0] ?? 0, h[1] ?? 0, h[2] ?? 0, h[3] ?? 0, 0, 0, 0, 0])}/64`;
 }
+
+/**
+ * Key for per-client shares of the in-flight chunk slots (C-R3-03): the full IPv4 address, or the IPv6 /48.
+ * A subscriber is commonly delegated a /56 or a /48 (free from tunnel brokers), so keying on the /64 would
+ * give one client 256 or 65,536 shares. "unknown" when the address is missing.
+ */
+export function ipShareKey(ip: string | null | undefined): string {
+  const s = normalizeIp(ip);
+  if (!s) return 'unknown';
+  if (isIPv4(s)) return s;
+  return ipPrefix(s) ?? 'unknown';
+}

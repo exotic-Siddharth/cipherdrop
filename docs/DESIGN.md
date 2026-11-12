@@ -163,11 +163,11 @@ cipherdrop/
 | `TRUST_PROXY` | false | true behind nginx; in production it must be set explicitly (`0` = deliberate opt-out) |
 | `CHUNK_IDLE_TIMEOUT_SEC` | 30 (1-3600) | a chunk GET whose socket sees no activity for this long is aborted (stalled readers cannot hold the storage pool) |
 | `CHUNK_UPLOAD_IDLE_TIMEOUT_SEC` | 30 (1-3600) | a chunk PUT body with no data for this long is hung up (stalled body) |
-| `CHUNK_UPLOAD_DEADLINE_SEC` | 120 (1-3600) | total time a chunk PUT body may take; stops slow-drip clients whose idle timer never fires |
+| `CHUNK_UPLOAD_MIN_BYTES_PER_SEC` | 4096 (1-1048576) | minimum body rate per `CHUNK_UPLOAD_IDLE_TIMEOUT_SEC` window; stops slow-drip clients without cutting slow, steady uplinks. The effective floor for an honest client is Node's 300 s `requestTimeout` per 4 MiB chunk: about 14 KB/s per PUT, about 0.34 Mbit/s for the 3-lane web uploader |
 | `MAX_CONCURRENT_CHUNK_UPLOADS` | 64 | per-process cap of in-flight chunk PUTs; above it the API answers 429 + `Retry-After` |
-| `MAX_CHUNK_UPLOADS_PER_TOKEN` / `MAX_CHUNK_UPLOADS_PER_IP` | 8 / 16 | in-flight chunk PUTs per upload token and per client IP (the web uploader sends 3 at a time); above them 429 + `Retry-After` |
+| `MAX_CHUNK_UPLOADS_PER_TOKEN` / `MAX_CHUNK_UPLOADS_PER_IP` | 8 / 16 | in-flight chunk PUTs per upload token and per client IP (the web uploader sends 3 at a time); above them 429 + `Retry-After`. The per-IP share is keyed per IPv4 address or IPv6 /48 (rate limits stay per /64) |
 | `MAX_CONCURRENT_CHUNK_DOWNLOADS` | 192 (max 224) | per-process cap of streaming chunk GETs; the maximum stays below the 256-socket S3 pool; above it 429 + `Retry-After` |
-| `MAX_CHUNK_DOWNLOADS_PER_GRANT` / `MAX_CHUNK_DOWNLOADS_PER_IP` | 8 / 32 | in-flight chunk GETs per download grant and per client IP (the web downloader fetches one at a time) |
+| `MAX_CHUNK_DOWNLOADS_PER_GRANT` / `MAX_CHUNK_DOWNLOADS_PER_IP` | 8 / 32 | in-flight chunk GETs per download grant and per client IP, keyed per IPv4 address or IPv6 /48 (the web downloader fetches one at a time) |
 | `ANON_TOTAL_PENDING_BYTES` | 0 (off) | optional ceiling on the bytes of all anonymous drops whose blobs are not purged (any status); check and insert are serialised by a Postgres advisory lock |
 
 With `NODE_ENV=production` the API refuses to start unless `DATABASE_URL`, `REDIS_URL`, `WEB_ORIGIN` (a bare origin) and `TRUST_PROXY` are set explicitly and `COOKIE_SECURE=true`; `apps/api/.env` is not loaded in production.
@@ -391,6 +391,7 @@ model Drop {
   reports Report[]
   @@index([status, expiresAt])
   @@index([ownerId, createdAt])
+  @@index([ownerId, blobsDeletedAt])   // anonymous capacity sum (ownerId null) without a full scan
 }
 
 model DropFile {

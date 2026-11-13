@@ -241,3 +241,7 @@ regression test that failed before the fix (one, C-30, was checked by hand becau
 import). Three adversarial reviews of the fixes followed, with 14, 10 and 6 further items; all 30 were fixed with
 a failing regression test first (one, C-R3-10, only needed the missing test). The open points that were accepted rather than fixed are listed in the record and in
 [docs/SECURITY.md](docs/SECURITY.md#7-accepted-open-points).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

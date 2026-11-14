@@ -121,7 +121,7 @@ model RefreshToken {
   tokenHash     String    @unique // sha256(token)
   createdAt     DateTime  @default(now())
   expiresAt     DateTime
-  usedAt        DateTime? // set on rotation; presenting a used token = reuse -> revoke session
+  usedAt        DateTime? // set on rotation or grace replacement; presenting a used token = reuse -> revoke
   rotatedFromId String? // the token this one replaced; a lost-response replay finds its unused successor
 
   @@index([expiresAt])

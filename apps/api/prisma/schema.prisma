@@ -115,15 +115,17 @@ model Session {
 }
 
 model RefreshToken {
-  id        String    @id @default(cuid())
-  sessionId String
-  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  tokenHash String    @unique // sha256(token)
-  createdAt DateTime  @default(now())
-  expiresAt DateTime
-  usedAt    DateTime? // set on rotation; presenting a used token = reuse -> revoke session
+  id            String    @id @default(cuid())
+  sessionId     String
+  session       Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tokenHash     String    @unique // sha256(token)
+  createdAt     DateTime  @default(now())
+  expiresAt     DateTime
+  usedAt        DateTime? // set on rotation; presenting a used token = reuse -> revoke session
+  rotatedFromId String? // the token this one replaced; a lost-response replay finds its unused successor
 
   @@index([expiresAt])
+  @@index([rotatedFromId])
 }
 
 model BackupCode {

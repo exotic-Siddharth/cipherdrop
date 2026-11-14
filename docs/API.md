@@ -117,7 +117,7 @@ Paths are relative to `/api`. Request and response fields are in the OpenAPI doc
 | `POST /auth/register` | none | create an account from client-derived material (`authKey`, KDF params, wrapped account key, recovery wrap and hash); sets `cd_rt` |
 | `POST /auth/login` | none | `{email, authKey}`; returns the access token, or `{mfaRequired: true, mfaToken}` |
 | `POST /auth/login/mfa` | none | `{mfaToken, code}` with a TOTP or backup code |
-| `POST /auth/refresh` | cookie | rotate the refresh cookie, new access token; a reused token revokes the session |
+| `POST /auth/refresh` | cookie | rotate the refresh cookie, new access token; a reused token revokes the session, except a replay within 30 s of its rotation while the successor is unused (lost response), which replaces the successor |
 | `POST /auth/logout` | cookie | revoke the current session |
 | `GET /auth/vault` | bearer | wrapped account key and KDF params, for unlocking the vault in the browser |
 | `POST /auth/password` | bearer | change password: new authKey and the re-wrapped account key; other sessions are revoked |

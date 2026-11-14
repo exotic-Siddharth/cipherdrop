@@ -159,7 +159,7 @@ paths (never the fragment). Operators who want prefix-only logs must change `acc
 | Account lockout | 10 consecutive failed logins (wrong authKey or wrong TOTP or backup code) lock the account for 15 minutes; the error stays generic |
 | Two-factor | TOTP (SHA-1, 6 digits, 30 s, plus or minus one step) with replay protection (the last used step is stored), secrets AES-256-GCM-encrypted at rest; 10 single-use backup codes stored as SHA-256 hashes |
 | Access token | JWT HS256, 15 minutes, kept in memory only (never in localStorage), sent as a Bearer header |
-| Refresh token | Random 32 bytes in the `cd_rt` cookie (httpOnly, `SameSite=Strict`, `Path=/api/auth`, `Secure` in production), rotated on every refresh; presenting an already used token revokes the whole session (`SESSION_REUSE_DETECTED`) |
+| Refresh token | Random 32 bytes in the `cd_rt` cookie (httpOnly, `SameSite=Strict`, `Path=/api/auth`, `Secure` in production), rotated on every refresh; presenting an already used token revokes the whole session (`SESSION_REUSE_DETECTED`), except a lost response: within 30 s of the rotation, while the successor is still unused, the successor is revoked and a fresh one issued in the same session |
 | Immediate revocation | A revoked session id goes on a Redis denylist for the access-token lifetime, so its access token stops working at once (logout, "revoke others", password change, recovery, account deletion) |
 | CSRF | API calls authenticate with the Bearer header, which a cross-site page cannot set; the only cookie is `SameSite=Strict` and scoped to `/api/auth` |
 | Vault | The account key lives only in memory as a non-extractable `CryptoKey`; a page reload locks it, and it auto-locks after 5, 15 or 60 minutes idle (default 15) |
@@ -206,6 +206,13 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
 - **Slowest supported uplink (C-R3-01).** About 0.34 Mbit/s for the three-lane web uploader, set by Node's 300 s
   request timeout per 4 MiB chunk.
 - **Shared per-IP shares (C-R3-03).** Clients behind one IPv4 NAT or one IPv6 /48 share the per-IP in-flight caps.
+- **Refresh grace window.** A refresh whose response is lost leaves the browser holding the old, already used
+  token. So that this does not sign the user out, a replay of that token less than 30 s (`REFRESH_GRACE_MS`) after
+  its rotation, while its successor has never been used, revokes the unused successor and issues a new one in the
+  same session instead of revoking the session. The trade-off: a thief holding the old token during those same 30 s
+  could race the user for the session (whoever refreshes last holds the only live token; the other is signed out at
+  the next refresh). The window is short, opens only while the successor is unused, and is not extended by
+  re-issues; outside it, or once any successor was used, reuse revokes the whole session as before.
 - **Test coverage.** Signing out mid-upload is covered by unit tests only; the resume flow after the round-4
   changes has one browser-level test.
 - **Dependency advisories (`npm audit --omit=dev`, 2026-11-12).** Two are rated high, and both fixes are major

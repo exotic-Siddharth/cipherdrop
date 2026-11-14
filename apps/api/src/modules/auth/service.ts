@@ -3,8 +3,9 @@
  *
  * Sessions are token families: one Session row per login, one RefreshToken row per issued refresh token
  * (stored as sha256B64url). Rotation marks the presented token used; presenting a used token again is reuse:
- * the session is revoked, its sid denylisted and SESSION_REUSE_DETECTED audited. Revoking a session always
- * writes the sid denylist so its access tokens die at once (Review Focus 5).
+ * the session is revoked, its sid denylisted and SESSION_REUSE_DETECTED audited. The one exception is a lost
+ * response: a replay within REFRESH_GRACE_MS of the rotation, while the successor is unused, replaces that
+ * successor. Revoking a session always writes the sid denylist so its access tokens die at once (Review Focus 5).
  *
  * Never log or echo authKeys, tokens, codes, secrets or wrapped keys.
  */
@@ -201,6 +202,15 @@ export interface RotatedRefresh {
   refreshExpiresAt: Date;
 }
 
+/**
+ * A rotated token presented again less than this long after its rotation, while its successor is still unused,
+ * is taken as a lost response (the browser never got the successor), not as reuse. See docs/DESIGN.md.
+ */
+export const REFRESH_GRACE_MS = 30_000;
+
+const inGraceWindow = (usedAt: Date, now: Date) =>
+  now.getTime() - usedAt.getTime() < REFRESH_GRACE_MS;
+
 /** Rotate a refresh token (spec section 10). Any problem is a 401; reuse also revokes the family. */
 export async function rotateRefresh(
   ctx: AppContext,
@@ -213,28 +223,39 @@ export async function rotateRefresh(
   });
   if (!found) throw unauthorized();
   const { session } = found;
-  if (found.usedAt) return handleReuse(ctx, session, req);
   const now = ctx.now();
+  if (found.usedAt && !inGraceWindow(found.usedAt, now)) return handleReuse(ctx, session, req);
   if (session.revokedAt || session.expiresAt <= now || found.expiresAt <= now) {
     throw unauthorized();
   }
   const refreshToken = randomToken();
   const refreshExpiresAt = refreshExpiry(ctx, now);
   // Claim the token and issue its successor in ONE transaction: a failure rolls the claim back, so a
-  // retry is not mistaken for reuse. A concurrent second presentation waits for the row lock, then finds
-  // the claim taken (count 0) and is reuse.
+  // retry is not mistaken for reuse (C-28). A token that is already claimed is a replay: inside the grace
+  // window, and only while its successor is unused, that successor is deleted and replaced (same session);
+  // otherwise it is reuse. The FOR UPDATE lock on the presented token queues concurrent replays, so each
+  // one replaces the successor the previous one issued and at most one live successor exists.
   const claimed = await ctx.prisma.$transaction(async (tx) => {
     const claim = await tx.refreshToken.updateMany({
       where: { id: found.id, usedAt: null },
       data: { usedAt: now },
     });
-    if (claim.count !== 1) return false;
+    if (claim.count !== 1) {
+      const [row] = await tx.$queryRaw<{ usedAt: Date | null }[]>`
+        SELECT "usedAt" FROM "RefreshToken" WHERE "id" = ${found.id} FOR UPDATE`;
+      if (!row?.usedAt || !inGraceWindow(row.usedAt, now)) return false;
+      const replaced = await tx.refreshToken.deleteMany({
+        where: { rotatedFromId: found.id, usedAt: null },
+      });
+      if (replaced.count !== 1) return false;
+    }
     await tx.refreshToken.create({
       data: {
         sessionId: session.id,
         tokenHash: sha256B64url(refreshToken),
         createdAt: now,
         expiresAt: refreshExpiresAt,
+        rotatedFromId: found.id,
       },
     });
     await tx.session.update({

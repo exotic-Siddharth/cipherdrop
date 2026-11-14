@@ -215,15 +215,18 @@ sequenceDiagram
   B->>A: POST /auth/refresh (cookie), 30 s before expiry
   A->>A: mark token used, issue successor (one transaction)
   A-->>B: new JWT + new cookie
-  Note over A: a used token presented again revokes the whole session
+  Note over A: a used token presented again revokes the whole session,<br/>unless within 30 s and its successor is unused (lost response)
   B->>A: revoke a session, change password or recover
   A->>R: denylist session id for the access-token lifetime
   Note over A: auth middleware rejects that session's JWT immediately
 ```
 
 - One `Session` row per login is the "token family"; each refresh token belongs to it and is single-use.
-- Rotation is one transaction, so a lost response cannot look like token reuse and log the user out
-  (review C-28).
+- Rotation is one transaction, so a failure while issuing the successor cannot look like token reuse and log the
+  user out (review C-28).
+- A rotation whose response is lost leaves the browser with the used token. Replayed within 30 s
+  (`REFRESH_GRACE_MS`) while its successor is unused, it replaces that successor in the same session instead of
+  revoking it; at most one live successor exists (trade-off in [SECURITY.md](SECURITY.md) section 7).
 - After a reload the session refreshes silently but the vault is locked: the user re-enters the password, which is
   checked locally by unwrapping the account key, with no request sent.
 

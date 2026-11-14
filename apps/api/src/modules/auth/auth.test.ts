@@ -25,7 +25,9 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { TEST_ACCOUNT, createUserRecord, uniqueEmail } from '../../../test/factories';
+import { sha256B64url } from '../../lib/hash';
 import { isSidDenylisted } from '../../lib/redis';
+import { REFRESH_GRACE_MS } from './service';
 import {
   bearer,
   cookieFrom,
@@ -289,16 +291,19 @@ describe('POST /auth/refresh and /auth/logout', () => {
     const s = await newSession(t.app, u);
     const first = await refresh(s.cookie);
     expect(first.status).toBe(200);
-    const child = cookieFrom(first);
     const childAccess = first.body.accessToken as string;
+    // The child is used, so replaying the parent is reuse even inside the lost-response grace window.
+    const second = await refresh(cookieFrom(first));
+    expect(second.status).toBe(200);
+    const grandchild = cookieFrom(second);
 
     const reuse = await refresh(s.cookie);
     expect(reuse.status).toBe(401);
     const session = await t.prisma.session.findUniqueOrThrow({ where: { id: s.sid } });
     expect(session.revokedAt).not.toBeNull();
     expect(await isSidDenylisted(t.redis, s.sid)).toBe(true);
-    // The whole token family is dead: the child token and the access tokens of the session.
-    expect((await refresh(child)).status).toBe(401);
+    // The whole token family is dead: the latest token and the access tokens of the session.
+    expect((await refresh(grandchild)).status).toBe(401);
     expect((await vault(childAccess)).status).toBe(401);
     expect((await vault(s.accessToken)).status).toBe(401);
     const reuseEvents = await t.prisma.auditEvent.count({
@@ -634,5 +639,141 @@ describe('sessions', () => {
       .set('Authorization', bearer(u.accessToken));
     expect(list.body).toHaveLength(1);
     expect(list.body[0].current).toBe(true);
+  });
+});
+
+describe('POST /auth/refresh after a lost rotation response (grace window)', () => {
+  let clock = new Date();
+  let g: TestApp;
+  let u: RegisteredUser;
+  beforeAll(async () => {
+    g = await createTestApp({ now: () => clock });
+    u = await registerViaApi(g.app);
+  });
+  afterAll(async () => {
+    await g.close();
+  });
+
+  const advance = (ms: number) => {
+    clock = new Date(clock.getTime() + ms);
+  };
+  const gRefresh = (cookie: string) =>
+    request(g.app).post('/api/auth/refresh').set('Cookie', cookie);
+  const reuseEvents = (sid: string) =>
+    g.prisma.auditEvent.count({
+      where: { action: 'SESSION_REUSE_DETECTED', metadata: { path: ['sessionId'], equals: sid } },
+    });
+  const liveTokens = (sid: string) =>
+    g.prisma.refreshToken.findMany({ where: { sessionId: sid, usedAt: null } });
+  const revokedAt = async (sid: string) =>
+    (await g.prisma.session.findUniqueOrThrow({ where: { id: sid } })).revokedAt;
+
+  it('a replay inside the window keeps the session: a fresh successor works, the unused one is dead', async () => {
+    const s = await newSession(g.app, u);
+    const lost = await gRefresh(s.cookie);
+    expect(lost.status).toBe(200);
+    const unused = cookieFrom(lost);
+
+    advance(5_000);
+    const replay = await gRefresh(s.cookie);
+    expect(replay.status).toBe(200);
+    expect(RefreshResponseSchema.parse(replay.body).user.id).toBe(u.user.id);
+    expect(sidOf(replay.body.accessToken as string)).toBe(s.sid);
+    const fresh = cookieFrom(replay);
+    expect(fresh).not.toBe(unused);
+    expect(await liveTokens(s.sid)).toHaveLength(1);
+
+    // The never-delivered successor is dead, and presenting it does not revoke the session.
+    expect((await gRefresh(unused)).status).toBe(401);
+    expect(await revokedAt(s.sid)).toBeNull();
+    expect(await isSidDenylisted(g.redis, s.sid)).toBe(false);
+    expect((await gRefresh(fresh)).status).toBe(200);
+    expect(await reuseEvents(s.sid)).toBe(0);
+  });
+
+  it('every re-issue inside the window revokes the previous unused successor', async () => {
+    const s = await newSession(g.app, u);
+    const lost = cookieFrom(await gRefresh(s.cookie));
+    advance(1_000);
+    const second = await gRefresh(s.cookie);
+    expect(second.status).toBe(200);
+    advance(1_000);
+    const third = await gRefresh(s.cookie);
+    expect(third.status).toBe(200);
+    expect(await liveTokens(s.sid)).toHaveLength(1);
+    expect((await gRefresh(lost)).status).toBe(401);
+    expect((await gRefresh(cookieFrom(second))).status).toBe(401);
+    expect((await gRefresh(cookieFrom(third))).status).toBe(200);
+    expect(await revokedAt(s.sid)).toBeNull();
+  });
+
+  it('the window is measured from the original rotation and is not extended by re-issues', async () => {
+    const s = await newSession(g.app, u);
+    expect((await gRefresh(s.cookie)).status).toBe(200);
+    advance(REFRESH_GRACE_MS - 1_000);
+    const late = await gRefresh(s.cookie);
+    expect(late.status).toBe(200);
+    advance(2_000);
+    expect((await gRefresh(s.cookie)).status).toBe(401);
+    expect(await revokedAt(s.sid)).not.toBeNull();
+    expect((await gRefresh(cookieFrom(late))).status).toBe(401);
+  });
+
+  it('a replay after the window is reuse: the family is revoked', async () => {
+    const s = await newSession(g.app, u);
+    const first = await gRefresh(s.cookie);
+    expect(first.status).toBe(200);
+    const child = cookieFrom(first);
+
+    advance(REFRESH_GRACE_MS);
+    expect((await gRefresh(s.cookie)).status).toBe(401);
+    expect(await revokedAt(s.sid)).not.toBeNull();
+    expect(await isSidDenylisted(g.redis, s.sid)).toBe(true);
+    expect((await gRefresh(child)).status).toBe(401);
+    expect(
+      (await request(g.app).get('/api/auth/vault').set('Authorization', bearer(s.accessToken)))
+        .status,
+    ).toBe(401);
+    expect(await reuseEvents(s.sid)).toBe(1);
+  });
+
+  it('a replay after the successor was used is reuse, even inside the window', async () => {
+    const s = await newSession(g.app, u);
+    const first = await gRefresh(s.cookie);
+    advance(1_000);
+    const second = await gRefresh(cookieFrom(first));
+    expect(second.status).toBe(200);
+
+    advance(1_000);
+    expect((await gRefresh(s.cookie)).status).toBe(401);
+    expect(await revokedAt(s.sid)).not.toBeNull();
+    expect(await isSidDenylisted(g.redis, s.sid)).toBe(true);
+    expect((await gRefresh(cookieFrom(second))).status).toBe(401);
+    expect(await reuseEvents(s.sid)).toBe(1);
+  });
+
+  it('concurrent replays never leave two live tokens', async () => {
+    const s = await newSession(g.app, u);
+    expect((await gRefresh(s.cookie)).status).toBe(200);
+    advance(1_000);
+    const replays = await Promise.all([1, 2, 3, 4].map(() => gRefresh(s.cookie)));
+    const issued = replays.filter((r) => r.status === 200).map((r) => refreshTokenFrom(r));
+    expect(issued.length).toBeGreaterThan(0);
+    const live = await liveTokens(s.sid);
+    expect(live).toHaveLength(1);
+    expect(issued.map((tok) => sha256B64url(tok ?? ''))).toContain(live[0]?.tokenHash);
+    expect(await revokedAt(s.sid)).toBeNull();
+  });
+
+  it('a replay inside the window of a revoked session stays 401', async () => {
+    const s = await newSession(g.app, u);
+    expect((await gRefresh(s.cookie)).status).toBe(200);
+    const del = await request(g.app)
+      .delete(`/api/auth/sessions/${s.sid}`)
+      .set('Authorization', bearer(u.accessToken));
+    expect(del.status).toBe(204);
+    advance(1_000);
+    expect((await gRefresh(s.cookie)).status).toBe(401);
+    expect(await liveTokens(s.sid)).toHaveLength(1);
   });
 });

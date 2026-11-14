@@ -683,26 +683,74 @@ describe('POST /auth/refresh after a lost rotation response (grace window)', () 
     expect(fresh).not.toBe(unused);
     expect(await liveTokens(s.sid)).toHaveLength(1);
 
-    // The never-delivered successor is dead, and presenting it does not revoke the session.
-    expect((await gRefresh(unused)).status).toBe(401);
+    expect((await gRefresh(fresh)).status).toBe(200);
     expect(await revokedAt(s.sid)).toBeNull();
     expect(await isSidDenylisted(g.redis, s.sid)).toBe(false);
-    expect((await gRefresh(fresh)).status).toBe(200);
     expect(await reuseEvents(s.sid)).toBe(0);
+  });
+
+  it('presenting a replaced successor is reuse: the family is revoked and audited', async () => {
+    const s = await newSession(g.app, u);
+    const unused = cookieFrom(await gRefresh(s.cookie));
+    advance(5_000);
+    const replay = await gRefresh(s.cookie);
+    expect(replay.status).toBe(200);
+
+    // A genuine lost response never delivers the replaced successor, so whoever presents it is contesting the family.
+    expect((await gRefresh(unused)).status).toBe(401);
+    expect(await revokedAt(s.sid)).not.toBeNull();
+    expect(await isSidDenylisted(g.redis, s.sid)).toBe(true);
+    expect(await reuseEvents(s.sid)).toBe(1);
+    expect((await gRefresh(cookieFrom(replay))).status).toBe(401);
+  });
+
+  it('a thief replaying inside the window loses the session when the user next refreshes', async () => {
+    const s = await newSession(g.app, u);
+    const user = await gRefresh(s.cookie);
+    expect(user.status).toBe(200);
+    advance(10_000);
+    const thief = await gRefresh(s.cookie);
+    expect(thief.status).toBe(200);
+
+    advance(14 * 60_000);
+    expect((await gRefresh(cookieFrom(user))).status).toBe(401);
+    expect(await revokedAt(s.sid)).not.toBeNull();
+    expect(await isSidDenylisted(g.redis, s.sid)).toBe(true);
+    expect(await reuseEvents(s.sid)).toBe(1);
+    expect((await gRefresh(cookieFrom(thief))).status).toBe(401);
+  });
+
+  it('logout with a replaced successor still ends the session', async () => {
+    const s = await newSession(g.app, u);
+    const user = await gRefresh(s.cookie);
+    advance(10_000);
+    const thief = await gRefresh(s.cookie);
+    expect(thief.status).toBe(200);
+
+    const out = await request(g.app).post('/api/auth/logout').set('Cookie', cookieFrom(user));
+    expect(out.status).toBe(204);
+    expect(await revokedAt(s.sid)).not.toBeNull();
+    expect(await isSidDenylisted(g.redis, s.sid)).toBe(true);
+    expect((await gRefresh(cookieFrom(thief))).status).toBe(401);
   });
 
   it('every re-issue inside the window revokes the previous unused successor', async () => {
     const s = await newSession(g.app, u);
-    const lost = cookieFrom(await gRefresh(s.cookie));
+    const lost = await gRefresh(s.cookie);
     advance(1_000);
     const second = await gRefresh(s.cookie);
     expect(second.status).toBe(200);
     advance(1_000);
     const third = await gRefresh(s.cookie);
     expect(third.status).toBe(200);
-    expect(await liveTokens(s.sid)).toHaveLength(1);
-    expect((await gRefresh(lost)).status).toBe(401);
-    expect((await gRefresh(cookieFrom(second))).status).toBe(401);
+    const live = await liveTokens(s.sid);
+    expect(live.map((r) => r.tokenHash)).toEqual([sha256B64url(refreshTokenFrom(third) ?? '')]);
+    // The replaced successors stay as used tombstones, so presenting one is detected as reuse.
+    for (const replaced of [lost, second]) {
+      const tokenHash = sha256B64url(refreshTokenFrom(replaced) ?? '');
+      const row = await g.prisma.refreshToken.findUnique({ where: { tokenHash } });
+      expect(row?.usedAt).toBeInstanceOf(Date);
+    }
     expect((await gRefresh(cookieFrom(third))).status).toBe(200);
     expect(await revokedAt(s.sid)).toBeNull();
   });
@@ -752,7 +800,7 @@ describe('POST /auth/refresh after a lost rotation response (grace window)', () 
     expect(await reuseEvents(s.sid)).toBe(1);
   });
 
-  it('concurrent replays never leave two live tokens', async () => {
+  it('concurrent replays queue: at most one live successor and the session is kept', async () => {
     const s = await newSession(g.app, u);
     expect((await gRefresh(s.cookie)).status).toBe(200);
     advance(1_000);

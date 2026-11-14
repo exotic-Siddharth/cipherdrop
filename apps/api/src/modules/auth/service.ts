@@ -5,7 +5,8 @@
  * (stored as sha256B64url). Rotation marks the presented token used; presenting a used token again is reuse:
  * the session is revoked, its sid denylisted and SESSION_REUSE_DETECTED audited. The one exception is a lost
  * response: a replay within REFRESH_GRACE_MS of the rotation, while the successor is unused, replaces that
- * successor. Revoking a session always writes the sid denylist so its access tokens die at once (Review Focus 5).
+ * successor (which is kept as a used token, so presenting it later is reuse). Revoking a session always writes
+ * the sid denylist so its access tokens die at once (Review Focus 5).
  *
  * Never log or echo authKeys, tokens, codes, secrets or wrapped keys.
  */
@@ -232,9 +233,12 @@ export async function rotateRefresh(
   const refreshExpiresAt = refreshExpiry(ctx, now);
   // Claim the token and issue its successor in ONE transaction: a failure rolls the claim back, so a
   // retry is not mistaken for reuse (C-28). A token that is already claimed is a replay: inside the grace
-  // window, and only while its successor is unused, that successor is deleted and replaced (same session);
-  // otherwise it is reuse. The FOR UPDATE lock on the presented token queues concurrent replays, so each
-  // one replaces the successor the previous one issued and at most one live successor exists.
+  // window, and only while its successor is unused, that successor is retired and replaced (same session);
+  // otherwise it is reuse. The successor is retired by marking it used, not deleted: a genuine lost response
+  // never delivered it, so whoever presents it later is contesting the family and is caught as reuse (and
+  // logout still finds its session). Its row lock plus the count check leave at most one live successor. The
+  // FOR UPDATE on the presented token queues concurrent replays, so each later one (a fresh READ COMMITTED
+  // snapshot) sees and retires the successor the previous one issued instead of finding none and revoking.
   const claimed = await ctx.prisma.$transaction(async (tx) => {
     const claim = await tx.refreshToken.updateMany({
       where: { id: found.id, usedAt: null },
@@ -244,8 +248,9 @@ export async function rotateRefresh(
       const [row] = await tx.$queryRaw<{ usedAt: Date | null }[]>`
         SELECT "usedAt" FROM "RefreshToken" WHERE "id" = ${found.id} FOR UPDATE`;
       if (!row?.usedAt || !inGraceWindow(row.usedAt, now)) return false;
-      const replaced = await tx.refreshToken.deleteMany({
+      const replaced = await tx.refreshToken.updateMany({
         where: { rotatedFromId: found.id, usedAt: null },
+        data: { usedAt: now },
       });
       if (replaced.count !== 1) return false;
     }

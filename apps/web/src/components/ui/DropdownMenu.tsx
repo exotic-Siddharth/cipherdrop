@@ -21,7 +21,7 @@ export interface DropdownMenuItem {
   onSelect?: () => void;
   /** In-app route: renders a router link (keeps open-in-new-tab). */
   to?: string;
-  /** Plain URL (e.g. /api/docs): renders an <a>. */
+  /** Plain URL (e.g. /SECURITY.md): renders an <a>. */
   href?: string;
   tone?: 'default' | 'danger';
   disabled?: boolean;

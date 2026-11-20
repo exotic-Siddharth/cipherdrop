@@ -44,7 +44,7 @@ export async function recordAfterCommit(
     await ctx.audit.record(input);
   } catch (err) {
     ctx.logger.error(
-      { action: input.action, dropId: input.dropId, err: { message: (err as Error).message } },
+      { action: input.action, dropId: input.dropId, err },
       'audit write failed after the change committed',
     );
   }

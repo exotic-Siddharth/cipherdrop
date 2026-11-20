@@ -461,8 +461,9 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
         stream.destroy();
         if (!res.headersSent) throw err;
         // Mid-stream failure or client abort: the length no longer matches, so drop the connection.
+        // `errCode`, not `err.code`: REDACT_PATHS censors every `*.code`.
         res.destroy();
-        ctx.logger.warn({ err: { code: (err as { code?: string }).code } }, 'chunk stream aborted');
+        ctx.logger.warn({ errCode: (err as { code?: string }).code }, 'chunk stream aborted');
       } finally {
         res.off('timeout', onIdle);
         // After a normal finish Node has already armed the keep-alive idle timeout: leave it alone. Only an

@@ -4,11 +4,9 @@ import { logger as defaultLogger, type Logger } from '../lib/logger';
 
 /**
  * A new client. Prisma never logs query parameters here (no `query` level). Its warnings and errors are
- * emitted as events and written through pino: Prisma's own stdout logging would bypass pino, its redaction
- * and its error serializer. An error event is logged WITHOUT its message, which carries the arguments of the
- * failed call (a reporter's decryption key, a manifest) whatever errorFormat says; the thrown error reaches
- * the caller and the error handler, which logs its safe fields (lib/logger.ts serializeError).
- * errorFormat 'minimal' leaves the source code frame out of the messages.
+ * emitted as events and written through pino (logPrismaEvent): Prisma's own stdout logging would bypass pino,
+ * its redaction and its error serializer. errorFormat 'minimal' leaves the source code frame out of the
+ * messages.
  */
 export function createPrisma(
   url: string = env.DATABASE_URL,
@@ -22,10 +20,27 @@ export function createPrisma(
       { emit: 'event', level: 'error' },
     ],
   });
-  // `target` names the call (e.g. "report.create"), never its arguments.
-  prisma.$on('warn', (e) => log.warn({ prisma: { target: e.target } }, e.message));
-  prisma.$on('error', (e) => log.error({ prisma: { target: e.target } }, 'prisma error'));
+  prisma.$on('warn', (e) => logPrismaEvent(log, 'warn', e));
+  prisma.$on('error', (e) => logPrismaEvent(log, 'error', e));
   return prisma;
+}
+
+/**
+ * One Prisma warn or error event. Its `target` says where it comes from. A failed call is reported under the
+ * call's name ("report.create", "$queryRaw"), with the message of the error the caller gets, which renders
+ * the call's arguments (a reporter's decryption key, a manifest) or the database's error with the values,
+ * whatever errorFormat says: that message is left out. The thrown error reaches the caller and the error
+ * handler, which log its safe fields (lib/logger.ts serializeError). The engine's own logs come from a Rust
+ * module ("quaint::connector::postgres::native"): a connection that broke in the background, which no caller
+ * ever hears about. They are written by the engine, not rendered from a call, so their message is kept.
+ */
+export function logPrismaEvent(
+  log: Pick<Logger, 'warn' | 'error'>,
+  level: 'warn' | 'error',
+  e: { message: string; target: string },
+): void {
+  const target = typeof e.target === 'string' ? e.target : '';
+  log[level]({ prisma: { target } }, target.includes('::') ? e.message : `prisma ${level}`);
 }
 
 let shared: PrismaClient | undefined;

@@ -25,10 +25,13 @@ export const metrics = {
     labelNames: ['anon'] as const,
     registers: [metricsRegistry],
   }),
-  /** Drop creates refused by a storage control. labels: reason = "client_budget" | "anon_pool" */
+  /**
+   * Drop creates refused by a storage control. labels: reason = "client_budget" | "anon_pool" | "global_cap" |
+   * "disk_floor" (the last two answer clients the same 507 STORAGE_FULL; this tells the operator which).
+   */
   dropsRefused: new client.Counter({
     name: 'drops_refused_total',
-    help: 'Drop creates refused by a storage control (per-client budget, anonymous pool)',
+    help: 'Drop creates refused by a storage control (per-client budget, anonymous pool, global cap, free-disk floor)',
     labelNames: ['reason'] as const,
     registers: [metricsRegistry],
   }),

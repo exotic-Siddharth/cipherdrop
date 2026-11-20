@@ -150,6 +150,18 @@ const EnvSchema = z
      */
     ANON_BYTES_PER_CLIENT: int(1_073_741_824, 0),
     ANON_BYTES_WINDOW_HOURS: int(24, 1, 720),
+    /**
+     * Ceiling on the ciphertext bytes of ALL drops, anonymous and signed in, whose blobs are not purged yet
+     * (0 = off, the default). Beyond it a new drop gets 507 STORAGE_FULL. Size it to the disk or the bucket
+     * budget: quotas are per account and free accounts are cheap.
+     */
+    GLOBAL_STORAGE_CAP_BYTES: int(0, 0),
+    /**
+     * Local storage only: a new drop gets 507 STORAGE_FULL when the blob volume's free space, minus the
+     * declared bytes of every upload in progress and of this drop, would fall below this (default 1 GiB;
+     * 0 = off). The blobs share the host disk with Postgres, and a full disk takes the database down.
+     */
+    STORAGE_MIN_FREE_BYTES: int(1_073_741_824, 0),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),

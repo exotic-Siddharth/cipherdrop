@@ -245,6 +245,10 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
           description:
             'Anonymous uploads are switched off on this server (FEATURE_DISABLED, details.feature anonymousUploads)',
         },
+        507: {
+          description:
+            'The instance is full: GLOBAL_STORAGE_CAP_BYTES reached or free disk below STORAGE_MIN_FREE_BYTES (STORAGE_FULL)',
+        },
         429: {
           description:
             'Too many creates (RATE_LIMITED), or this anonymous client (IPv4 address or IPv6 /48) spent its rolling byte budget (UPLOAD_BUDGET_EXCEEDED, details {limitBytes, windowHours}); Retry-After',

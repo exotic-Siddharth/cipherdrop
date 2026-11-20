@@ -85,6 +85,8 @@ export const ErrorCodeSchema = z.enum([
   'QUOTA_EXCEEDED',
   /** 429 + Retry-After: this client's rolling byte budget for anonymous drops is spent. */
   'UPLOAD_BUDGET_EXCEEDED',
+  /** 507: the instance is full (global storage cap or free-disk floor); no new drops for now. */
+  'STORAGE_FULL',
   'INTERNAL',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;

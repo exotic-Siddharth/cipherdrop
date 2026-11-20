@@ -93,6 +93,18 @@ export const rateLimited = (retryAfterSec?: number) =>
     retryAfterSec,
   });
 
+/**
+ * 507 STORAGE_FULL: the instance is full (GLOBAL_STORAGE_CAP_BYTES reached, or the blob volume's free space
+ * would fall below STORAGE_MIN_FREE_BYTES). One answer for both, with no numbers: clients learn nothing about
+ * the disk.
+ */
+export const storageFull = () =>
+  new AppError(
+    507,
+    'STORAGE_FULL',
+    'This server is not accepting new uploads right now because its storage is full. Try again later.',
+  );
+
 export const internal = (message = 'Internal server error', cause?: unknown) =>
   new AppError(500, 'INTERNAL', message, undefined, { cause });
 

@@ -16,6 +16,11 @@
  * It registers its own throw-away account through the UI and deletes it (and so its drops) at the end through
  * DELETE /me. Rates are MiB/s (1 MiB = 1,048,576 bytes) of plaintext.
  *
+ * That account is new, so it is on the new-account probation quota (NEW_ACCOUNT_QUOTA_BYTES, 256 MiB by
+ * default), and it keeps every run's drop until the end: 8 MiB + BENCH_RUNS x BENCH_SIZE_MIB, 296 MiB with the
+ * defaults. Start the bench API with NEW_ACCOUNT_PROBATION_DAYS=0 (as it already runs with
+ * RATE_LIMITS_ENABLED=false), or the third run gets 413 QUOTA_EXCEEDED.
+ *
  * Start the stack first (from the repo root), then run:
  *   npm run build -w @cipherdrop/web && npm run preview -w @cipherdrop/web      # serves http://localhost:5174
  *   npm run bench:browser -w @cipherdrop/web

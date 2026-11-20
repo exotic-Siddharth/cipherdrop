@@ -134,3 +134,24 @@ describe('Argon2id limiter settings (critic-1)', () => {
     expect(parseEnv({ ...prod(), UV_THREADPOOL_SIZE: size }).UV_THREADPOOL_SIZE).toBe(8);
   });
 });
+
+describe('session lifetime settings (server-3)', () => {
+  it('defaults to an absolute lifetime of 30 days, the same as the idle limit', () => {
+    expect(parseEnv(prod())).toMatchObject({
+      REFRESH_TOKEN_TTL_DAYS: 30,
+      SESSION_MAX_LIFETIME_DAYS: 30,
+    });
+  });
+
+  it('refuses an absolute lifetime shorter than the idle one, in every environment', () => {
+    expect(() => parseEnv({ ...prod(), SESSION_MAX_LIFETIME_DAYS: '7' })).toThrow(
+      /SESSION_MAX_LIFETIME_DAYS/,
+    );
+    expect(() =>
+      parseEnv({ ...prod(), NODE_ENV: 'development', REFRESH_TOKEN_TTL_DAYS: '60' }),
+    ).toThrow(/SESSION_MAX_LIFETIME_DAYS/);
+    expect(
+      parseEnv({ ...prod(), REFRESH_TOKEN_TTL_DAYS: '7', SESSION_MAX_LIFETIME_DAYS: '90' }),
+    ).toMatchObject({ REFRESH_TOKEN_TTL_DAYS: 7, SESSION_MAX_LIFETIME_DAYS: 90 });
+  });
+});

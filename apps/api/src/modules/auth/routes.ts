@@ -711,8 +711,17 @@ export function authRoutes(ctx: AppContext): AppRouter {
     },
     async (req, res) => {
       const me = authUser(req);
+      const now = ctx.now();
       const sessions = await prisma.session.findMany({
-        where: { userId: me.id, revokedAt: null, expiresAt: { gt: ctx.now() } },
+        where: {
+          userId: me.id,
+          revokedAt: null,
+          expiresAt: { gt: now },
+          // Past its absolute end a session cannot refresh any more (sessionDeadline), whatever expiresAt says.
+          createdAt: {
+            gt: new Date(now.getTime() - ctx.env.SESSION_MAX_LIFETIME_DAYS * 86_400_000),
+          },
+        },
         orderBy: [{ lastUsedAt: 'desc' }, { id: 'desc' }],
       });
       const items: SessionInfo[] = sessions.map((s) => ({

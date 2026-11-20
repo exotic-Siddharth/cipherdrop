@@ -48,6 +48,8 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   const link2 = await sendDrop(sender, [dismissed], { maxDownloads: 5 });
   const id1 = dropIdOf(link1);
   const id2 = dropIdOf(link2);
+  // Drop 2 is reported WITHOUT its key: that key must never travel, in any encoding.
+  leaks.forbidKey('key of the drop reported without it', new URL(link2).hash.slice(1));
 
   const reporter = await (await newContext()).newPage();
   const report = async (link: string, reason: string, includeKey: boolean) => {

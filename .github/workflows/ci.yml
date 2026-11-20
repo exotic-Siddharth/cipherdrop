@@ -3,12 +3,22 @@
 #
 # The services are published on the SAME host ports as docker-compose.yml (Postgres 55433, Redis 56380, MinIO 59000)
 # so the test and e2e configs run unchanged: their defaults and playwright.config.ts point at those ports.
+#
+# Supply chain: every action is pinned to a full commit SHA (the comment names its release; Dependabot,
+# .github/dependabot.yml, proposes the bumps), checkout does not leave the token in .git/config, and every
+# install runs with --ignore-scripts, like the Dockerfiles. The lockfile's install scripts are the API's postinstall
+# (prisma generate, run explicitly below), @prisma/client's (the same generate), @prisma/engines' (the engine
+# download, which prisma generate also does), prisma's preinstall (a Node >= 18.18 check, which the pinned Node 22
+# makes moot), esbuild's (a binary check; the binary comes from its @esbuild/<platform> package), fsevents (macOS
+# only) and @scarf/scarf (install telemetry, deliberately never run).
+# The dependency audit gate is a separate workflow, audit.yml, so its weekly run does not start this matrix.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,6 +30,8 @@ concurrency:
 env:
   CI: 'true'
   NODE_VERSION: '22'
+  # No Prisma CLI update check (it reports usage), as in the API image.
+  CHECKPOINT_DISABLE: '1'
 
 jobs:
   static:
@@ -27,12 +39,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      # The API's typecheck needs the generated Prisma client types (the postinstall that --ignore-scripts skips).
+      - run: npm run db:generate -w @cipherdrop/api
       - run: npm run lint
       - run: npm run format:check
       - run: npm run typecheck
@@ -67,12 +83,16 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      # The Prisma client, plus the query and schema engines that the test setup's `prisma migrate deploy` uses.
+      - run: npm run db:generate -w @cipherdrop/api
       # The test setup creates cipherdrop_test and applies every migration itself.
       - name: API integration tests (real Postgres and Redis, local storage)
         run: npm test -w @cipherdrop/api
@@ -120,12 +140,17 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      # The e2e API process (e2e/support/start-api.ts) imports @prisma/client and runs `prisma migrate deploy`.
+      - run: npm run db:generate -w @cipherdrop/api
+      # Playwright has no install script: its browser comes only from this explicit step.
       - run: npm run e2e:install -w @cipherdrop/web -- --with-deps
       # The e2e API is a real process: it reads apps/api/.env like a fresh clone does (the example holds
       # dev-only values; the unit and integration jobs use their test defaults).
@@ -138,7 +163,7 @@ jobs:
       - run: npm run e2e
       - name: Upload the Playwright report and traces
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
           path: |
@@ -147,21 +172,38 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  workflows:
+    name: workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # actionlint 1.7.12 (it bundles shellcheck for the run: scripts), pinned by its image index digest. Dependabot
+      # does not track an image inside a run: step: bump the tag and digest together, by hand.
+      - name: actionlint
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo
+          rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
   images:
     name: production images build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Build the api image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: apps/api/Dockerfile
           push: false
       - name: Build the web image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: apps/web/Dockerfile

@@ -40,7 +40,7 @@ test('1. anonymous send of a 5 MB random file, recipient in a new context gets i
   ).toBeVisible();
   const link = await sendDrop(page, [file], { note: 'secret-note-for-the-recipient' });
   leaks.forbidText('note', 'secret-note-for-the-recipient');
-  leaks.forbidText('link key', keyOf(link));
+  leaks.forbidKey('link key', keyOf(link));
 
   // Success card content.
   await expect(page.getByText(/key after # never reaches our server/i)).toBeVisible();
@@ -117,7 +117,7 @@ test('3. burn after reading: a second visitor sees "All downloads have been used
 
   await page.goto('/');
   const link = await sendDrop(page, [file], { maxDownloads: 1 });
-  leaks.forbidText('link key', keyOf(link));
+  leaks.forbidKey('link key', keyOf(link));
 
   const first = await (await newContext()).newPage();
   await openLink(first, link);
@@ -142,7 +142,7 @@ test('4. tamper: one flipped ciphertext byte shows the integrity error and saves
   leaks.forbidText('file name', file.name);
   await page.goto('/');
   const link = await sendDrop(page, [file]);
-  leaks.forbidText('link key', keyOf(link));
+  leaks.forbidKey('link key', keyOf(link));
 
   const context = await newContext();
   let tampered = 0;
@@ -192,7 +192,7 @@ test('upload survives two injected 503s', async ({ page, newContext, leaks }) =>
 
   await page.goto('/');
   const link = await sendDrop(page, [file]);
-  leaks.forbidText('link key', keyOf(link));
+  leaks.forbidKey('link key', keyOf(link));
   expect(injected, 'the worker upload requests must be interceptable').toBe(2);
   // 2 chunks + 2 retried attempts reached the server side of the route (the 503s never did).
   expect(leaks.count('PUT', '/chunks/')).toBeGreaterThanOrEqual(4);

@@ -42,7 +42,7 @@ an audit trail, without the means to read what it stores.
 flowchart LR
   B[Browser] -->|HTTPS| T["TLS: Caddy (optional)<br/>or your proxy"]
   T --> W["nginx<br/>SPA files + security headers"]
-  W -->|"/api/* (body max 5 MiB,<br/>400 in-flight requests)"| M
+  W -->|"/api/*: JSON max 1 MiB, buffered;<br/>chunks max 5 MiB, streamed;<br/>64 in flight per client, 400 in total"| M
   subgraph API process
     M["requestId, pino-http, helmet,<br/>CORS (WEB_ORIGIN), no-store, metrics"] --> G["global rate limit<br/>(chunk routes exempt)"]
     G --> J["cookies, JSON body (1 MiB)"]
@@ -55,7 +55,9 @@ flowchart LR
 Every route is registered through one helper (`createRouter` in `apps/api/src/lib/router.ts`) that adds the
 Express route, its OpenAPI entry and its auth middleware together, which is how the OpenAPI document stays
 complete (a test walks the router stack to prove it). Requests are logged with id, method, path without query,
-IP prefix and status only.
+IP prefix and status only. Prisma's warnings and errors go through the same pino logger (`db/prisma.ts`), and its
+`err` serializer (`lib/logger.ts`) reduces a Prisma error to safe fields, because the message of a failed call can
+carry its arguments ([SECURITY.md](SECURITY.md) section 1).
 
 In development the Vite dev server (port 5174) proxies `/api` to the API (port 4100), so the SPA is always
 same-origin with the API. `vite preview` serves the production build with the production CSP, and the e2e suite
@@ -97,7 +99,8 @@ sequenceDiagram
 - Encryption and the PUTs run in a module Worker, so a large upload never blocks the UI. Failed PUTs (network,
   429, 5xx) are retried three times with backoff (0.5 s, 2 s, 8 s), honouring `Retry-After`.
 - The server checks everything that does not need the body (token, status, file, index, hash format, declared
-  length) before reading it, then buffers at most one chunk (4 MiB + 16 bytes).
+  length) before reading it, then buffers at most one chunk (4 MiB + 16 bytes). In production nginx streams chunk
+  bodies through instead of buffering them, so these checks and the API's minimum body rate act on the client itself.
 - Each PUT writes a fresh blob version with no database connection held, then a short transaction re-checks that
   the drop is still uploading and points the chunk row at the new version. A delete, a disable or `complete`
   therefore never races with an in-flight write (review C-04 and C-R2-01).
@@ -211,7 +214,7 @@ sequenceDiagram
   B->>A: POST /auth/login {email, authKey}
   A-->>B: access JWT (15 min, in memory) + cd_rt cookie (rotating)
   B->>A: GET /auth/vault, then unwrap the account key locally
-  Note over B: vault unlocked; page reload locks it again
+  Note over B: vault unlocked, page reload locks it again
   B->>A: POST /auth/refresh (cookie), 30 s before expiry
   A->>A: mark token used, issue successor (one transaction)
   A-->>B: new JWT + new cookie

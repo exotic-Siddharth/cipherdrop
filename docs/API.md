@@ -102,6 +102,10 @@ In-flight caps on chunk transfers (per API process, answered with 429 and `Retry
 here is the IPv4 address or the IPv6 /48. The values are environment variables
 ([DESIGN.md section 6](DESIGN.md#6-configuration-zod-validated-env-fail-fast)).
 
+The bundled production nginx adds two caps of its own in front of the API: 64 in-flight `/api` requests per client
+(same key) and 400 in total. It answers those with its own 429, an HTML page without `Retry-After`
+([DEPLOYMENT.md](DEPLOYMENT.md) section 1).
+
 The e2e suite and the benchmarks run their own API with `RATE_LIMITS_ENABLED=false`; production refuses to start
 with that setting.
 

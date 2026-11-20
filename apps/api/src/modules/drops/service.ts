@@ -240,8 +240,8 @@ export async function storeChunk(
   const dropBlob = (v: string | undefined, what: string) =>
     ctx.storage.deleteChunk(dropId, fileId, index, v).catch((err: unknown) => {
       // Garbage under the prefix of a drop whose purge has not run yet (blobsDeletedAt still null): that
-      // purge removes it.
-      ctx.logger.warn({ err: { code: (err as { code?: string }).code } }, what);
+      // purge removes it. `errCode`, not `err.code`: REDACT_PATHS censors every `*.code` (TOTP codes).
+      ctx.logger.warn({ errCode: (err as { code?: string }).code }, what);
     });
   /** The drop's purge may be over: delete the whole prefix ourselves, retrying a failed delete. */
   const dropPrefix = async () => {
@@ -250,7 +250,7 @@ export async function storeChunk(
         return await ctx.storage.deleteDrop(dropId);
       } catch (err) {
         ctx.logger.warn(
-          { err: { code: (err as { code?: string }).code } },
+          { errCode: (err as { code?: string }).code },
           'could not delete the prefix of a purged drop after a refused chunk write',
         );
         if (delay) await sleep(delay);

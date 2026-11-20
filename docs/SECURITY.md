@@ -19,11 +19,32 @@ The running app links this file from `/how-it-works` and serves it at `/SECURITY
 | The account key (decrypts the owner's drop keys) | Stored only wrapped, under the password-derived key and under the recovery key |
 
 The single rule behind the design: the server must not learn plaintext, file names, MIME types, notes, keys or
-passwords, through storage, logs, errors or analytics. The Playwright suite enforces it for every API request the
-browser makes, the upload worker's included: a leak guard (`apps/web/e2e/support/fixtures.ts`) scans URLs, headers
-and bodies of every such request for the
-test file names (raw, URL-encoded, JSON-escaped, base64, base64url), the plaintext bytes and the key material, and
-fails the test on any hit. Its own self-test is `apps/web/e2e/leakguard.spec.ts`.
+passwords, through storage, logs, errors or analytics. Two kinds of test enforce it.
+
+- **What the browser sends.** The Playwright suite runs a leak guard (`apps/web/e2e/support/fixtures.ts`) on every
+  request of every browser context: document navigations, assets, worker scripts, the requests workers make (the
+  upload worker's chunk PUTs) and the API calls. It scans the URL (without the `#fragment`, which is never sent),
+  every header the browser sent (`request.allHeaders()`, so Cookie and the other headers the browser adds are
+  included) and the body. It fails the test on any hit for the test file names (raw, URL-encoded as
+  `encodeURIComponent`, `encodeURI`, an HTML form and the browser's URL parser encode them, JSON-escaped, base64, base64url), the plaintext
+  bytes (raw, base64, base64url, lower- and upper-case hex), and the keys and passwords. A key is forbidden as its
+  link text in those encodings and as its 32 bytes raw, as base64 with and without padding (also URL-encoded and
+  with JSON's `\/` escape), as base64url and as hex. It also fails on any request to an origin other than the web
+  origin. `data:` and `blob:` URLs are skipped because they never leave the browser. A request whose full headers
+  cannot be read is still scanned with the headers the page set, and the test gets a note; it is never dropped.
+  Its self-tests are `apps/web/e2e/leakguard.spec.ts` (15 tests).
+- **What the server logs.** `apps/api/src/modules/auth/logs.test.ts` and `apps/api/src/modules/drops/logs.test.ts`
+  capture the API's pino output (the drops test also captures the console, stdout and stderr) while they run whole flows,
+  and fail if a token, manifest, wrapped key, authKey or password proof, report key or file byte appears, also on
+  forced 500s (a storage error, Prisma errors while a report with its key is stored). Prisma's warnings and errors
+  go through pino. An event from a failed call (for example `report.create`) is logged with only that call, never
+  its message; an engine event (a `quaint::` target, such as a lost database connection) keeps its message, which
+  carries no call arguments. A Prisma error is logged as safe fields only: its class, its code, the schema names in `meta`
+  (`modelName`, `target`, `constraint`, `field_name`) and the stack frames without the message
+  (`apps/api/src/lib/logger.ts`); an initialization error keeps its message, which names the connection or startup
+  failure. The same serializer is pino-http's, and the audit and cleanup jobs hand it the error itself rather than
+  its message. The reason: the message of a `PrismaClientValidationError` renders the arguments
+  of the failed call, a reporter's key included, even with `errorFormat: 'minimal'`.
 
 ## 2. Adversaries
 
@@ -55,6 +76,7 @@ verify, and code-signing browser extensions.
 |---|---|
 | Download while downloads remain and the link has not expired; keep and re-share the plaintext (no system can prevent this) | Read other drops: drop ids are 16 random bytes, and every drop has its own random 32-byte key |
 | Forward the full link: anyone with it can download. Keys in links also end up in chat logs and browser history. Password mode mitigates this: the link then carries no key | Get more downloads than the limit: `/open` is one conditional `UPDATE`, and with 10 concurrent opens on a 1-download link exactly one succeeds (API integration test) |
+| Fetch the ciphertext more than once per counted download. The limit counts `/open` calls, not transfers: each open returns a download grant, valid for 30 minutes (`DOWNLOAD_GRANT_TTL_MIN`) and extended by every chunk GET, but never past 24 hours after the open. Until it ends, the grant serves every chunk of the drop as often as asked, also after the drop is used up or expired (not after a delete or an admin disable), because the blobs are kept while a grant lives | Use a grant for another drop: it is bound to its drop id |
 | Guess a drop password online, within the rate limits (5 failed attempts per 15 min per drop and IP, 20 failures per hour per drop). Using up the per-drop budget also blocks the real recipient until the window ends (accepted trade-off, review C-01) | Use `/open` as a password oracle outside those limits: `/open` and `/unlock` share the same failure counters (review C-01) |
 | Report the drop, optionally attaching its key so an admin can review it | |
 
@@ -140,7 +162,8 @@ The server does see, and stores:
 - full IPv4 addresses (and IPv6 /64 prefixes) as rate-limit keys in Redis, for the length of each limiter window
   (at most one hour);
 - request logs with request id, method, path without query string, IP prefix and status; request bodies,
-  headers, cookies and tokens are never logged, and a pino redaction list is a second line of defence;
+  headers, cookies and tokens are never logged, a pino redaction list is a second line of defence, and Prisma
+  errors are logged as safe fields only ([section 1](#1-what-cipherdrop-protects));
 - an abuse report's reason, details and, only if the reporter ticks the opt-in box, the drop key (kept while the
   report is OPEN).
 
@@ -162,8 +185,8 @@ paths (never the fragment). Operators who want prefix-only logs must change `acc
 | Refresh token | Random 32 bytes in the `cd_rt` cookie (httpOnly, `SameSite=Strict`, `Path=/api/auth`, `Secure` in production), rotated on every refresh; presenting an already used token revokes the whole session (`SESSION_REUSE_DETECTED`), except a lost response: within 30 s of the rotation, while the successor is still unused, the successor is retired (kept as used, so presenting it later is reuse) and a fresh one issued in the same session |
 | Immediate revocation | A revoked session id goes on a Redis denylist for the access-token lifetime, so its access token stops working at once (logout, "revoke others", password change, recovery, account deletion) |
 | CSRF | API calls authenticate with the Bearer header, which a cross-site page cannot set; the only cookie is `SameSite=Strict` and scoped to `/api/auth` |
-| Vault | The account key lives only in memory as a non-extractable `CryptoKey`; a page reload locks it, and it auto-locks after 5, 15 or 60 minutes idle (default 15) |
-| Recovery | The recovery key resets the password; it is rotated on use, all sessions are revoked, and TOTP is still required when enabled |
+| Vault | The account key lives only in memory as a non-extractable `CryptoKey`; a page reload locks it, and it auto-locks after 5, 15 or 60 minutes idle (default 15). Each tab has its own vault: a tab starts locked, and Lock acts on the current tab only, so another tab the user unlocked stays unlocked until its own idle lock (after a sign-out, until its next API call finds the session revoked) |
+| Recovery | The recovery key resets the password; it is rotated on use, all sessions are revoked, and a TOTP or backup code is still required when 2FA is enabled |
 | Audit log | Logins, failures, lockouts, 2FA changes, password and recovery events, session revocations, and per drop: created, opened (with IP prefix and browser), unlock failures, expiry, reports. Visible to the user in Settings, Activity |
 | Admin | Role checked again in the database on every admin request; admin review of a reported drop uses a non-consuming grant and is audited as `ADMIN_REVIEW_GRANT` |
 
@@ -175,6 +198,15 @@ in [API.md](API.md#rate-limits).
 
 **Losing both the password and the recovery key means the account's drops cannot be decrypted.** This is by
 design: nobody, including the operator, can reset access.
+
+**With 2FA on, losing both the authenticator and every unused backup code locks the account for good**, even with
+the password and the recovery key in hand. Login asks for a TOTP or backup code, and so does recovery (by design: the
+recovery key alone must not take over an account with 2FA). The app has no admin or operator reset of 2FA. Keep
+the backup codes somewhere other than the authenticator. If the operator loses `TOTP_ENC_KEY`, no TOTP code works
+any more. Backup codes are hashed, not encrypted under that key, so they still work, but each works once: signing in
+uses one, turning 2FA off asks for the password and another, and new backup codes can only be issued against a TOTP
+code. A user with at least two unused codes (or one, while still signed in) can therefore turn 2FA off and enrol
+again; every other enrolled user is locked out.
 
 ## 6. KDF parameters
 
@@ -196,16 +228,34 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
   until the window ends.
 - **Delayed deletion of expired drops (C-06).** Blobs of an expired drop are deleted once no download grant is
   live, at most about 24 hours after expiry.
-- **Per-process caps (C-15, C-09).** The in-flight upload and download caps count per API process; several
-  instances need connection limits in the reverse proxy (nginx has one, [DEPLOYMENT.md](DEPLOYMENT.md) section 4).
-  Per-IP caps rely on `TRUST_PROXY` being set correctly.
+- **Per-process caps (C-15, C-09).** The API's in-flight upload and download caps count per API process; several
+  instances need connection limits in the reverse proxy. The bundled nginx has two: 64 in-flight `/api` requests
+  per client (`limit_conn api_ip`, keyed by IPv4 address or IPv6 /48 like the API's per-IP shares) and 400 in total
+  (`api_total`), answered with 429. With N API instances behind one nginx use 48 x N + 16 and about 400 x N
+  ([DEPLOYMENT.md](DEPLOYMENT.md) section 4). Per-IP caps rely on `TRUST_PROXY`, which is `1` for the bundled stack
+  with or without Caddy.
 - **Admin review of expired drops (C-R2-05).** Reports are accepted for expired drops until their blobs are purged,
   but the admin review grant refuses expired drops.
 - **Orphaned blob versions (C-R2-01, C-R4-01).** A crash between a chunk write and its commit, or a storage error
   that outlasts all retries, can leave an unreferenced blob until the drop is purged; there is no storage sweep.
 - **Slowest supported uplink (C-R3-01).** About 0.34 Mbit/s for the three-lane web uploader, set by Node's 300 s
-  request timeout per 4 MiB chunk.
-- **Shared per-IP shares (C-R3-03).** Clients behind one IPv4 NAT or one IPv6 /48 share the per-IP in-flight caps.
+  request timeout per 4 MiB chunk. This holds end to end in the bundled stack: nginx streams chunk PUTs to the API
+  and sets no deadline of its own (its 60 s limit on the gap between two reads of a chunk body is only a backstop
+  behind the API's 30 s idle window), and Caddy streams request bodies too.
+- **Shared per-IP shares (C-R3-03).** Clients behind one IPv4 NAT or one IPv6 /48 share the per-IP in-flight caps,
+  and nginx's cap of 64 in-flight `/api` requests per client.
+- **Slow clients at nginx.** nginx (open source) has no deadline for a whole request body: `client_body_timeout 15s`
+  on JSON routes limits the gap between two reads. A JSON body dripped at one byte per 15 s therefore holds an nginx
+  slot for as long as the client keeps it up. One address holds at most 64 slots, but about 7 addresses (or IPv6
+  /48s) can still fill the 400; a distributed attack needs an edge proxy or CDN in front. After the API answers an
+  unverified chunk uploader with 401, nginx reads and discards the rest of its body for up to `lingering_time`
+  (30 s) and keeps the slot meanwhile. A slow request header is bounded only by `client_header_timeout 10s` and
+  nginx's worker connections (1024 per worker, the base image's default), because `limit_conn` counts a request
+  only once its header is complete.
+- **IPv6 clients in the `tls` profile.** The compose network `edge` between Caddy and nginx has no IPv6. On a
+  dual-stack host, IPv6 clients therefore reach Caddy through Docker's userland proxy and appear with the network's
+  gateway address, so they share one bucket, for nginx's per-client cap and for the API's rate limits alike (as
+  before the cap was added). Not tested: the verification environment had no IPv6.
 - **Refresh grace window.** A refresh whose response is lost leaves the browser holding the old, already used
   token. So that this does not sign the user out, a replay of that token less than 30 s (`REFRESH_GRACE_MS`) after
   its rotation, while its successor has never been used, retires the unused successor and issues a new one in the
@@ -218,11 +268,22 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
   any successor was used, reuse revokes the whole session as before.
 - **Test coverage.** Signing out mid-upload is covered by unit tests only; the resume flow after the round-4
   changes has one browser-level test.
-- **Dependency advisories (`npm audit --omit=dev`, 2026-11-12).** Two are rated high, and both fixes are major
-  upgrades. zod below 4.6.6 can exhaust memory on oversized collections; JSON bodies are capped at 1 MiB, and chunk
-  uploads are raw bytes that zod never parses. Prisma 6 pulls in a vulnerable `deepmerge-ts` through
-  `@prisma/config`, which runs when Prisma loads its configuration, not on request data. The fixes are the zod 4
-  migration (with zod-to-openapi 8 or later) and the Prisma 7 migration.
+- **Dependency advisories (`npm audit --omit=dev`).** Accepted advisories are listed in
+  `scripts/audit-allowlist.json`, each with its GHSA id, package, reason, fix and a `reviewBy` date.
+  `npm run audit:gate` (`scripts/audit-gate.mjs`) fails on any high or critical advisory missing from that list, on
+  an entry that no longer matches anything and on an entry past its `reviewBy` date; `.github/workflows/audit.yml`
+  runs it on pushes to main, on pull requests, every Monday and on demand. On 2026-11-20 three high advisories were
+  listed, all with `reviewBy` 2027-02-20 and all fixed only by major upgrades:
+  - zod below 4.6.6 (GHSA-mrhx-c7xc-m3w5) can exhaust memory on oversized collections. JSON bodies are capped at
+    1 MiB, and chunk uploads are raw bytes that zod never parses. The fix is the zod 4 migration (with
+    zod-to-openapi 8 or later).
+  - `deepmerge-ts` (GHSA-ggr8-5vv4-36mx) and `effect` (GHSA-7589-6fvf-x4pw, a ReDoS in `Schema.TemplateLiteral`;
+    first found by the gate on 2026-11-20) come in only through `@prisma/config`, a dependency of the Prisma CLI,
+    which uses them to load and validate its own configuration (`prisma generate`, `migrate deploy`), never request
+    data. The fix is the Prisma 7 migration.
+
+  `npm audit` reads the repository lockfile, so it does not cover the Prisma CLI that the API image installs into
+  `/opt/prisma` without a lockfile ([DEPLOYMENT.md](DEPLOYMENT.md) section 5).
 
 Further limitations, also shown on `/how-it-works`:
 
@@ -231,7 +292,8 @@ Further limitations, also shown on `/how-it-works`:
 - the security of browser-delivered cryptography depends on the server delivering honest JavaScript
   ([section 2.1](#21-the-server-operator-or-anyone-who-controls-the-server));
 - files above 256 MiB are saved through the File System Access API (`showSaveFilePicker`), which only Chromium-based
-  browsers provide; elsewhere the receive page refuses before consuming a download (review C-03).
+  desktop browsers provide, and not all of them (Brave turns it off by default); elsewhere the receive page refuses a
+  drop that contains such a file as a whole, before consuming a download (review C-03).
 
 ## 8. Reporting a vulnerability
 

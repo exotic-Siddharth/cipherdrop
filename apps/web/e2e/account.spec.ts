@@ -46,7 +46,7 @@ test('5. register, send, dashboard names, reload + unlock, enable TOTP, logout, 
   // Send while signed in (owner-wrapped key travels, no names).
   await page.getByRole('link', { name: 'Send', exact: true }).first().click();
   const link = await sendDrop(page, [file], { maxDownloads: 5 });
-  leaks.forbidText('link key', new URL(link).hash.slice(1));
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
 
   // Dashboard shows the decrypted name.
   await page.getByRole('link', { name: 'Dashboard', exact: true }).first().click();
@@ -139,7 +139,9 @@ test('6. recovery with the recovery key sets a new password, issues a new key, o
   leaks.forbidText('recovery key', recoveryKey);
   leaks.forbidText('recovery key (compact)', recoveryKey.replaceAll('-', ''));
   await page.getByRole('link', { name: 'Send', exact: true }).first().click();
-  await sendDrop(page, [file]);
+  // The recovery re-wraps the account key: the drop key must not ride along.
+  const link = await sendDrop(page, [file]);
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
 
   // A second device recovers the account.
   const device = await (await newContext()).newPage();

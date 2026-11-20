@@ -18,10 +18,12 @@ test('unknown drop id shows "doesn\'t exist"', async ({ page }) => {
 test('expired drop shows the expired state (no key needed to know)', async ({
   page,
   newContext,
+  leaks,
 }) => {
   const file = textFile('stale.txt', 'STATES-MARKER-1');
   await page.goto('/');
   const link = await sendDrop(page, [file], { expiryHours: 1, maxDownloads: 5 });
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
   await expireDrop(dropIdOf(link));
   const visitor = await (await newContext()).newPage();
   await openLink(visitor, link);
@@ -29,10 +31,11 @@ test('expired drop shows the expired state (no key needed to know)', async ({
   await expect(visitor.getByRole('button', { name: 'Decrypt & download' })).toHaveCount(0);
 });
 
-test('"Delete now" on the success card kills the link', async ({ page, newContext }) => {
+test('"Delete now" on the success card kills the link', async ({ page, newContext, leaks }) => {
   const file = textFile('oops-wrong-file.txt', 'STATES-MARKER-2');
   await page.goto('/');
   const link = await sendDrop(page, [file], { maxDownloads: 5 });
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
   await page.getByRole('button', { name: /Delete now/ }).click();
   await page
     .getByRole('button', { name: /Delete (drop|now)/ })
@@ -50,12 +53,15 @@ test('"Delete now" on the success card kills the link', async ({ page, newContex
 test('missing, truncated and wrong keys; mangled links still open', async ({
   page,
   newContext,
+  leaks,
 }) => {
   const file = textFile('keyed.txt', 'STATES-MARKER-3');
   await page.goto('/');
   const link = await sendDrop(page, [file], { maxDownloads: 10 });
   const id = dropIdOf(link);
   const key = new URL(link).hash.slice(1);
+  // A mangled link still keeps the key after '#': none of these visits may send it.
+  leaks.forbidKey('link key', key);
 
   // A fresh page per link: a hash-only change on the same document would not re-run the page's key logic.
   const visit = async (url: string) => {

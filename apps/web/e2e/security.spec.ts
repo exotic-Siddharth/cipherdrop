@@ -102,7 +102,8 @@ test('password change signs out the other device at once; files stay readable', 
   // Device A (the default page) and device B are signed in as the same user.
   await registerAccount(page, email, password);
   await page.getByRole('link', { name: 'Send', exact: true }).first().click();
-  await sendDrop(page, [file], { maxDownloads: 5 });
+  const link = await sendDrop(page, [file], { maxDownloads: 5 });
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
   await accountMenu(page, 'Dashboard');
   await expect(page.getByText(file.name).first()).toBeVisible({ timeout: 20_000 });
 
@@ -218,6 +219,7 @@ test('delete account: typed confirmation + password, then drops and login are go
   await registerAccount(page, email, password);
   await page.getByRole('link', { name: 'Send', exact: true }).first().click();
   const link = await sendDrop(page, [file], { maxDownloads: 5 });
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
 
   await accountMenu(page, 'Settings');
   await page.getByRole('tab', { name: 'Account' }).click();

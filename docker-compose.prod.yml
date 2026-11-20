@@ -4,7 +4,7 @@
 #   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 #
 # Optional profiles:   --profile minio   S3-compatible storage in this stack (STORAGE_DRIVER=s3, S3_ENDPOINT=http://minio:9000)
-#                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS and TRUST_PROXY=2)
+#                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS; TRUST_PROXY=1, not 2)
 # Nothing but the web port (and Caddy's 80/443 with the tls profile) is published. The dev stack is docker-compose.yml.
 name: cipherdrop-prod
 
@@ -112,10 +112,15 @@ services:
     init: true
     restart: unless-stopped
     read_only: true
+    # Sized, so that what clients make nginx hold in RAM is bounded. /var/cache/nginx holds client_temp: JSON bodies
+    # between 128 KiB (client_body_buffer_size, kept in memory) and 1 MiB, which the SPA never sends; chunk bodies are
+    # streamed and responses are never spooled (deploy/nginx.conf). One client can fill 64 MiB at most (64 requests),
+    # and a full tmpfs fails only such oversized bodies. /var/run holds the pid file; /tmp is unused.
     tmpfs:
-      - /var/cache/nginx
-      - /var/run
-      - /tmp
+      - /var/cache/nginx:size=64m
+      - /var/run:size=1m
+      - /tmp:size=1m
+    networks: [default, edge]
     security_opt: ['no-new-privileges:true']
     logging: *logging
 
@@ -141,6 +146,8 @@ services:
     logging: *logging
 
   # Optional: automatic HTTPS in front of nginx (set SITE_ADDRESS; an empty value makes Caddy refuse the config).
+  # Only on `edge`, at a fixed address: nginx takes the client address from X-Forwarded-For of this one address
+  # (set_real_ip_from in deploy/nginx.conf), so the API and nginx's per-client cap see the real client.
   caddy:
     profiles: [tls]
     image: caddy:2-alpine
@@ -153,12 +160,26 @@ services:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    networks:
+      edge:
+        ipv4_address: 172.16.94.2
     depends_on:
       web:
         condition: service_healthy
     restart: unless-stopped
     security_opt: ['no-new-privileges:true']
     logging: *logging
+
+networks:
+  # Caddy and nginx. A fixed subnet, so that Caddy's address is known in advance; containers without a fixed address
+  # (web) get theirs from ip_range, which leaves 172.16.94.2 free for Caddy. The subnet must not overlap another
+  # Docker network on the host: to move it, change it here and in set_real_ip_from (the unit test checks both).
+  edge:
+    ipam:
+      config:
+        - subnet: 172.16.94.0/28
+          ip_range: 172.16.94.8/29
+          gateway: 172.16.94.1
 
 volumes:
   postgres-data:

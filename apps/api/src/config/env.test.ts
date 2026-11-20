@@ -86,6 +86,14 @@ describe('parseEnv outside production', () => {
     TOTP_ENC_KEY: Buffer.alloc(32, 7).toString('base64'),
   };
 
+  it('caps anonymous storage by default (10 GiB); 0 is the explicit "no ceiling" opt-out', () => {
+    expect(parseEnv(dev).ANON_TOTAL_PENDING_BYTES).toBe(10 * 1024 ** 3);
+    expect(parseEnv({ ...dev, ANON_TOTAL_PENDING_BYTES: '0' }).ANON_TOTAL_PENDING_BYTES).toBe(0);
+    expect(() => parseEnv({ ...dev, ANON_TOTAL_PENDING_BYTES: '-1' })).toThrow(
+      /ANON_TOTAL_PENDING_BYTES/,
+    );
+  });
+
   it('keeps the local defaults in development and test', () => {
     for (const NODE_ENV of ['development', 'test']) {
       const env = parseEnv({ ...dev, NODE_ENV });

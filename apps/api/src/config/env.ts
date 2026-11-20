@@ -123,8 +123,12 @@ const EnvSchema = z
      * or about 42 KB/s (0.34 Mbit/s) for the web uploader's 3 parallel PUTs.
      */
     CHUNK_UPLOAD_MIN_BYTES_PER_SEC: int(4096, 1, 1_048_576),
-    /** Ceiling on the ciphertext bytes of anonymous drops whose blobs are not purged yet (0 = no ceiling). */
-    ANON_TOTAL_PENDING_BYTES: int(0, 0),
+    /**
+     * Ceiling on the ciphertext bytes of all anonymous drops whose blobs are not purged yet, any status
+     * (default 10 GiB; 0 = no ceiling, an explicit opt-out). On by default: anonymous, end-to-end encrypted
+     * drops are free file hosting, and the server cannot scan ciphertext.
+     */
+    ANON_TOTAL_PENDING_BYTES: int(10_737_418_240, 0),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),

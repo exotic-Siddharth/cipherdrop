@@ -1,7 +1,8 @@
 /**
  * 404 and error middleware: every error becomes `{error:{code, message, details?}}` (spec section 10).
  * Stack traces and internal messages never reach the client. 5xx are logged with the request id only
- * (no bodies, no headers).
+ * (no bodies, no headers); the logger's err serializer reduces a Prisma error to safe fields, because its
+ * message can carry the arguments of the failed query (lib/logger.ts serializeError).
  */
 import { Prisma } from '@prisma/client';
 import type { ErrorRequestHandler, RequestHandler } from 'express';

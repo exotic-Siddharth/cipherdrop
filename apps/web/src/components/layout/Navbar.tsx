@@ -64,7 +64,10 @@ function VaultStatus() {
 
   if (unlocked) {
     return (
-      <Tooltip content="Vault unlocked: your file names are readable on this device." side="bottom">
+      <Tooltip
+        content="Vault unlocked in this tab: your file names are readable here. Locking applies to this tab only."
+        side="bottom"
+      >
         <Button
           variant="ghost"
           size="sm"

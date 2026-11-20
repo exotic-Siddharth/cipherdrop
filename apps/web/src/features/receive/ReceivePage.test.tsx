@@ -51,13 +51,16 @@ async function fixture(
     note?: string | null;
     password?: string;
     name?: string;
+    /** The type the sender declares in the manifest. */
+    type?: string;
+    content?: string;
     /** Pretend the plaintext is this large (the bytes stay tiny; only the manifest size changes). */
     size?: number;
   } = {},
 ): Promise<Fixture> {
-  const content = new TextEncoder().encode('quarterly numbers: 42');
+  const content = new TextEncoder().encode(opts.content ?? 'quarterly numbers: 42');
   const file = new File([content], opts.name ?? 'report.bin', {
-    type: 'application/octet-stream',
+    type: opts.type ?? 'application/octet-stream',
     lastModified: 1,
   });
   if (opts.size !== undefined) Object.defineProperty(file, 'size', { value: opts.size });
@@ -231,6 +234,59 @@ describe('ReceivePage', () => {
       expect(c.path).not.toContain(f.dkB64);
       expect(c.path).not.toContain('report');
     }
+  });
+
+  describe('active content (crypto-3)', () => {
+    const HTML = '<script>alert(document.domain)</script><img src=x onerror="alert(1)">';
+    const SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+
+    beforeEach(() => {
+      // jsdom's Blob has no text() (R20); the text preview needs it, as in a browser.
+      Object.defineProperty(Blob.prototype, 'text', {
+        configurable: true,
+        value(this: Blob) {
+          return new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsText(this);
+          });
+        },
+      });
+    });
+    afterEach(() => {
+      delete (Blob.prototype as { text?: unknown }).text;
+    });
+
+    it.each([
+      ['text/html', 'page.html', HTML],
+      ['application/xhtml+xml', 'page.xhtml', HTML],
+      ['image/svg+xml', 'logo.svg', SVG],
+    ])(
+      'a %s file is saved as application/octet-stream and never rendered',
+      async (type, name, body) => {
+        const f = await fixture({ name, type, content: body });
+        mockApi(f);
+        const blobs: Blob[] = [];
+        URL.createObjectURL = vi.fn((b: Blob | MediaSource) => {
+          blobs.push(b as Blob);
+          return 'blob:mock';
+        });
+        renderAt(`/d/${f.dropId}#${f.dkB64}`);
+        await userEvent.click(await screen.findByRole('button', { name: /decrypt & download/i }));
+        const list = screen.getByRole('list', { name: 'Files in this drop' });
+        expect(await within(list).findByText('Integrity verified')).toBeVisible();
+        // One object URL: the save. Its Blob does not carry the sender's type.
+        expect(blobs.map((b) => b.type)).toEqual(['application/octet-stream']);
+        expect(list.querySelector('img, svg image, iframe, object, embed, script')).toBeNull();
+        if (type === 'text/html') {
+          // HTML is previewed as its source text.
+          expect((await within(list).findByLabelText(`Preview of ${name}`)).textContent).toBe(body);
+        } else {
+          expect(within(list).queryByLabelText(`Preview of ${name}`)).toBeNull();
+        }
+      },
+    );
   });
 
   it('a file over 256 MB in a browser without the save picker never consumes a download (C-03)', async () => {

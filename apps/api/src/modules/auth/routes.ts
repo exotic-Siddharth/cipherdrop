@@ -7,8 +7,9 @@
  * - a wrong re-authentication proof on a signed-in route (current authKey, TOTP/backup code) is a 403, so the
  *   SPA does not mistake it for an expired session and refresh;
  * - lockout (10 consecutive failures -> 15 min) answers exactly like a wrong password.
- * Rate limits (ctx.rateLimit): prelogin + login per IP+email, loginMfa per IP, register and recovery per IP,
- * and `reauth` (10 per 15 min per user) on the signed-in re-authentication routes.
+ * Rate limits (ctx.rateLimit): prelogin + login per IP+email, failed logins per client (IPv4 address or IPv6
+ * /48), loginMfa per IP, register and recovery per IP, and `reauth` (10 per 15 min per user) on the signed-in
+ * re-authentication routes. Every Argon2id hash also takes a slot of ctx.argon2 (429 when its queue is full).
  */
 import { KDF_DEFAULT } from '@cipherdrop/crypto/constants';
 import {
@@ -40,7 +41,7 @@ import type { Request, Response } from 'express';
 import type { AppContext } from '../../context';
 import { conflict, forbidden, notFound, unauthorized, validationError } from '../../lib/errors';
 import { hmacSha256, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
-import { ipKey } from '../../lib/ip';
+import { ipKey, ipShareKey } from '../../lib/ip';
 import { signPurposeToken, verifyPurposeToken } from '../../lib/jwt';
 import { createRouter, type AppRouter } from '../../lib/router';
 import { encryptTotpSecret, generateTotpSecret, totpOtpauthUrl, verifyTotp } from '../../lib/totp';
@@ -100,6 +101,11 @@ export function authRoutes(ctx: AppContext): AppRouter {
   const perIpEmail = (req: Request) => `${ipKey(req.ip)}|${sha256B64url(emailOf(req))}`;
   const preloginLimit = ctx.rateLimit({ name: 'prelogin', key: perIpEmail });
   const loginLimit = ctx.rateLimit({ name: 'login', key: perIpEmail });
+  const loginClientLimit = ctx.rateLimit({
+    name: 'loginIp',
+    key: (req) => ipShareKey(req.ip),
+    skipSuccessfulRequests: true,
+  });
   const loginMfaLimit = ctx.rateLimit({ name: 'loginMfa', key: (req) => ipKey(req.ip) });
   const registerLimit = ctx.rateLimit({ name: 'register', key: (req) => ipKey(req.ip) });
   const recoveryStartLimit = ctx.rateLimit({
@@ -240,6 +246,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         401: { description: 'Generic authentication failure (also while locked out)' },
       },
     },
+    loginClientLimit,
     loginLimit,
     async (req, res) => {
       const bytes = keyBytes(req.body.authKey, 'authKey');

@@ -26,6 +26,15 @@ export const RATE_LIMIT_RULES = {
   /** prelogin and login: 10 per 15 min per IP+email. */
   prelogin: { windowMs: 15 * MIN, limit: 10 },
   login: { windowMs: 15 * MIN, limit: 10 },
+  /**
+   * Not in the spec table (critic-1): FAILED logins per client, keyed by ipShareKey (an IPv4 address or an IPv6
+   * /48), whatever the email. The per IP+email bucket above gives one client a fresh budget for every email it
+   * invents, and an IPv6 /64 key gives a free /48 65,536 of them; this one caps what a single client can make the
+   * server hash. 30 per 15 min is three users' worth of the per-email budget behind one NAT; successful logins
+   * are refunded (skipSuccessfulRequests), so an office signing in at 9:00 never spends it. Argon2id work across
+   * many clients is bounded by ctx.argon2 (lib/argon2Limiter.ts) instead.
+   */
+  loginIp: { windowMs: 15 * MIN, limit: 30 },
   /** Not in the spec table: /auth/login/mfa code attempts, 10 per 15 min per IP. */
   loginMfa: { windowMs: 15 * MIN, limit: 10 },
   register: { windowMs: HOUR, limit: 5 },

@@ -39,7 +39,14 @@ import { Prisma, type User } from '@prisma/client';
 import type { Request, Response } from 'express';
 import type { AppContext } from '../../context';
 import { hashAuthKey } from '../../lib/argon2';
-import { conflict, forbidden, notFound, unauthorized, validationError } from '../../lib/errors';
+import {
+  conflict,
+  featureDisabled,
+  forbidden,
+  notFound,
+  unauthorized,
+  validationError,
+} from '../../lib/errors';
 import { hmacSha256, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
 import { ipKey, ipShareKey } from '../../lib/ip';
 import { signPurposeToken, verifyPurposeToken } from '../../lib/jwt';
@@ -182,8 +189,19 @@ export function authRoutes(ctx: AppContext): AppRouter {
       request: { body: RegisterRequestSchema },
       responses: {
         201: { description: 'Registered and signed in', schema: AuthSuccessSchema },
+        403: {
+          description:
+            'Registration is switched off on this server (FEATURE_DISABLED, details.feature registration)',
+        },
         409: { description: 'Email already registered (CONFLICT)' },
       },
+    },
+    // Operator switch (ops-3), checked before the limiter. Existing accounts keep signing in.
+    (_req, _res, next) => {
+      if (!ctx.env.ALLOW_REGISTRATION) {
+        throw featureDisabled('registration', 'This server is not accepting new accounts.');
+      }
+      next();
     },
     registerLimit,
     async (req, res) => {

@@ -128,6 +128,17 @@ describe('parseEnv outside production', () => {
     );
   });
 
+  it('allows anonymous uploads and registration unless an operator switches them off', () => {
+    expect(parseEnv(dev)).toMatchObject({
+      ALLOW_ANONYMOUS_UPLOADS: true,
+      ALLOW_REGISTRATION: true,
+    });
+    expect(
+      parseEnv({ ...dev, ALLOW_ANONYMOUS_UPLOADS: 'false', ALLOW_REGISTRATION: 'off' }),
+    ).toMatchObject({ ALLOW_ANONYMOUS_UPLOADS: false, ALLOW_REGISTRATION: false });
+    expect(() => parseEnv({ ...dev, ALLOW_REGISTRATION: 'maybe' })).toThrow(/ALLOW_REGISTRATION/);
+  });
+
   it('keeps the local defaults in development and test', () => {
     for (const NODE_ENV of ['development', 'test']) {
       const env = parseEnv({ ...dev, NODE_ENV });

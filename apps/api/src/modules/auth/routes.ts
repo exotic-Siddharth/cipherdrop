@@ -41,7 +41,7 @@ import type { AppContext } from '../../context';
 import { hashAuthKey } from '../../lib/argon2';
 import { conflict, forbidden, notFound, unauthorized, validationError } from '../../lib/errors';
 import { hmacSha256, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
-import { ipKey } from '../../lib/ip';
+import { ipKey, ipShareKey } from '../../lib/ip';
 import { signPurposeToken, verifyPurposeToken } from '../../lib/jwt';
 import { createRouter, type AppRouter } from '../../lib/router';
 import { encryptTotpSecret, generateTotpSecret, totpOtpauthUrl, verifyTotp } from '../../lib/totp';
@@ -98,7 +98,8 @@ export function authRoutes(ctx: AppContext): AppRouter {
   const preloginLimit = ctx.rateLimit({ name: 'prelogin', key: perIpEmail });
   const loginLimit = ctx.rateLimit({ name: 'login', key: perIpEmail });
   const loginMfaLimit = ctx.rateLimit({ name: 'loginMfa', key: (req) => ipKey(req.ip) });
-  const registerLimit = ctx.rateLimit({ name: 'register', key: (req) => ipKey(req.ip) });
+  // Per IPv4 address or IPv6 /48 (not /64): sign-ups are free, so a delegated /48 must not mean 65,536 buckets.
+  const registerLimit = ctx.rateLimit({ name: 'register', key: (req) => ipShareKey(req.ip) });
   const recoveryStartLimit = ctx.rateLimit({
     name: 'recovery',
     key: (req) => `start|${ipKey(req.ip)}`,

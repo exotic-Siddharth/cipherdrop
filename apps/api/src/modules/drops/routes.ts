@@ -122,7 +122,12 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
   const tags = ['drops'];
 
   // Limiters are built once per app (each owns a RedisStore).
-  const createAnonLimiter = ctx.rateLimit({ name: 'createDropAnon', key: (req) => ipKey(req.ip) });
+  // Anonymous creates are counted per IPv4 address or IPv6 /48, like the in-flight shares: a subscriber is
+  // commonly delegated a /56 or a /48, and keying on the /64 would give one client 256 or 65,536 buckets.
+  const createAnonLimiter = ctx.rateLimit({
+    name: 'createDropAnon',
+    key: (req) => ipShareKey(req.ip),
+  });
   const createUserLimiter = ctx.rateLimit({
     name: 'createDropUser',
     key: (req) => req.user?.id ?? 'anonymous',

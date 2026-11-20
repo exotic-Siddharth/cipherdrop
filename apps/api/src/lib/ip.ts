@@ -80,9 +80,10 @@ export function ipKey(ip: string | null | undefined): string {
 }
 
 /**
- * Key for per-client shares of the in-flight chunk slots (C-R3-03): the full IPv4 address, or the IPv6 /48.
- * A subscriber is commonly delegated a /56 or a /48 (free from tunnel brokers), so keying on the /64 would
- * give one client 256 or 65,536 shares. "unknown" when the address is missing.
+ * Key for "per client" limits where one client must not get many buckets: the full IPv4 address, or the IPv6
+ * /48. Used for the per-client shares of the in-flight chunk slots (C-R3-03) and the anonymous drop-create
+ * and register limiters. A subscriber is commonly delegated a /56 or a /48 (free from tunnel brokers), so
+ * keying on the /64 would give one client 256 or 65,536 shares. "unknown" when the address is missing.
  */
 export function ipShareKey(ip: string | null | undefined): string {
   const s = normalizeIp(ip);

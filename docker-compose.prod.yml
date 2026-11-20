@@ -4,7 +4,7 @@
 #   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 #
 # Optional profiles:   --profile minio   S3-compatible storage in this stack (STORAGE_DRIVER=s3, S3_ENDPOINT=http://minio:9000)
-#                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS; TRUST_PROXY stays 1)
+#                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS; TRUST_PROXY=1, not 2)
 # Nothing but the web port (and Caddy's 80/443 with the tls profile) is published. The dev stack is docker-compose.yml.
 name: cipherdrop-prod
 

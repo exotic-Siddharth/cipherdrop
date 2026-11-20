@@ -9,6 +9,7 @@
  * own sources and docker-compose.prod.yml, so a change on one side that is not mirrored on the other fails here.
  */
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LIMITS } from '@cipherdrop/shared';
@@ -118,11 +119,17 @@ function ownLevel(body: string): string {
   return out;
 }
 
-/** Arguments of every `name ...;` directive of a level, in order. */
+/**
+ * Arguments of every `name ...;` directive of a level, in order. The level is split into statements at each `;`, `{`
+ * and `}` outside quotes, like nginx does: a directive right after another one of the same name is its own statement,
+ * and a `;` inside a quoted value (HSTS's "max-age=...; includeSubDomains") is part of the value.
+ */
 function directive(level: string, name: string): string[] {
-  return [...level.matchAll(new RegExp(`(?:^|[;{}])\\s*${name}\\s+([^;]*);`, 'g'))].map((m) =>
-    (m[1] as string).trim(),
-  );
+  const named = new RegExp(`^${name.replace(/ /g, '\\s+')}\\s+([\\s\\S]*)$`);
+  return [...level.matchAll(/((?:[^;{}"]|"[^"]*")*)([;{}])/g)]
+    .filter((m) => m[2] === ';')
+    .map((m) => named.exec((m[1] as string).trim())?.[1])
+    .filter((args): args is string => args !== undefined);
 }
 
 /** nginx size ("5m", "128k", "4096") in bytes. */
@@ -156,7 +163,7 @@ function effective(name: string, own: string): string[] {
   return mine.length > 0 ? mine : directive(apiOwn, name);
 }
 
-/** The API's per-IP in-flight share defaults (apps/api/src/config/env.ts). */
+/** The default of one of the API's integer settings (apps/api/src/config/env.ts). */
 function apiDefault(name: string): number {
   const m = new RegExp(`${name}: int\\((\\d+)`).exec(
     read('apps', 'api', 'src', 'config', 'env.ts'),
@@ -181,6 +188,12 @@ function inCidr(ip: string, cidr: string): boolean {
 }
 
 describe('deploy/nginx.conf slow-client defences (ops-1)', () => {
+  it('reads every directive of a level: one right after another of the same name, `;` in quotes', () => {
+    const level = ownLevel('a 1;a 2;\n  a "x; y" z; b { a 3; }a 4; ab 5; limit_conn  api_ip 6;');
+    expect(directive(level, 'a')).toEqual(['1', '2', '"x; y" z', '4']);
+    expect(directive(level, 'limit_conn api_ip')).toEqual(['6']);
+  });
+
   it('caps in-flight /api requests per client: the API per-IP chunk shares plus 16 ordinary requests', () => {
     expect(httpLevel).toMatch(/limit_conn_zone \$api_client zone=api_ip:\d+[km];/);
     const [cap] = directive(apiOwn, 'limit_conn api_ip').map(Number);
@@ -275,8 +288,8 @@ describe('deploy/nginx.conf slow-client defences (ops-1)', () => {
     const [jsonTimeout] = directive(apiOwn, 'client_body_timeout').map(seconds);
     const [chunkTimeout] = directive(chunkOwn, 'client_body_timeout').map(seconds);
     expect(jsonTimeout as number).toBeLessThanOrEqual(15);
-    // The chunk backstop must not cut a body before the API's own 30 s idle window does.
-    expect(chunkTimeout as number).toBeGreaterThan(30);
+    // The chunk backstop must not cut a body before the API's own idle window does (the API then answers itself).
+    expect(chunkTimeout as number).toBeGreaterThan(apiDefault('CHUNK_UPLOAD_IDLE_TIMEOUT_SEC'));
   });
 
   it('the chunk location sends exactly the same headers as /api/ (it declares none of its own)', () => {
@@ -285,11 +298,18 @@ describe('deploy/nginx.conf slow-client defences (ops-1)', () => {
       expect(directive(chunkOwn, name), name).toEqual([]);
       expect(effective(name, chunkOwn), name).toEqual(effective(name, apiOwn));
     }
-    expect(effective('add_header', chunkOwn).map((h) => h.split(/\s+/)[0])).toEqual([
-      'Strict-Transport-Security',
-      'Permissions-Policy',
+    expect(effective('add_header', chunkOwn)).toEqual([
+      `Strict-Transport-Security "${PRODUCTION_ONLY_HEADERS['Strict-Transport-Security']}" always`,
+      `Permissions-Policy "${SECURITY_HEADERS['Permissions-Policy']}" always`,
     ]);
     expect(effective('proxy_hide_header', chunkOwn)).toEqual(['Strict-Transport-Security']);
+    // nginx appends the client it resolved, which is what makes TRUST_PROXY=1 right for chunk routes too.
+    expect(effective('proxy_set_header', chunkOwn)).toEqual([
+      'Host $host',
+      'X-Forwarded-For $proxy_add_x_forwarded_for',
+      'X-Forwarded-Proto $scheme',
+      'Connection ""',
+    ]);
   });
 
   it('bounds slow headers and idle connections, and Caddy drops idle upstream connections first', () => {
@@ -300,17 +320,20 @@ describe('deploy/nginx.conf slow-client defences (ops-1)', () => {
     expect(Number(caddy?.[1])).toBeLessThan(keepalive as number);
   });
 
-  it('trusts X-Forwarded-For only from the fixed Caddy address of docker-compose.prod.yml', () => {
-    const trusted = directive(serverOwn, 'set_real_ip_from');
-    expect(trusted).toHaveLength(1);
-    const caddyIp = trusted[0] as string;
-    expect(caddyIp).toMatch(/^\d+\.\d+\.\d+\.\d+$/); // one address, never a range
-    expect(directive(serverOwn, 'real_ip_header')).toEqual(['X-Forwarded-For']);
-    expect(directive(code, 'real_ip_recursive')).toEqual([]);
-
+  it('trusts X-Forwarded-For from the fixed Caddy address of docker-compose.prod.yml, and only from exact addresses', () => {
     const caddy = service('caddy');
     expect(caddy).toMatch(/\n {4}networks:\n {6}edge:\n {8}ipv4_address: ([\d.]+)\n/);
-    expect(/ipv4_address: ([\d.]+)/.exec(caddy)?.[1]).toBe(caddyIp);
+    const caddyIp = /ipv4_address: ([\d.]+)/.exec(caddy)?.[1] as string;
+    const trusted = directive(serverOwn, 'set_real_ip_from');
+    expect(trusted).toContain(caddyIp);
+    // Exact addresses, never a range: with Docker's userland proxy, direct clients reach nginx from a bridge gateway
+    // address, and a range would believe the X-Forwarded-For they send. An operator's own proxy in front of nginx may
+    // be listed too, by its exact address (docs/DEPLOYMENT.md, TRUST_PROXY).
+    expect(trusted.filter((entry) => isIP(entry) === 0)).toEqual([]);
+    // Server level only, so no location replaces or widens the list.
+    expect(directive(code, 'set_real_ip_from')).toEqual(trusted);
+    expect(directive(serverOwn, 'real_ip_header')).toEqual(['X-Forwarded-For']);
+    expect(directive(code, 'real_ip_recursive')).toEqual([]);
     expect(service('web')).toMatch(/networks: \[default, edge\]/);
     const edge = /\n {2}edge:\n[\s\S]*?subnet: (\S+)\n\s+ip_range: (\S+)\n\s+gateway: (\S+)\n/.exec(
       compose,
@@ -321,6 +344,11 @@ describe('deploy/nginx.conf slow-client defences (ops-1)', () => {
     // clients appear from with the userland proxy, so it must never be the trusted address.
     expect(inCidr(caddyIp, ipRange as string)).toBe(false);
     expect(gateway).not.toBe(caddyIp);
+    // Caddy is the only proxy on `edge`: its gateway and its dynamic addresses are never a trusted proxy.
+    const otherOnEdge = trusted.filter(
+      (entry) => entry !== caddyIp && isIP(entry) === 4 && inCidr(entry, subnet as string),
+    );
+    expect(otherOnEdge).toEqual([]);
   });
 
   it('sizes every tmpfs of the web container', () => {

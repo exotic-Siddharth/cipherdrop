@@ -237,7 +237,8 @@ test.describe('nginx and slow clients (raw sockets)', () => {
       expect(await within(put.outcome, 5_000, 'response to the token-less PUT')).toBe(401);
       expect(put.received()).toMatch(/\r\nx-request-id: /i); // the API's answer
       expect(put.received()).toMatch(/\r\ncontent-type: application\/json/i);
-      // ...and the connection is not kept open for the rest of the body.
+      // ...and nginx ends its side at once, so an ordinary client closes too (this socket does on nginx's FIN). A
+      // client that keeps sending anyway is read and discarded for up to lingering_time, 30 s (SECURITY.md section 7).
       await within(put.closed, 5_000, 'close after the 401');
     } finally {
       clearInterval(drip);

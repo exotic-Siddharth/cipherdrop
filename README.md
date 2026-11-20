@@ -1,5 +1,7 @@
 # CipherDrop
 
+[![ci](https://github.com/exotic-Siddharth/cipherdrop/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/exotic-Siddharth/cipherdrop/actions/workflows/ci.yml)
+
 Zero-knowledge, end-to-end encrypted file sharing: files are encrypted in the browser before upload, and the
 server stores only ciphertext it has no key for.
 
@@ -164,7 +166,9 @@ http://localhost:5174/api/docs.
 Run `npm run e2e:install -w @cipherdrop/web` once to install Playwright's Chromium. Counts were taken on
 2026-11-20 in a Linux cloud container (Node 22.23.5). The exception is `test:s3`: the MinIO image could not be
 pulled there, so its count is from 2026-11-12 on the development laptop; no storage code or test has changed since.
-The CI workflows (`.github/workflows/ci.yml` and `audit.yml`) have not run on GitHub yet, so these are local results.
+On GitHub (first run 2026-11-20, pull request #1), CI passed every job: lint, typecheck and unit tests; the
+integration tests with Postgres, Redis and MinIO, `test:s3` included; e2e; the production image builds from the
+committed Dockerfiles; actionlint; and the audit gate.
 
 What the tests cover, in brief: `packages/crypto` tests each security property of the construction, Argon2id
 known-answer vectors from the reference implementation, and a re-implementation of the spec with `node:crypto`

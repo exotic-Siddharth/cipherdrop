@@ -365,8 +365,9 @@ setup. The bundled compose file runs one API instance.
 - A malicious server could serve modified JavaScript; the CSP and the absence of inline scripts narrow what such code can do,
   they do not make the client verifiable (DESIGN section 12 lists this as a stated limitation).
 - No HA, backup automation, log shipping or alerting is provided. Postgres, Redis and nginx are single containers.
-- CI (`.github/workflows/ci.yml`) and the audit workflow (`.github/workflows/audit.yml`) have been validated locally but
-  have not run on GitHub. Every action is pinned to a commit SHA with a version comment, and Dependabot proposes
+- CI (`.github/workflows/ci.yml`) and the audit workflow (`.github/workflows/audit.yml`) ran on GitHub for the first time on
+  2026-11-20 (pull request #1), and every job passed, including the S3 contract tests against MinIO and both
+  production image builds from the committed Dockerfiles. Every action is pinned to a commit SHA with a version comment, and Dependabot proposes
   updates; checkout uses `persist-credentials: false`; installs run `npm ci --ignore-scripts`, then
   `npm run db:generate -w @cipherdrop/api`, which generates the Prisma client and fetches the Prisma engines that the
   skipped install scripts would have fetched; a `workflows` job runs actionlint 1.7.12, pinned by image digest. The audit

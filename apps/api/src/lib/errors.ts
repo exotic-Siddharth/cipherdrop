@@ -2,7 +2,13 @@
  * AppError and helpers. The error middleware turns them into `{error:{code, message, details?}}` (spec section 10).
  * Messages are user-facing and must never contain secrets, keys, tokens or plaintext metadata.
  */
-import type { ErrorCode, GoneReason, UploadBudgetDetails } from '@cipherdrop/shared';
+import type {
+  ErrorCode,
+  FeatureDisabledDetails,
+  GoneReason,
+  SwitchableFeature,
+  UploadBudgetDetails,
+} from '@cipherdrop/shared';
 
 export class AppError extends Error {
   readonly status: number;
@@ -41,6 +47,10 @@ export const unauthorized = (message = 'Unauthorized', details?: unknown) =>
   new AppError(401, 'UNAUTHORIZED', message, details);
 
 export const forbidden = (message = 'Forbidden') => new AppError(403, 'FORBIDDEN', message);
+
+/** 403 FEATURE_DISABLED: an operator switch (ALLOW_ANONYMOUS_UPLOADS, ALLOW_REGISTRATION) is off. */
+export const featureDisabled = (feature: SwitchableFeature, message: string) =>
+  new AppError(403, 'FEATURE_DISABLED', message, { feature } satisfies FeatureDisabledDetails);
 
 export const notFound = (message = 'Not found') => new AppError(404, 'NOT_FOUND', message);
 

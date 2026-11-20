@@ -8,3 +8,4 @@ export * from './auth';
 export * from './me';
 export * from './drops';
 export * from './admin';
+export * from './config';

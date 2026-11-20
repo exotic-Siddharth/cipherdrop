@@ -75,6 +75,8 @@ export const ErrorCodeSchema = z.enum([
   'VALIDATION_ERROR',
   'UNAUTHORIZED',
   'FORBIDDEN',
+  /** 403 with details.feature: an operator switched this feature off (ALLOW_ANONYMOUS_UPLOADS, ...). */
+  'FEATURE_DISABLED',
   'NOT_FOUND',
   'CONFLICT',
   'GONE',

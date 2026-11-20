@@ -131,6 +131,12 @@ const EnvSchema = z
      */
     CHUNK_UPLOAD_MIN_BYTES_PER_SEC: int(4096, 1, 1_048_576),
     /**
+     * Operator switches (ops-3). false: POST /drops without a session, or POST /auth/register, answers 403
+     * FEATURE_DISABLED; GET /api/config tells the SPA. Drops already created finish and stay downloadable.
+     */
+    ALLOW_ANONYMOUS_UPLOADS: bool(true),
+    ALLOW_REGISTRATION: bool(true),
+    /**
      * Ceiling on the ciphertext bytes of all anonymous drops whose blobs are not purged yet, any status
      * (default 10 GiB; 0 = no ceiling, an explicit opt-out). On by default: anonymous, end-to-end encrypted
      * drops are free file hosting, and the server cannot scan ciphertext.

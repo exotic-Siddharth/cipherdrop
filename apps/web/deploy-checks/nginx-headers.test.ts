@@ -362,3 +362,102 @@ describe('deploy/nginx.conf slow-client defences (ops-1)', () => {
     }
   });
 });
+
+/** A rule of RATE_LIMIT_RULES in apps/api/src/lib/rateLimit.ts, read from the source. */
+function apiRateRule(name: string): { windowMin: number; limit: number } {
+  const m = new RegExp(`\\n  ${name}: \\{ windowMs: (?:(\\d+) \\* )?MIN, limit: (\\d+) \\}`).exec(
+    read('apps', 'api', 'src', 'lib', 'rateLimit.ts'),
+  );
+  if (!m) throw new Error(`no rate limit rule ${name} in rateLimit.ts`);
+  return { windowMin: Number(m[1] ?? 1), limit: Number(m[2]) };
+}
+
+describe('deploy/nginx.conf request rate on the credential routes (critic-1)', () => {
+  // The API's auth routes, from its own source: [method, path, auth or undefined for public].
+  const authRoutes = [
+    ...read('apps', 'api', 'src', 'modules', 'auth', 'routes.ts').matchAll(
+      /method: '(\w+)',\s*path: '([^']+)',\s*summary: [\s\S]*?\n\s*tags,\n(?:\s*auth: '(\w+)',\n)?/g,
+    ),
+  ].map(([, method, p, auth]) => ({ method, path: `/api/auth${p}`, auth }));
+  const publicRoutes = authRoutes.filter((r) => r.auth === undefined).map((r) => r.path);
+  const otherRoutes = authRoutes.filter((r) => r.auth !== undefined).map((r) => r.path);
+
+  /** The key `map $uri $auth_client` gives a URI: nginx semantics (first matching regex, else default). */
+  const authMap = (() => {
+    try {
+      return block(code, 'map $uri $auth_client');
+    } catch {
+      return ''; // missing: every check below fails on its own
+    }
+  })();
+  const mapEntries = [...authMap.matchAll(/"~(\*?)([^"]+)"\s+(\$\w+);/g)].map(
+    ([, ci, re, value]) => [new RegExp(re as string, ci ? 'i' : ''), value as string] as const,
+  );
+  const keyOf = (uri: string): string =>
+    mapEntries.find(([re]) => re.test(uri))?.[1] ?? (/default\s+"";/.test(authMap) ? '' : '?');
+
+  it('reads the API routes it compares against', () => {
+    expect(publicRoutes.sort()).toEqual(
+      [
+        '/api/auth/login',
+        '/api/auth/login/mfa',
+        '/api/auth/prelogin',
+        '/api/auth/recovery/complete',
+        '/api/auth/recovery/start',
+        '/api/auth/register',
+      ].sort(),
+    );
+    expect(otherRoutes).toEqual(expect.arrayContaining(['/api/auth/refresh', '/api/auth/vault']));
+  });
+
+  it('keys exactly the public credential routes per client (as the API matches paths), nothing else', () => {
+    expect(mapEntries).toHaveLength(1);
+    for (const p of publicRoutes) {
+      // The API's router is case-insensitive and accepts a trailing slash.
+      for (const variant of [p, `${p}/`, p.toUpperCase(), p.replace('/auth/', '/Auth/')]) {
+        expect(keyOf(variant), variant).toBe('$api_client');
+      }
+      expect(keyOf(`${p}x`), `${p}x`).toBe('');
+    }
+    // The cookie and signed-in routes (refresh runs on every page load) and everything outside /api/auth stay
+    // unlimited here: they have their own API limits and must not sign NAT'd users out.
+    for (const p of [
+      ...otherRoutes,
+      '/api/drops',
+      '/api/drops/x/files/y/chunks/0',
+      '/api/me',
+      '/',
+    ]) {
+      expect(keyOf(p), p).toBe('');
+    }
+  });
+
+  it('limits them in /api/ with a zone keyed like the per-client cap, answered with 429', () => {
+    const zone = /limit_req_zone \$auth_client zone=auth_ip:\d+[km] rate=(\d+)r\/m;/.exec(
+      httpLevel,
+    );
+    expect(zone, 'limit_req_zone').not.toBeNull();
+    expect(directive(apiOwn, 'limit_req')).toEqual([expect.stringMatching(/^zone=auth_ip /)]);
+    expect(directive(apiOwn, 'limit_req_status')).toEqual(['429']);
+    // Nothing nested in /api/ replaces it (the chunk location inherits it; its key is always empty).
+    expect(directive(chunkOwn, 'limit_req')).toEqual([]);
+    expect(directive(code, 'limit_req')).toEqual(directive(apiOwn, 'limit_req'));
+  });
+
+  it('stays above the API budgets, so honest clients get the API JSON 429 with Retry-After first', () => {
+    const perMinute = Number(
+      /limit_req_zone \$auth_client zone=auth_ip:\S+ rate=(\d+)r\/m;/.exec(httpLevel)?.[1],
+    );
+    const [args] = directive(apiOwn, 'limit_req');
+    const burst = Number(/burst=(\d+)/.exec(args ?? '')?.[1]);
+    expect(args).toMatch(/\bnodelay\b/);
+    // A sign-in is prelogin + login: one user's full per-email budget fits in the burst ...
+    const perEmail = apiRateRule('login');
+    expect(burst).toBeGreaterThanOrEqual(2 * perEmail.limit);
+    // ... and the steady rate lets a client spend its whole per-client budget of failed logins in the window.
+    const perClient = apiRateRule('loginIp');
+    expect(perMinute * perClient.windowMin).toBeGreaterThanOrEqual(2 * perClient.limit);
+    // Still a limit: at most a few requests per second per client reach the API.
+    expect(perMinute).toBeLessThanOrEqual(600);
+  });
+});

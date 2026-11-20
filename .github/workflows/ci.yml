@@ -98,6 +98,12 @@ jobs:
       # The test setup creates cipherdrop_test and applies every migration itself.
       - name: API integration tests (real Postgres and Redis, local storage)
         run: npm test -w @cipherdrop/api
+      # Schema drift: the migrations, replayed into a scratch database, must build exactly schema.prisma (indexes,
+      # constraints, defaults and FK rules included). Exit code 2 prints the SQL of the missing migration.
+      - name: Migrations match schema.prisma (prisma migrate diff)
+        env:
+          SHADOW_DATABASE_URL: postgresql://cipherdrop:cipherdrop@localhost:55433/cipherdrop_shadow
+        run: npm run db:check -w @cipherdrop/api
       # MinIO is not a service container: its image needs a command (server /data), which `services:` cannot pass.
       - name: Start MinIO
         run: |

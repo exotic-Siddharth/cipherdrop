@@ -17,6 +17,7 @@
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force --skip-seed",
     "db:generate": "prisma generate",
+    "db:check": "tsx scripts/db-check.ts",
     "db:studio": "prisma studio",
     "bench": "tsx scripts/bench-upload.ts",
     "smoke": "tsx scripts/smoke.ts",

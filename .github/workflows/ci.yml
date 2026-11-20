@@ -50,6 +50,8 @@ jobs:
       # The API's typecheck needs the generated Prisma client types (the postinstall that --ignore-scripts skips).
       - run: npm run db:generate -w @cipherdrop/api
       - run: npm run lint
+      # The security bans in eslint.config.js (Math.random, unsafe raw SQL, HTML sinks, cross-origin requests) fire.
+      - run: npm run test:lint
       - run: npm run format:check
       - run: npm run typecheck
       # Unit tests that need no services: the crypto and shared packages and the SPA (jsdom).

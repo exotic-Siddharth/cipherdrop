@@ -18,9 +18,12 @@ import {
   waitForDashboard,
 } from './support/flows';
 
-async function enableTotp(page: Page): Promise<{ secret: string; backupCodes: string[] }> {
+async function enableTotp(
+  page: Page,
+  password: string,
+): Promise<{ secret: string; backupCodes: string[] }> {
   await accountMenu(page, 'Settings');
-  return enableTotpInSettings(page);
+  return enableTotpInSettings(page, password);
 }
 
 async function loginWithBackupCode(page: Page, email: string, password: string, code: string) {
@@ -30,7 +33,7 @@ async function loginWithBackupCode(page: Page, email: string, password: string, 
   await page.getByRole('button', { name: 'Verify and log in' }).click();
 }
 
-test('backup code logs in once, then is spent; regenerating backup codes needs a TOTP code', async ({
+test('backup code logs in once, then is spent; regenerating backup codes needs the password and a TOTP code', async ({
   page,
   newContext,
   leaks,
@@ -39,7 +42,7 @@ test('backup code logs in once, then is spent; regenerating backup codes needs a
   const password = randomPassword();
   leaks.forbidText('password', password);
   await registerAccount(page, email, password);
-  const { secret, backupCodes } = await enableTotp(page);
+  const { secret, backupCodes } = await enableTotp(page, password);
   expect(backupCodes).toHaveLength(10);
   expect(backupCodes[0]).toMatch(/^[0-9a-z]{5}-[0-9a-z]{5}$/i);
 
@@ -59,6 +62,7 @@ test('backup code logs in once, then is spent; regenerating backup codes needs a
 
   // Regenerate on the first device: the old codes die.
   await page.getByRole('button', { name: 'Regenerate backup codes' }).click();
+  await page.getByLabel('Your password').fill(password);
   await page.getByLabel('6-digit code').fill(totpCode(secret, true));
   await page.getByRole('button', { name: 'Regenerate', exact: true }).click();
   await expect(page.getByText('Save these backup codes now')).toBeVisible({ timeout: 20_000 });
@@ -187,6 +191,8 @@ test('sessions tab: two devices, sign out all others', async ({ page, newContext
   await expect(page.getByText('This device')).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('button', { name: /^Sign out Chrome/ })).toHaveCount(1);
   await page.getByRole('button', { name: 'Sign out all others' }).click();
+  // Signing devices out re-authenticates, like every sensitive action.
+  await page.getByRole('dialog').getByLabel('Your password').fill(password);
   await page.getByRole('button', { name: 'Sign out all others' }).last().click();
   await expect(page.getByText('Signed out of all other devices')).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('button', { name: /^Sign out Chrome/ })).toHaveCount(0);

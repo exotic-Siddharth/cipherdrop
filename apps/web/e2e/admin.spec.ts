@@ -107,7 +107,7 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   expect(leaks.count('GET', '/admin/')).toBe(0);
   await page.getByRole('link', { name: 'Open security settings' }).click();
   await expect(page).toHaveURL(/\/settings$/);
-  const { secret } = await enableTotpInSettings(page);
+  const { secret } = await enableTotpInSettings(page, password);
   leaks.forbidText('admin totp secret', secret);
 
   await page.goto('/admin');

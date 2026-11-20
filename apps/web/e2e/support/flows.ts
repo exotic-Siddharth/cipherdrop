@@ -153,15 +153,17 @@ export function totpCode(secretBase32: string, nextWindow = false): string {
 }
 
 /**
- * Turn on TOTP from the Settings Security tab (already open), confirm the backup codes and return them with the
- * secret. Uses the current window's code: later sign-ins use totpCode(secret, true) to stay clear of the replay
- * guard (R23).
+ * Turn on TOTP from the Settings Security tab (already open), re-authenticating with the account password, confirm
+ * the backup codes and return them with the secret. Uses the current window's code: later sign-ins use
+ * totpCode(secret, true) to stay clear of the replay guard (R23).
  */
 export async function enableTotpInSettings(
   page: Page,
+  password: string,
 ): Promise<{ secret: string; backupCodes: string[] }> {
   await page.getByRole('button', { name: 'Set up two-step verification' }).click();
   const secret = await page.getByLabel('Secret key').inputValue();
+  await page.getByLabel('Your password').fill(password);
   await page.getByLabel('6-digit code').fill(totpCode(secret));
   await page.getByRole('button', { name: /Turn on|Verify|Enable/ }).click();
   await expect(page.getByText('Save these backup codes now')).toBeVisible({ timeout: 20_000 });

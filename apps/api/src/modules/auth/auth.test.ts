@@ -327,7 +327,8 @@ describe('POST /auth/refresh and /auth/logout', () => {
     expect((await vault(b.accessToken)).status).toBe(200);
     const del = await request(t.app)
       .delete(`/api/auth/sessions/${b.sid}`)
-      .set('Authorization', bearer(a.accessToken));
+      .set('Authorization', bearer(a.accessToken))
+      .send({ authKey: u.authKey });
     expect(del.status).toBe(204);
     expect((await vault(b.accessToken)).status).toBe(401);
     expect((await refresh(b.cookie)).status).toBe(401);
@@ -607,17 +608,20 @@ describe('sessions', () => {
     const s = await newSession(t.app, u);
     const foreign = await request(t.app)
       .delete(`/api/auth/sessions/${sidOf(stranger.accessToken)}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(foreign.status).toBe(404);
     expect((await vault(stranger.accessToken)).status).toBe(200);
 
     const del = await request(t.app)
       .delete(`/api/auth/sessions/${s.sid}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(del.status).toBe(204);
     const again = await request(t.app)
       .delete(`/api/auth/sessions/${s.sid}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(again.status).toBe(404);
     expect(await actionsOf(u.user.id)).toContain('SESSION_REVOKED');
   });
@@ -628,7 +632,8 @@ describe('sessions', () => {
     const b = await newSession(t.app, u);
     const res = await request(t.app)
       .post('/api/auth/sessions/revoke-others')
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(res.status).toBe(204);
     for (const s of [a, b]) {
       expect((await vault(s.accessToken)).status).toBe(401);
@@ -818,7 +823,8 @@ describe('POST /auth/refresh after a lost rotation response (grace window)', () 
     expect((await gRefresh(s.cookie)).status).toBe(200);
     const del = await request(g.app)
       .delete(`/api/auth/sessions/${s.sid}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(del.status).toBe(204);
     advance(1_000);
     expect((await gRefresh(s.cookie)).status).toBe(401);

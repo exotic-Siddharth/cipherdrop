@@ -249,9 +249,12 @@ async function heldBytes(tx: Tx, where: Prisma.DropWhereInput): Promise<bigint> 
  * yet, which the cleanup job ends within CLEANUP_INTERVAL_SEC.
  */
 async function accountHeldBytes(tx: Tx): Promise<bigint> {
-  const used = await tx.user.aggregate({ _sum: { storageUsedBytes: true } });
+  // complete() moves a drop from UPLOADING to storageUsedBytes in one transaction, which does not take the
+  // capacity lock. Reading the uploads first means a complete() that commits between the two reads is
+  // counted twice (conservative), never missed.
   const uploading = await heldBytes(tx, { status: 'UPLOADING', ownerId: { not: null } });
-  return (used._sum.storageUsedBytes ?? 0n) + uploading;
+  const used = await tx.user.aggregate({ _sum: { storageUsedBytes: true } });
+  return uploading + (used._sum.storageUsedBytes ?? 0n);
 }
 
 /**

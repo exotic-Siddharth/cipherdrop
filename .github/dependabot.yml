@@ -1,0 +1,78 @@
+# Dependabot version updates. Security updates (Dependabot alerts) are a repository setting and are not delayed by
+# the schedule or the cooldown below. The dependency audit gate (.github/workflows/audit.yml) fails on a new high or
+# critical advisory either way.
+version: 2
+updates:
+  # The npm workspaces: one root manifest and lockfile covers apps/* and packages/*.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # A new release waits 7 days before Dependabot proposes it: a hijacked package version is usually found and
+    # pulled within that time (install scripts are a known worm vector; CI also installs with --ignore-scripts).
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: build
+      include: scope
+    ignore:
+      # @types/node follows the Node 22 runtime (engines, node:22-alpine): its major moves with the runtime.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+    # A dependency joins the FIRST group that matches it. Majors outside a group get a pull request each.
+    groups:
+      # The two tracked migrations (docs/SECURITY.md section 7) each get a pull request of their own.
+      zod-major:
+        patterns: ['zod', '@asteasolutions/zod-to-openapi']
+        update-types: ['major']
+      prisma-major:
+        patterns: ['prisma', '@prisma/*']
+        update-types: ['major']
+      # prisma and @prisma/client must stay on the same version.
+      prisma:
+        patterns: ['prisma', '@prisma/*']
+        update-types: ['minor', 'patch']
+      aws-sdk:
+        patterns: ['@aws-sdk/*']
+        update-types: ['minor', 'patch']
+      vite-vitest:
+        patterns: ['vite', 'vitest', '@vitejs/*', '@vitest/*']
+        update-types: ['minor', 'patch']
+      react:
+        patterns: ['react', 'react-dom', 'react-is', '@types/react', '@types/react-dom']
+        update-types: ['minor', 'patch']
+      lint:
+        patterns: ['eslint', '@eslint/*', 'typescript-eslint', 'eslint-plugin-*']
+        update-types: ['minor', 'patch']
+      # Everything else, one weekly pull request.
+      minor-and-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  # Workflow actions are pinned by commit SHA with a version comment; Dependabot updates both.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  # Base images. Dependabot reads only FROM lines that name an image: the Dockerfiles take theirs from ARG defaults
+  # (`ARG NODE_IMAGE=node:22-alpine`, `FROM ${NODE_IMAGE}`), which it does not resolve, so this entry finds nothing to
+  # update until the FROM lines are literal (ideally tag plus digest).
+  - package-ecosystem: docker
+    directories:
+      - /apps/api
+      - /apps/web
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: build

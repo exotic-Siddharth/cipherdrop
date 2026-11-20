@@ -1,0 +1,29 @@
+{
+  "description": "Reviewed exceptions for scripts/audit-gate.mjs (npm run audit:gate): high or critical advisories in `npm audit --omit=dev` that are accepted until their fix lands, with the reason they do not reach request data (docs/SECURITY.md section 7). The gate fails on any high or critical advisory missing here, on an entry that matches nothing, and on an entry past its reviewBy date.",
+  "advisories": [
+    {
+      "id": "GHSA-mrhx-c7xc-m3w5",
+      "package": "zod",
+      "title": "Zod can exhaust memory while validating oversized constrained collections",
+      "reason": "zod below 4.6.6 can exhaust memory on oversized collections. JSON bodies are capped at 1 MiB, and chunk uploads are raw bytes that zod never parses.",
+      "fix": "The zod 4 migration, together with @asteasolutions/zod-to-openapi 8 or later (both semver-major).",
+      "reviewBy": "2027-02-20"
+    },
+    {
+      "id": "GHSA-ggr8-5vv4-36mx",
+      "package": "deepmerge-ts",
+      "title": "DeepmergeTS has stack exhaustion when merging recursive object graphs",
+      "reason": "Prisma 6 pulls in deepmerge-ts through @prisma/config, a dependency of the Prisma CLI only. It runs when Prisma loads its configuration (prisma generate, migrate deploy), not on request data.",
+      "fix": "The Prisma 7 migration (semver-major).",
+      "reviewBy": "2027-02-20"
+    },
+    {
+      "id": "GHSA-7589-6fvf-x4pw",
+      "package": "effect",
+      "title": "Effect: ReDoS in Schema.TemplateLiteral compiled regex",
+      "reason": "Same path as deepmerge-ts: effect is required only by @prisma/config, which the Prisma CLI uses to validate its own configuration (prisma generate, migrate deploy), never request data. Not in the 2026-11-12 snapshot; found by the gate on 2026-11-20.",
+      "fix": "The Prisma 7 migration (semver-major).",
+      "reviewBy": "2027-02-20"
+    }
+  ]
+}

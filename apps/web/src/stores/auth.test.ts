@@ -14,6 +14,7 @@ const me = (id: string): Me => ({
   autoLockMinutes: 15,
   storageQuotaBytes: 1_000_000,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: '2026-11-07T10:00:00.000Z',
 });
 const session = (id: string): AuthSuccess => ({ user: me(id), accessToken: 'access' });

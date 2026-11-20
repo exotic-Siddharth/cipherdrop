@@ -119,7 +119,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
   async function signIn(user: User, req: Request, res: Response) {
     const issued = await createSession(ctx, user, req);
     setRefreshCookie(ctx, res, issued.refreshToken, issued.refreshExpiresAt);
-    return { user: toMe(user), accessToken: issued.accessToken };
+    return { user: toMe(user, ctx), accessToken: issued.accessToken };
   }
 
   /** A failed login proof: count it, lock after MAX_FAILED_LOGINS (spec section 10). */
@@ -211,6 +211,11 @@ export function authRoutes(ctx: AppContext): AppRouter {
             wrappedAccountKeyRecovery: body.wrappedAccountKeyRecovery,
             recoveryAuthHash: body.recoveryAuthHash,
             storageQuotaBytes: BigInt(ctx.env.USER_DEFAULT_QUOTA_BYTES),
+            // Probation (server-1): a free, unverified account starts with a small quota for its first days.
+            quotaProbationEndsAt:
+              ctx.env.NEW_ACCOUNT_PROBATION_DAYS > 0
+                ? new Date(ctx.now().getTime() + ctx.env.NEW_ACCOUNT_PROBATION_DAYS * 86_400_000)
+                : null,
           },
         });
       } catch (err) {
@@ -318,7 +323,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
       try {
         const rotated = await rotateRefresh(ctx, token, req);
         setRefreshCookie(ctx, res, rotated.refreshToken, rotated.refreshExpiresAt);
-        res.json({ user: toMe(rotated.user), accessToken: rotated.accessToken });
+        res.json({ user: toMe(rotated.user, ctx), accessToken: rotated.accessToken });
       } catch (err) {
         clearRefreshCookie(ctx, res);
         throw err;

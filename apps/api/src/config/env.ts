@@ -90,6 +90,13 @@ const EnvSchema = z
     ANON_MAX_DROP_BYTES: int(104_857_600, 1),
     USER_MAX_DROP_BYTES: int(2_147_483_648, 1),
     USER_DEFAULT_QUOTA_BYTES: int(5_368_709_120, 0),
+    /**
+     * Probation for new accounts (sign-up is free and unverified): for their first NEW_ACCOUNT_PROBATION_DAYS
+     * (default 7; 0 = none) their quota is at most NEW_ACCOUNT_QUOTA_BYTES (default 256 MiB). The end date is
+     * fixed at registration; an admin's quota edit ends the probation at once (lib/quota.ts).
+     */
+    NEW_ACCOUNT_QUOTA_BYTES: int(268_435_456, 0),
+    NEW_ACCOUNT_PROBATION_DAYS: int(7, 0, 365),
     ANON_MAX_EXPIRY_HOURS: int(72, 1, 720),
     USER_MAX_EXPIRY_HOURS: int(720, 1, 720),
     MAX_FILES_PER_DROP: int(20, 1, 20),

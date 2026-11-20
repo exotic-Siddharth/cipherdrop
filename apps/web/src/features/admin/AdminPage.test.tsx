@@ -31,6 +31,7 @@ const admin: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 5 * GIB,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: iso(-30 * 86_400_000),
 };
 
@@ -99,6 +100,7 @@ function users(): AdminUser[] {
     createdAt: iso(-10 * 86_400_000),
     storageQuotaBytes: 5 * GIB,
     storageUsedBytes: 2 * GIB,
+    quotaProbationEndsAt: null,
   };
   return [
     { ...base, id: admin.id, email: admin.email, role: 'ADMIN', totpEnabled: true },

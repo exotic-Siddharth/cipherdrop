@@ -86,6 +86,9 @@ model User {
   autoLockMinutes           Int       @default(15)
   storageQuotaBytes         BigInt
   storageUsedBytes          BigInt    @default(0)
+  // New-account probation (server-1): until then the quota is at most NEW_ACCOUNT_QUOTA_BYTES. Set at
+  // registration, cleared by an admin's quota edit; null = no probation.
+  quotaProbationEndsAt      DateTime?
   failedLoginCount          Int       @default(0)
   lockedUntil               DateTime?
   createdAt                 DateTime  @default(now())

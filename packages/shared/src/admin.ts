@@ -88,8 +88,11 @@ export const AdminUserSchema = z.object({
   email: z.string(),
   role: RoleSchema,
   totpEnabled: z.boolean(),
+  /** The quota that applies now (capped while the new-account probation lasts). */
   storageQuotaBytes: z.number().int().nonnegative(),
   storageUsedBytes: z.number().int().nonnegative(),
+  /** When the new-account probation ends; null when none applies. A quota edit ends it at once. */
+  quotaProbationEndsAt: IsoDateTimeSchema.nullable(),
   dropCount: z.number().int().nonnegative(),
   lockedUntil: IsoDateTimeSchema.nullable(),
   createdAt: IsoDateTimeSchema,

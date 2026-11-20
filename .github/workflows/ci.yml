@@ -8,8 +8,9 @@
 # .github/dependabot.yml, proposes the bumps), checkout does not leave the token in .git/config, and every
 # install runs with --ignore-scripts, like the Dockerfiles. The lockfile's install scripts are the API's postinstall
 # (prisma generate, run explicitly below), @prisma/client's (the same generate), @prisma/engines' (the engine
-# download, which prisma generate also does), esbuild's (a binary check; the binary comes from its @esbuild/<platform>
-# package), fsevents (macOS only) and @scarf/scarf (install telemetry, deliberately never run).
+# download, which prisma generate also does), prisma's preinstall (a Node >= 18.18 check, which the pinned Node 22
+# makes moot), esbuild's (a binary check; the binary comes from its @esbuild/<platform> package), fsevents (macOS
+# only) and @scarf/scarf (install telemetry, deliberately never run).
 # The dependency audit gate is a separate workflow, audit.yml, so its weekly run does not start this matrix.
 name: ci
 

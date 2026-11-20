@@ -33,13 +33,22 @@ export interface PurposeClaims {
   [claim: string]: unknown;
 }
 
-export function signAccessToken(user: { id: string; role: Role }, sid: string): string {
+/**
+ * `maxTtlSec` shortens the token so it never outlives its session's absolute end (SESSION_MAX_LIFETIME_DAYS); it
+ * never lengthens it past ACCESS_TOKEN_TTL_SEC.
+ */
+export function signAccessToken(
+  user: { id: string; role: Role },
+  sid: string,
+  options: { maxTtlSec?: number } = {},
+): string {
+  const ttl = Math.max(1, Math.min(env.ACCESS_TOKEN_TTL_SEC, options.maxTtlSec ?? Infinity));
   return jwt.sign({ role: user.role, sid }, env.JWT_ACCESS_SECRET, {
     algorithm: 'HS256',
     subject: user.id,
     issuer: ISSUER,
     audience: ACCESS_AUDIENCE,
-    expiresIn: env.ACCESS_TOKEN_TTL_SEC,
+    expiresIn: Math.floor(ttl),
   });
 }
 

@@ -86,3 +86,20 @@ updates:
       base-images:
         patterns: ['*']
 
+  # The third-party images of the compose files (postgres, redis, caddy in docker-compose.prod.yml; tag plus digest).
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: build
+    ignore:
+      # A Postgres or Redis major changes the on-disk format (pg_upgrade or a dump and restore): a planned migration.
+      - dependency-name: postgres
+        update-types: ['version-update:semver-major']
+      - dependency-name: redis
+        update-types: ['version-update:semver-major']
+    groups:
+      compose-images:
+        patterns: ['*']

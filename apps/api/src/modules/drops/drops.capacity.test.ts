@@ -1,6 +1,7 @@
 /**
  * C-15: chunk PUT buffers up to 4 MiB in memory per request, so a global in-flight cap (429 + Retry-After
- * beyond it), a body inactivity timeout and an optional ceiling on anonymous storage bound memory and disk.
+ * beyond it), a body inactivity timeout and a ceiling on anonymous storage (10 GiB by default, 0 = off) bound
+ * memory and disk.
  */
 import http, { type ClientRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -200,6 +201,56 @@ describe('upload capacity limits', () => {
     const m = /^storage_free_bytes\s+(\S+)$/m.exec(String(metrics.text));
     expect(m).not.toBeNull();
     expect(Number(m?.[1])).toBeGreaterThan(0);
+  });
+});
+
+describe('ANON_TOTAL_PENDING_BYTES default and opt-out', () => {
+  /** An anonymous drop row holding `bytes` of unpurged ciphertext (no blobs needed for the sum). */
+  const holdAnonBytes = (t: TestApp, bytes: bigint) => t.prisma.$executeRaw`
+    INSERT INTO "Drop" ("id", "ownerTokenHash", "uploadTokenHash", "status", "encryptedManifest",
+      "totalCiphertextBytes", "fileCount", "maxDownloads", "expiresAt")
+    VALUES (${`held-${bytes}`}, 'x', 'x', 'READY'::"DropStatus", 'm', ${bytes}, 1, 1, now() + interval '1 hour')`;
+
+  it('ships a 10 GiB ceiling: a full anonymous pool refuses the next anonymous drop', async () => {
+    const t = await createTestApp(); // the parsed default, no override
+    try {
+      await resetTables(t.prisma);
+      expect(t.ctx.env.ANON_TOTAL_PENDING_BYTES).toBe(10 * 1024 ** 3);
+      await holdAnonBytes(t, 10n * 1024n ** 3n - 1000n);
+      const refused = await request(t.app)
+        .post('/api/drops')
+        .send(createBody([testFile(2000)]));
+      expect(refused.status).toBe(413);
+      expect(refused.body.error.code).toBe('QUOTA_EXCEEDED');
+      expect(
+        (
+          await request(t.app)
+            .post('/api/drops')
+            .send(createBody([testFile(10)]))
+        ).status,
+      ).toBe(201);
+    } finally {
+      await resetTables(t.prisma);
+      await t.close();
+    }
+  });
+
+  it('0 still means no ceiling (the explicit opt-out)', async () => {
+    const t = await createTestApp({ env: { ANON_TOTAL_PENDING_BYTES: 0 } });
+    try {
+      await resetTables(t.prisma);
+      await holdAnonBytes(t, 64n * 1024n ** 4n);
+      expect(
+        (
+          await request(t.app)
+            .post('/api/drops')
+            .send(createBody([testFile(2000)]))
+        ).status,
+      ).toBe(201);
+    } finally {
+      await resetTables(t.prisma);
+      await t.close();
+    }
   });
 });
 

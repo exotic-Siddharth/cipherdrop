@@ -97,10 +97,7 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
       if (r.purged) purgedDrops += 1;
       return r.purged;
     } catch (err) {
-      c.logger.error(
-        { dropId, err: { message: (err as Error).message } },
-        'cleanup: blob deletion failed',
-      );
+      c.logger.error({ dropId, err }, 'cleanup: blob deletion failed');
       return false;
     }
   };
@@ -226,7 +223,7 @@ export function startCleanupScheduler(
       try {
         report = await runScheduledCleanup(ctx);
       } catch (err) {
-        ctx.logger.error({ err: { message: (err as Error).message } }, 'cleanup run failed');
+        ctx.logger.error({ err }, 'cleanup run failed');
       } finally {
         running = null;
       }

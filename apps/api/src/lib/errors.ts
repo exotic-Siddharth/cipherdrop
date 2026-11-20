@@ -2,7 +2,7 @@
  * AppError and helpers. The error middleware turns them into `{error:{code, message, details?}}` (spec section 10).
  * Messages are user-facing and must never contain secrets, keys, tokens or plaintext metadata.
  */
-import type { ErrorCode, GoneReason } from '@cipherdrop/shared';
+import type { ErrorCode, ForbiddenReason, GoneReason } from '@cipherdrop/shared';
 
 export class AppError extends Error {
   readonly status: number;
@@ -41,6 +41,14 @@ export const unauthorized = (message = 'Unauthorized', details?: unknown) =>
   new AppError(401, 'UNAUTHORIZED', message, details);
 
 export const forbidden = (message = 'Forbidden') => new AppError(403, 'FORBIDDEN', message);
+
+/**
+ * 403 FORBIDDEN with `details.reason` MFA_REQUIRED: an admin without two-step verification on an admin route.
+ * Admin routes can reveal reporter-supplied decryption keys, so the role alone is not enough (review server-3).
+ */
+export const mfaRequired = (
+  message = 'Admin access needs two-step verification. Turn it on in Settings, Security, then try again.',
+) => new AppError(403, 'FORBIDDEN', message, { reason: 'MFA_REQUIRED' satisfies ForbiddenReason });
 
 export const notFound = (message = 'Not found') => new AppError(404, 'NOT_FOUND', message);
 

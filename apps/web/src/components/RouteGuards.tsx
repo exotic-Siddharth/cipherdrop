@@ -1,4 +1,4 @@
-import { LayoutDashboard, ShieldOff } from 'lucide-react';
+import { LayoutDashboard, Settings, ShieldAlert, ShieldOff } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router';
 import { loginPath, unlockPath } from '../lib/paths';
@@ -58,10 +58,35 @@ export interface RequireAdminProps {
   children?: ReactNode;
 }
 
-/** Admin routes: like RequireAuth, plus a 403 state for non-admins (the API re-checks the role anyway). */
+/**
+ * What an admin without two-step verification sees instead of the console. The API refuses every admin route for
+ * them (403 FORBIDDEN, details.reason MFA_REQUIRED), because the console can reveal reporters' decryption keys.
+ */
+export function AdminMfaRequired() {
+  return (
+    <EmptyState
+      icon={ShieldAlert}
+      tone="warning"
+      titleAs="h1"
+      title="Turn on two-step verification"
+      description="The admin console can reveal the decryption keys that reporters share, so admins need two-step verification. Set it up in Settings, Security, then come back here."
+      action={
+        <ButtonLink to="/settings" icon={Settings}>
+          Open security settings
+        </ButtonLink>
+      }
+    />
+  );
+}
+
+/**
+ * Admin routes: like RequireAuth, plus a 403 state for non-admins and a "turn on 2FA" state for admins without it
+ * (the API re-checks both anyway).
+ */
 export function RequireAdmin({ children }: RequireAdminProps) {
   const status = useAuth((s) => s.status);
   const role = useAuth((s) => s.user?.role);
+  const totpEnabled = useAuth((s) => s.user?.totpEnabled ?? false);
   const logoutReason = useAuth((s) => s.logoutReason);
   const returnPath = useReturnPath();
 
@@ -85,5 +110,6 @@ export function RequireAdmin({ children }: RequireAdminProps) {
       />
     );
   }
+  if (!totpEnabled) return <AdminMfaRequired />;
   return children ?? <Outlet />;
 }

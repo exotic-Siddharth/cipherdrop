@@ -1,7 +1,9 @@
 /**
  * Report -> moderation flow against the real API (R13): a recipient reports a drop (with and without the
  * key), the admin reviews it through the non-consuming grant, disables it, dismisses another report and edits a
- * user. Also checks that a plain user is refused on /admin.
+ * user. Also checks that a plain user is refused on /admin, and that a new admin must turn on two-step
+ * verification first (the API refuses admin routes without it): the admin enrols TOTP through Settings here, like
+ * a real one would, rather than starting from a seeded secret, so the gate and its notice are exercised too.
  */
 import { expect, test } from './support/fixtures';
 import {
@@ -14,6 +16,7 @@ import {
 } from './support/db';
 import {
   accountMenu,
+  enableTotpInSettings,
   openLink,
   randomPassword,
   registerAccount,
@@ -94,7 +97,19 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   await userPage.goto('/admin');
   await expect(userPage.getByText('Admins only')).toBeVisible({ timeout: 20_000 });
 
-  // The admin's role comes from a fresh token: reload refreshes the session.
+  // The admin's role comes from a fresh token: reload refreshes the session. Without two-step verification the
+  // console stays closed and says why.
+  await page.goto('/admin');
+  await expect(page.getByRole('heading', { name: 'Turn on two-step verification' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByRole('list', { name: 'Statistics' })).toHaveCount(0);
+  expect(leaks.count('GET', '/admin/')).toBe(0);
+  await page.getByRole('link', { name: 'Open security settings' }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  const { secret } = await enableTotpInSettings(page);
+  leaks.forbidText('admin totp secret', secret);
+
   await page.goto('/admin');
   await expect(
     page

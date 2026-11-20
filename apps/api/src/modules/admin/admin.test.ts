@@ -76,12 +76,51 @@ describe('admin API', () => {
         const res = await request(t.app)[method](path(ids)).set(as(user)).send(body);
         expect(res.status, `${method} ${path(ids)}`).toBe(403);
         expect(res.body.error.code).toBe('FORBIDDEN');
+        // A regular user learns nothing about what admins need.
+        expect(res.body.error.details).toBeUndefined();
       }
       // Nothing changed.
       expect((await t.prisma.report.findUniqueOrThrow({ where: { id: ids.report } })).status).toBe(
         'OPEN',
       );
       expect(await t.prisma.downloadGrant.count()).toBe(0);
+    });
+
+    it('refuses an admin without two-step verification on every admin route (403 MFA_REQUIRED)', async () => {
+      const admin = await createAdminRecord(t.prisma, { totpEnabledAt: null });
+      const user = await createUserRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      const ids = { drop: drop.dropId, report: await report(drop.dropId), user: user.id };
+      for (const [method, path, body] of routes) {
+        const res = await request(t.app)[method](path(ids)).set(as(admin)).send(body);
+        expect(res.status, `${method} ${path(ids)}`).toBe(403);
+        expect(res.body.error).toEqual({
+          code: 'FORBIDDEN',
+          message: expect.stringMatching(/two-step verification/),
+          details: { reason: 'MFA_REQUIRED' },
+        });
+      }
+      // Nothing changed: no review grant, the report is still open, the user keeps their quota.
+      expect(await t.prisma.downloadGrant.count()).toBe(0);
+      expect((await t.prisma.report.findUniqueOrThrow({ where: { id: ids.report } })).status).toBe(
+        'OPEN',
+      );
+      expect(
+        (await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).storageQuotaBytes,
+      ).toBe(user.storageQuotaBytes);
+      expect(await t.prisma.auditEvent.count({ where: { action: 'ADMIN_REVIEW_GRANT' } })).toBe(0);
+    });
+
+    it('checks two-step verification in the database on every request (turning it off closes the console)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const header = as(admin);
+      expect((await request(t.app).get('/api/admin/stats').set(header)).status).toBe(200);
+      await t.prisma.user.update({ where: { id: admin.id }, data: { totpEnabledAt: null } });
+      const refused = await request(t.app).get('/api/admin/stats').set(header);
+      expect(refused.status).toBe(403);
+      expect(refused.body.error.details).toEqual({ reason: 'MFA_REQUIRED' });
+      await t.prisma.user.update({ where: { id: admin.id }, data: { totpEnabledAt: T0 } });
+      expect((await request(t.app).get('/api/admin/stats').set(header)).status).toBe(200);
     });
 
     it('re-checks the role in the database (a demoted admin is refused)', async () => {
@@ -475,17 +514,17 @@ describe('admin API', () => {
         .send({ storageQuotaBytes: 1000, role: 'ADMIN' });
       expect(res.status).toBe(200);
       expect(res.body.user).toMatchObject({ id: user.id, role: 'ADMIN', storageQuotaBytes: 1000 });
-      // The promotion is stored; admin routes need a token carrying the new role (issued on the next refresh).
+      // The promotion is stored; admin routes need a token carrying the new role (issued on the next refresh),
+      // and two-step verification on the promoted account.
       expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe(
         'ADMIN',
       );
-      expect(
-        (
-          await request(t.app)
-            .get('/api/admin/stats')
-            .set(as({ id: user.id, role: 'ADMIN' }))
-        ).status,
-      ).toBe(200);
+      const promoted = as({ id: user.id, role: 'ADMIN' });
+      const withoutMfa = await request(t.app).get('/api/admin/stats').set(promoted);
+      expect(withoutMfa.status).toBe(403);
+      expect(withoutMfa.body.error.details).toEqual({ reason: 'MFA_REQUIRED' });
+      await t.prisma.user.update({ where: { id: user.id }, data: { totpEnabledAt: T0 } });
+      expect((await request(t.app).get('/api/admin/stats').set(promoted)).status).toBe(200);
       // And the quota is enforced on create.
       const over = await request(t.app)
         .post('/api/drops')

@@ -48,8 +48,27 @@ export interface LeakGuardOptions {
 }
 
 /**
- * The same text in the encodings a leak could take: raw, URL-encoded (as encodeURIComponent, encodeURI and an
- * HTML form encode it), JSON-escaped, base64, base64url.
+ * The text as the browser itself writes it into a URL: the WHATWG URL parser (Chromium follows it for http)
+ * percent-encodes a different set in a query (' becomes %27, which encodeURIComponent and encodeURI leave
+ * raw) and in a path. Nothing when the parser would drop part of the text (tabs and newlines; '.' and '..'
+ * path segments): a shorter needle would match what it should not.
+ */
+function browserUrlEncodings(text: string): string[] {
+  if (/[\t\n\r]/.test(text)) return [];
+  const url = new URL('http://x/');
+  // The setters encode '?' and '#' too, where a parsed URL would end the path or the query there.
+  url.search = text;
+  const out = [url.search.slice(1)];
+  if (!text.split(/[/\\]/).some((seg) => /^(\.|%2e){1,2}$/i.test(seg))) {
+    url.pathname = text;
+    out.push(url.pathname.slice(1));
+  }
+  return out;
+}
+
+/**
+ * The same text in the encodings a leak could take: raw, URL-encoded (as encodeURIComponent, encodeURI, an
+ * HTML form and the browser's URL parser encode it), JSON-escaped, base64, base64url.
  */
 export function textVariants(text: string): string[] {
   const buf = Buffer.from(text, 'utf8');
@@ -59,6 +78,7 @@ export function textVariants(text: string): string[] {
       encodeURIComponent(text),
       encodeURI(text),
       new URLSearchParams({ v: text }).toString().slice(2),
+      ...browserUrlEncodings(text),
       JSON.stringify(text).slice(1, -1),
       buf.toString('base64'),
       buf.toString('base64url'),

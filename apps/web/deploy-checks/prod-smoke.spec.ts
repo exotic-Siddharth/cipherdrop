@@ -330,6 +330,21 @@ test('operational endpoints are not exposed through nginx', async ({ request }) 
   }
 });
 
+test('Swagger UI is not served on the SPA origin; the OpenAPI JSON is', async ({ request }) => {
+  for (const url of ['/api/docs', '/api/docs/', '/api/docs/swagger-ui-bundle.js']) {
+    const res = await request.get(url);
+    expect(res.status(), url).toBe(404);
+    // nginx's own 404 (not the API's JSON one), with the SPA's section 12 headers.
+    expect(res.headers()['content-type'], url).toContain('text/html');
+    expect(res.headers()['content-security-policy'], url).toBe(
+      SECURITY_HEADERS['Content-Security-Policy'],
+    );
+  }
+  const spec = await request.get('/api/openapi.json');
+  expect(spec.status()).toBe(200);
+  expect((await spec.json()).openapi).toMatch(/^3\./);
+});
+
 test('the SPA bundle carries no demo credentials', async ({ request }) => {
   const html = await (await request.get('/')).text();
   const asset = /src="(\/assets\/[^"]+\.js)"/.exec(html)?.[1] as string;

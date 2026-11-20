@@ -70,6 +70,13 @@ describe('deploy/nginx.conf', () => {
     expect(block).toMatch(/try_files \$uri =404;/);
   });
 
+  it('answers /api/docs (Swagger UI) with its own 404, never the API, and keeps the inherited headers', () => {
+    const docs = ownLevel(block(stripComments(conf), 'location ^~ /api/docs'));
+    expect(directive(docs, 'return')).toEqual(['404']);
+    expect(directive(docs, 'proxy_pass')).toEqual([]);
+    expect(directive(docs, 'add_header')).toEqual([]);
+  });
+
   it('does not compress JSON (BREACH) and serves the SPA fallback', () => {
     expect(conf).not.toMatch(/gzip_types[^;]*json/);
     expect(conf).toMatch(/try_files \$uri \$uri\/ \/index\.html;/);

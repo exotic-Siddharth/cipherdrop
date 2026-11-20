@@ -21,11 +21,42 @@ export interface FileSink {
   abort(): Promise<void>;
 }
 
-/** Simple `type/subtype` MIME (no parameters); anything else is saved as application/octet-stream. */
-const SAFE_MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i;
+/**
+ * The only declared types a saved Blob keeps. The type comes from the manifest, so the sender chooses it, and the
+ * Blob is saved through a same-origin blob: URL (lib/files saveBlob). Where a browser ignores <a download> and
+ * navigates to that URL instead (some in-app browsers), the file renders as a document of this origin, the one
+ * that holds the keys. So only formats that every browser shows in a built-in viewer that runs no script, parses
+ * no markup and loads nothing else are kept: plain text, raster images, audio and video. Everything else is saved
+ * as application/octet-stream: active types (HTML, XHTML, SVG, XML and every +xml type, XSLT, JavaScript, CSS,
+ * WebAssembly, PDF, multipart and message/*) and unknown ones alike. The saved name keeps its extension, so the
+ * file opens as usual from disk.
+ */
+const INERT_SAVE_TYPES: ReadonlySet<string> = new Set([
+  'text/plain',
+  'text/csv',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/bmp',
+  'audio/mpeg',
+  'audio/ogg',
+  'audio/wav',
+  'audio/webm',
+  'audio/flac',
+  'audio/aac',
+  'audio/mp4',
+  'video/mp4',
+  'video/webm',
+  'video/ogg',
+  'video/quicktime',
+]);
 
+/** The type a saved Blob gets: the declared one when it is a plain, inert type, else application/octet-stream. */
 export function safeBlobType(type: string | null | undefined): string {
-  return type && SAFE_MIME_RE.test(type) ? type.toLowerCase() : 'application/octet-stream';
+  const t = (type ?? '').toLowerCase();
+  return INERT_SAVE_TYPES.has(t) ? t : 'application/octet-stream';
 }
 
 /** True when the file is too large for an in-memory Blob and needs the save picker (R22). */

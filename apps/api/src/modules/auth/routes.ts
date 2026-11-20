@@ -38,7 +38,6 @@ import {
 import { Prisma, type User } from '@prisma/client';
 import type { Request, Response } from 'express';
 import type { AppContext } from '../../context';
-import { hashAuthKey } from '../../lib/argon2';
 import { conflict, forbidden, notFound, unauthorized, validationError } from '../../lib/errors';
 import { hmacSha256, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
 import { ipKey } from '../../lib/ip';
@@ -46,7 +45,11 @@ import { signPurposeToken, verifyPurposeToken } from '../../lib/jwt';
 import { createRouter, type AppRouter } from '../../lib/router';
 import { encryptTotpSecret, generateTotpSecret, totpOtpauthUrl, verifyTotp } from '../../lib/totp';
 import { authUser } from '../../middleware/auth';
-import { verifyAccountAuthKey, verifyAccountAuthKeyOrDummy } from './authKeyHash';
+import {
+  hashAccountAuthKey,
+  verifyAccountAuthKey,
+  verifyAccountAuthKeyOrDummy,
+} from './authKeyHash';
 import {
   GENERIC_LOGIN_ERROR,
   GENERIC_RECOVERY_ERROR,
@@ -195,7 +198,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         select: { id: true },
       });
       if (taken) throw conflict(EMAIL_TAKEN);
-      const authKeyHash = await hashAuthKey(bytes);
+      const authKeyHash = await hashAccountAuthKey(ctx, bytes);
       let user: User;
       try {
         user = await prisma.user.create({
@@ -242,7 +245,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
       const bytes = keyBytes(req.body.authKey, 'authKey');
       const user = await prisma.user.findUnique({ where: { email: req.body.email } });
       // Always one Argon2id verification, so unknown, locked and wrong look alike in timing.
-      const ok = await verifyAccountAuthKeyOrDummy(user?.authKeyHash, bytes);
+      const ok = await verifyAccountAuthKeyOrDummy(ctx, user?.authKeyHash, bytes);
       if (!user) throw unauthorized(GENERIC_LOGIN_ERROR);
       if (isLocked(user)) {
         await ctx.audit.record({
@@ -385,12 +388,12 @@ export function authRoutes(ctx: AppContext): AppRouter {
       const body = req.body;
       const current = keyBytes(body.currentAuthKey, 'currentAuthKey');
       const next = keyBytes(body.newAuthKey, 'newAuthKey');
-      if (!(await verifyAccountAuthKey(user.authKeyHash, current)))
+      if (!(await verifyAccountAuthKey(ctx, user.authKeyHash, current)))
         throw forbidden('Incorrect password');
       await prisma.user.update({
         where: { id: user.id },
         data: {
-          authKeyHash: await hashAuthKey(next),
+          authKeyHash: await hashAccountAuthKey(ctx, next),
           kdfSalt: body.kdf.salt,
           kdfMemoryKiB: body.kdf.memoryKiB,
           kdfIterations: body.kdf.iterations,
@@ -491,7 +494,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         // Single use: only succeeds while the recovery key the token was issued for is still current.
         where: { id: user.id, recoveryAuthHash: user.recoveryAuthHash },
         data: {
-          authKeyHash: await hashAuthKey(next),
+          authKeyHash: await hashAccountAuthKey(ctx, next),
           kdfSalt: body.kdf.salt,
           kdfMemoryKiB: body.kdf.memoryKiB,
           kdfIterations: body.kdf.iterations,

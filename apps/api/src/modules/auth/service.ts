@@ -412,7 +412,7 @@ export async function requireAccountProof(
   context: string,
 ): Promise<void> {
   const bytes = keyBytes(proof.authKey, 'authKey');
-  if (!(await verifyAccountAuthKey(user.authKeyHash, bytes))) throw forbidden('Incorrect password');
+  if (!(await verifyAccountAuthKey(ctx, user.authKeyHash, bytes))) throw forbidden('Incorrect password');
   if (!user.totpEnabledAt) return;
   if (!proof.code) {
     throw validationError('A two-factor code is required', {

@@ -125,6 +125,18 @@ const EnvSchema = z
     CHUNK_UPLOAD_MIN_BYTES_PER_SEC: int(4096, 1, 1_048_576),
     /** Ceiling on the ciphertext bytes of anonymous drops whose blobs are not purged yet (0 = no ceiling). */
     ANON_TOTAL_PENDING_BYTES: int(0, 0),
+    /**
+     * Server-side Argon2id of account auth keys (lib/argon2Limiter.ts, which explains the sizing): hashes running
+     * at once per process, and how many more may wait before a request is refused with 429 + Retry-After.
+     */
+    ARGON2_MAX_CONCURRENT: int(2, 1, 64),
+    ARGON2_MAX_QUEUE: int(32, 0, 10_000),
+    /**
+     * Read by libuv, not by the app: the size of Node's threadpool (default 4), which Argon2id shares with fs,
+     * dns.lookup and async crypto. Parsed here only so that ARGON2_MAX_CONCURRENT can be checked against it; the
+     * API image sets 8 (apps/api/Dockerfile). It takes effect only from the process environment at start-up.
+     */
+    UV_THREADPOOL_SIZE: int(4, 1, 1024),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),
@@ -137,6 +149,14 @@ const EnvSchema = z
     SEED_DEMO_PASSWORD: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
+    if (env.ARGON2_MAX_CONCURRENT >= env.UV_THREADPOOL_SIZE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ARGON2_MAX_CONCURRENT'],
+        message:
+          'must be below UV_THREADPOOL_SIZE (default 4), so Argon2id never takes every libuv thread from file I/O',
+      });
+    }
     if (env.NODE_ENV !== 'production') return;
     if (!env.RATE_LIMITS_ENABLED) {
       ctx.addIssue({

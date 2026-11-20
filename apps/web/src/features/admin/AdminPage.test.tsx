@@ -11,6 +11,7 @@ import { configure, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { formatDate } from '../../lib/format';
 import { queryClient } from '../../lib/queryClient';
 import { routes } from '../../router';
 import { useAuth } from '../../stores/auth';
@@ -122,7 +123,7 @@ interface Call {
   body?: unknown;
 }
 
-function mockApi(overrides: { reportItems?: AdminReport[] } = {}) {
+function mockApi(overrides: { reportItems?: AdminReport[]; userItems?: AdminUser[] } = {}) {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), 'http://localhost');
@@ -137,7 +138,9 @@ function mockApi(overrides: { reportItems?: AdminReport[] } = {}) {
     }
     if (method === 'GET' && url.pathname === '/api/admin/users') {
       const search = url.searchParams.get('search')?.toLowerCase();
-      const items = users().filter((u) => !search || u.email.includes(search));
+      const items = (overrides.userItems ?? users()).filter(
+        (u) => !search || u.email.includes(search),
+      );
       const page: AdminUserPage = { items, total: items.length, page: 1, pageSize: 10 };
       return json(page);
     }
@@ -296,6 +299,24 @@ describe('AdminPage users', () => {
     await userEvent.click(await screen.findByRole('button', { name: `Edit ${email}` }));
     return screen.findByRole('dialog', { name: 'Edit user' });
   }
+
+  it('marks a new account whose probation quota still applies (server-1)', async () => {
+    const ends = iso(5 * 86_400_000);
+    mockApi({
+      userItems: users().map((u) =>
+        u.email === 'bob@example.com'
+          ? { ...u, storageQuotaBytes: 256 * 1024 ** 2, quotaProbationEndsAt: ends }
+          : u,
+      ),
+    });
+    renderAdmin();
+    expect(
+      await screen.findByText(
+        `New account: limited until ${formatDate(ends)}. Editing the quota ends it.`,
+      ),
+    ).toBeVisible();
+    expect(screen.getAllByText(/New account: limited until/)).toHaveLength(1);
+  });
 
   it('searches by email (debounced)', async () => {
     const calls = mockApi();

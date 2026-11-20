@@ -275,6 +275,12 @@ export function UsersCard() {
                     <p className="mt-1 text-xs tabular-nums text-muted-strong">
                       {formatBytes(u.storageUsedBytes)} of {formatBytes(u.storageQuotaBytes)} used
                     </p>
+                    {u.quotaProbationEndsAt ? (
+                      <p className="mt-0.5 text-xs text-muted-strong">
+                        New account: limited until {formatDate(u.quotaProbationEndsAt)}. Editing the
+                        quota ends it.
+                      </p>
+                    ) : null}
                   </div>
                   <div className="lg:text-right">
                     <Button

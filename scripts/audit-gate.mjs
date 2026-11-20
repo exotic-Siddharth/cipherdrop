@@ -17,6 +17,9 @@
  * summary lists it under "also affects", and fixing or listing the root advisory covers it. A severity npm does not
  * normally report is treated as gated, so unexpected data fails the gate instead of slipping under it.
  *
+ * Nothing the gate prints can act as a GitHub Actions workflow command except its own `::error` annotations: report
+ * and error text is made inert on output (see inertLine), because advisory titles and URLs come from outside.
+ *
  * Usage: npm run audit:gate [-- --input <audit.json>] [--allowlist <file>] [--today YYYY-MM-DD]
  *   --input      judge a saved `npm audit --omit=dev --json` output instead of running npm (tests, offline review)
  *   --allowlist  default: scripts/audit-allowlist.json next to this script
@@ -37,6 +40,9 @@ const SEVERITY_ORDER = ['critical', 'high', 'moderate', 'low', 'info'];
 const GHSA_RE = /GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}/i;
 const GHSA_ID_RE = /^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Control and invisible format characters (line breaks, bidi overrides, zero-width characters) and the Unicode line
+// and paragraph separators: printed text keeps none of them.
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\u2028\u2029]+/gu;
 
 /** Throws on anything that is not a well-formed allowlist; returns its entries. */
 export function validateAllowlist(allowlist) {
@@ -68,8 +74,14 @@ export function validateAllowlist(allowlist) {
 /** Flattens an npm audit v2 report into one record per advisory; throws when the report is unusable. */
 export function collectAdvisories(report) {
   if (report && typeof report === 'object' && 'error' in report) {
-    const err = report.error ?? {};
-    throw new Error(`npm audit failed: ${err.code ?? 'error'} ${err.summary ?? ''}`.trim());
+    const err = report.error && typeof report.error === 'object' ? report.error : {};
+    // npm 10 puts a failed registry request in a top-level `message` and leaves summary and detail empty.
+    const reason = [err.summary, report.message, err.detail]
+      .filter((s) => typeof s === 'string' && s.trim() !== '')
+      .join(' ');
+    throw new Error(
+      `npm audit failed: ${err.code ? `${err.code}: ` : ''}${reason || 'no reason given'}`,
+    );
   }
   if (
     report?.auditReportVersion !== 2 ||
@@ -160,11 +172,12 @@ export function formatResult(result, today) {
   lines.push(`gate: high and critical advisories must be on the allowlist (today ${today})`);
   lines.push('');
 
+  // Every line starts with fixed text, never with a field from the report.
   const describe = (a) => {
     const via = a.dependents.length ? `; also affects ${a.dependents.join(', ')}` : '';
     return [
-      `    ${a.title || '(no title)'}`,
-      `    ${a.url || '(no url)'}; affected ${a.range || '?'}; fix: ${a.fix}${via}`,
+      `    title: ${a.title || '(none)'}`,
+      `    url: ${a.url || '(none)'}; affected ${a.range || '?'}; fix: ${a.fix}${via}`,
     ];
   };
   for (const a of result.unlisted) {
@@ -216,7 +229,7 @@ export function formatResult(result, today) {
       );
     }
   }
-  return lines.join('\n');
+  return lines.map(inertLine).join('\n');
 }
 
 /** GitHub Actions annotations, so a failure is visible on the checks page without opening the log. */
@@ -273,16 +286,25 @@ export function runNpmAudit(cwd = repoRoot) {
   }
 }
 
-/**
- * Report text comes from the advisory database: control characters are dropped so that no title can start a new
- * log line (a line beginning with `::` is a workflow command on GitHub Actions).
- */
+/** One field of the report as a single trimmed line (the annotation escapes the rest). */
 function clean(value) {
-  // eslint-disable-next-line no-control-regex -- matching control characters is the point
-  const controlChars = /[\u0000-\u001f\u007f]+/g;
   return String(value ?? '')
-    .replace(controlChars, ' ')
+    .replace(UNPRINTABLE, ' ')
     .trim();
+}
+
+/**
+ * Makes one line of output inert on GitHub Actions. The runner (actions/runner, ActionCommand.cs) reads a line as a
+ * workflow command when it starts with `::` once leading whitespace is trimmed, or, in the older syntax that it still
+ * parses, when `##[` and a command name appear anywhere in it. Advisory titles and URLs, npm's error text and the
+ * report's other strings all reach these lines, so both sequences are broken up with a space. Without this, a title
+ * such as `::stop-commands::x` would switch off the `::error` annotations printed after the summary.
+ */
+export function inertLine(line) {
+  return String(line)
+    .replace(UNPRINTABLE, ' ')
+    .replace(/:(?=:)/g, ': ')
+    .replace(/##\[/g, '## [');
 }
 
 function isGated(severity) {
@@ -344,7 +366,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   } catch (err) {
     // Fail closed: an audit that could not be judged is a failed gate, not a pass.
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`audit gate: ${message}`);
+    // The message can quote npm's output over several lines: each one is made inert.
+    console.error(
+      `audit gate: ${message}`
+        .split(/\r\n|\r|\n/)
+        .map(inertLine)
+        .join('\n'),
+    );
     if (process.env.GITHUB_ACTIONS === 'true') console.log(annotation('Audit gate error', message));
     process.exitCode = 1;
   }

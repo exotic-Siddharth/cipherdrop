@@ -12,6 +12,7 @@ import {
   type CreateDropResponse,
   type DropMeta,
   type OpenResponse,
+  type QuotaExceededDetails,
   type UploadStatus,
 } from '@cipherdrop/shared';
 import { Prisma, type Drop } from '@prisma/client';
@@ -226,7 +227,7 @@ async function checkQuota(ctx: AppContext, tx: Tx, user: AuthUser, totalBytes: n
         quotaBytes: Number(quota),
         usedBytes: Number(committed),
         ...(probation ? { probationEndsAt: probation.toISOString() } : {}),
-      },
+      } satisfies QuotaExceededDetails,
     );
   }
 }

@@ -195,6 +195,17 @@ export const OpaqueTokenSchema = B64Url32Schema;
 
 export const IsoDateTimeSchema = z.string().datetime({ offset: true });
 
+/**
+ * 413 QUOTA_EXCEEDED details of a signed-in create: the quota that applies and what is committed already;
+ * probationEndsAt while the smaller new-account quota applies. (The anonymous pool's 413 has no details.)
+ */
+export const QuotaExceededDetailsSchema = z.object({
+  quotaBytes: z.number().int().nonnegative(),
+  usedBytes: z.number().int().nonnegative(),
+  probationEndsAt: IsoDateTimeSchema.optional(),
+});
+export type QuotaExceededDetails = z.infer<typeof QuotaExceededDetailsSchema>;
+
 export const EmailSchema = z.string().trim().toLowerCase().email().max(254);
 
 /** Argon2id parameters. Bounds are KDF_MIN..KDF_MAX, so weaker params are refused with 400. */

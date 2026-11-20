@@ -20,6 +20,7 @@ import { PasswordStrength } from '../../components/PasswordStrength';
 import {
   Alert,
   Button,
+  ButtonLink,
   Card,
   CardContent,
   CardHeader,
@@ -31,13 +32,14 @@ import {
 } from '../../components/ui';
 import type { UploadEvent } from '../../crypto/uploader';
 import { describeError, formatWait, isAbortError } from '../../lib/errors';
-import { formatBytes, pluralize } from '../../lib/format';
+import { formatBytes, formatDate, pluralize } from '../../lib/format';
 import type { StrengthScore } from '../../lib/passwordStrength';
 import { shareLinkFor } from '../../lib/links';
 import { queryClient, queryKeys } from '../../lib/queryClient';
 import { useAuth } from '../../stores/auth';
 import { useDeviceDrops } from '../../stores/deviceDrops';
 import { useLeaveGuard } from '../../stores/leaveGuard';
+import { noteDisabledFeature, useServerConfig } from '../../stores/serverConfig';
 import { useVault } from '../../stores/vault';
 import { validateNewPassword } from '../auth/passwordRules';
 import { DeviceDropsList } from './components/DeviceDropsList';
@@ -146,6 +148,10 @@ export function Component() {
   const accountKey = useVault((s) => s.accountKey);
   const signedIn = authStatus === 'authenticated' && user !== null;
   const kind = signedIn ? 'user' : 'anon';
+  const serverConfig = useServerConfig((s) => s.config);
+  // Operator switch (ops-3): this server takes uploads from signed-in users only.
+  const anonClosed =
+    !signedIn && authStatus !== 'booting' && serverConfig?.anonymousUploads === false;
 
   const [files, setFiles] = useState<File[]>([]);
   const [expiry, setExpiry] = useState(DEFAULT_EXPIRY_HOURS);
@@ -218,7 +224,11 @@ export function Component() {
   // The form checks every send runs, Try again included (C-R4-03). A locked vault is not one of them: runNew
   // handles it, and a resume needs no owner wrap (C-38).
   const formReady =
-    files.length > 0 && !overLimit && passwordProblem === null && authStatus !== 'booting';
+    files.length > 0 &&
+    !overLimit &&
+    passwordProblem === null &&
+    authStatus !== 'booting' &&
+    !anonClosed;
   const canSubmit = formReady && !vaultLocked;
   const running = view.kind === 'running';
 
@@ -402,6 +412,8 @@ export function Component() {
     const record = activeRecord.current;
     activeRecord.current = null;
     if (record) setResume(record);
+    // A 403 FEATURE_DISABLED (anonymous uploads switched off) also turns on the sign-in notice.
+    noteDisabledFeature(err);
     setView({ kind: 'error', error: err, canResume: record !== null });
   };
 
@@ -745,6 +757,30 @@ export function Component() {
         </div>
       ) : null}
 
+      {anonClosed && view.kind !== 'error' ? (
+        <Alert
+          tone="info"
+          live="polite"
+          title="Sign in to send files"
+          className="mb-6"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <ButtonLink to="/login" size="sm">
+                Log in
+              </ButtonLink>
+              {serverConfig?.registration !== false ? (
+                <ButtonLink to="/register" size="sm" variant="ghost">
+                  Create an account
+                </ButtonLink>
+              ) : null}
+            </div>
+          }
+        >
+          This server accepts uploads from signed-in users only. Anyone can still open the links
+          they receive.
+        </Alert>
+      ) : null}
+
       {resume && plan && view.kind !== 'error' ? (
         <Alert
           tone="info"
@@ -797,7 +833,11 @@ export function Component() {
             {overLimit ? (
               <p className="text-sm text-danger-ink" role="alert">
                 {signedIn && maxBytes < LIMITS.USER_MAX_DROP_BYTES
-                  ? `This drop needs ${formatBytes(cipherTotal)} but only ${formatBytes(maxBytes)} of your storage is left.`
+                  ? `This drop needs ${formatBytes(cipherTotal)} but only ${formatBytes(maxBytes)} of your storage is left.${
+                      user.quotaProbationEndsAt
+                        ? ` New accounts can store up to ${formatBytes(user.storageQuotaBytes)} until ${formatDate(user.quotaProbationEndsAt)}.`
+                        : ''
+                    }`
                   : `This drop is ${formatBytes(cipherTotal)} encrypted, above the ${formatBytes(maxBytes)} limit. Remove some files.`}
               </p>
             ) : null}

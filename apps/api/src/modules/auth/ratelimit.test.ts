@@ -1,8 +1,8 @@
-/** R10: the prelogin, login, loginMfa, register and recovery limiters go through ctx.rateLimit. */
+/** R10: the prelogin, login, loginIp, loginMfa, register and recovery limiters go through ctx.rateLimit. */
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
-import { TEST_ACCOUNT, uniqueEmail } from '../../../test/factories';
+import { TEST_ACCOUNT, createUserRecord, uniqueEmail } from '../../../test/factories';
 
 let t: TestApp;
 
@@ -72,5 +72,43 @@ describe('auth rate limits', () => {
       () => post('/login/mfa', '192.0.2.50', { mfaToken: 'x.y.z', code: '123456' }),
       10,
     );
+  });
+});
+
+describe('failed logins per client (critic-1)', () => {
+  let c: TestApp;
+  beforeAll(async () => {
+    c = await createTestApp({ rateLimits: { loginIp: true } });
+  });
+  afterAll(async () => {
+    await c.close();
+  });
+
+  const login = (ip: string, email = uniqueEmail('spray')) =>
+    request(c.app)
+      .post('/api/auth/login')
+      .set('X-Forwarded-For', ip)
+      .send({ email, authKey: TEST_ACCOUNT.authKey });
+
+  it('30 failures per 15 min per IPv4 address, whatever the email; successful logins are refunded', async () => {
+    const user = await createUserRecord(c.prisma);
+    for (let i = 0; i < 29; i++) expect((await login('192.0.2.60')).status).toBe(401);
+    for (let i = 0; i < 3; i++) expect((await login('192.0.2.60', user.email)).status).toBe(200);
+    expect((await login('192.0.2.60')).status).toBe(401);
+    const limited = await login('192.0.2.60');
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe('RATE_LIMITED');
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    // Even the right password waits now; another address is unaffected.
+    expect((await login('192.0.2.60', user.email)).status).toBe(429);
+    expect((await login('192.0.2.61', user.email)).status).toBe(200);
+  });
+
+  it('keys IPv6 clients by /48: rotating /64s inside it does not reset the budget', async () => {
+    for (let i = 0; i < 30; i++) {
+      expect((await login(`2001:db8:60:${i.toString(16)}::1`)).status).toBe(401);
+    }
+    expect((await login('2001:db8:60:ffff::2')).status).toBe(429);
+    expect((await login('2001:db8:61::1')).status).toBe(401);
   });
 });

@@ -59,6 +59,12 @@ describe('parseEnv in production', () => {
     );
   });
 
+  it('refuses API_DOCS_UI=true: Swagger UI never runs on the origin that holds the keys', () => {
+    expect(() => parseEnv({ ...prod(), API_DOCS_UI: 'true' })).toThrow(/API_DOCS_UI/);
+    expect(parseEnv(prod()).API_DOCS_UI).toBe(false);
+    expect(parseEnv({ ...prod(), API_DOCS_UI: 'false' }).API_DOCS_UI).toBe(false);
+  });
+
   it('requires TRUST_PROXY to be stated (0 is the explicit "no proxy" opt-out)', () => {
     expect(() => parseEnv(without('TRUST_PROXY'))).toThrow(/TRUST_PROXY/);
     expect(parseEnv({ ...prod(), TRUST_PROXY: '0' }).TRUST_PROXY).toBe(0);
@@ -93,7 +99,20 @@ describe('parseEnv outside production', () => {
         COOKIE_SECURE: false,
         TRUST_PROXY: 0,
         WEB_ORIGIN: 'http://localhost:5174',
+        API_DOCS_UI: false,
       });
     }
+  });
+
+  it('serves Swagger UI only when API_DOCS_UI is turned on (the dev .env.example does)', () => {
+    expect(parseEnv({ ...dev, NODE_ENV: 'development', API_DOCS_UI: 'true' }).API_DOCS_UI).toBe(
+      true,
+    );
+    expect(parseEnv({ ...dev, NODE_ENV: 'development', API_DOCS_UI: 'off' }).API_DOCS_UI).toBe(
+      false,
+    );
+    expect(() => parseEnv({ ...dev, NODE_ENV: 'development', API_DOCS_UI: 'maybe' })).toThrow(
+      /API_DOCS_UI/,
+    );
   });
 });

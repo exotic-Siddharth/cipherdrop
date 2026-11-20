@@ -139,6 +139,19 @@ describe('parseEnv outside production', () => {
     expect(() => parseEnv({ ...dev, ALLOW_REGISTRATION: 'maybe' })).toThrow(/ALLOW_REGISTRATION/);
   });
 
+  it('ships no global storage cap and a 1 GiB free-disk floor; both accept 0 (off)', () => {
+    expect(parseEnv(dev)).toMatchObject({
+      GLOBAL_STORAGE_CAP_BYTES: 0,
+      STORAGE_MIN_FREE_BYTES: 1024 ** 3,
+    });
+    expect(
+      parseEnv({ ...dev, GLOBAL_STORAGE_CAP_BYTES: '5000', STORAGE_MIN_FREE_BYTES: '0' }),
+    ).toMatchObject({ GLOBAL_STORAGE_CAP_BYTES: 5000, STORAGE_MIN_FREE_BYTES: 0 });
+    expect(() => parseEnv({ ...dev, GLOBAL_STORAGE_CAP_BYTES: '-1' })).toThrow(
+      /GLOBAL_STORAGE_CAP_BYTES/,
+    );
+  });
+
   it('keeps the local defaults in development and test', () => {
     for (const NODE_ENV of ['development', 'test']) {
       const env = parseEnv({ ...dev, NODE_ENV });

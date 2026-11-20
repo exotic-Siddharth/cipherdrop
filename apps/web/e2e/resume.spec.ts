@@ -65,7 +65,7 @@ test('reload resumes an interrupted upload and sends only the missing chunks', a
   await page.getByRole('button', { name: 'Resume upload' }).click();
   await expect(page.getByText('Your encrypted link is ready')).toBeVisible({ timeout: 90_000 });
   const link = await page.getByLabel('Share link').inputValue();
-  leaks.forbidText('link key', new URL(link).hash.slice(1));
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
   // Chunks 2 and 3 only: 0 and 1 were already stored (verified by hash, not re-sent).
   expect(leaks.count('PUT', '/chunks/') - putsBefore).toBe(2);
   expect(await page.evaluate(() => sessionStorage.getItem('cd-upload-resume'))).toBeNull();
@@ -120,7 +120,7 @@ test('409 on complete: the client re-sends the named chunks and completes', asyn
   expect(answered409).toBe(1);
   // 2 chunks + the repaired chunk 0.
   expect(leaks.count('PUT', '/chunks/')).toBe(3);
-  leaks.forbidText('link key', new URL(link).hash.slice(1));
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
 
   const recipient = await (await newContext()).newPage();
   await openLink(recipient, link);
@@ -161,7 +161,7 @@ test('a permanently failing upload shows a retryable error and Try again succeed
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(page.getByText('Your encrypted link is ready')).toBeVisible({ timeout: 90_000 });
   const link = await page.getByLabel('Share link').inputValue();
-  leaks.forbidText('link key', new URL(link).hash.slice(1));
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
   const recipient = await (await newContext()).newPage();
   await openLink(recipient, link);
   const saved = await downloadFromReady(recipient, DOWNLOAD_DIR);

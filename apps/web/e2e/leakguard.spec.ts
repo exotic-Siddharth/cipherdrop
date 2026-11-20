@@ -127,6 +127,65 @@ test.describe('leak guard', () => {
     expect(textOnly.findLeaks()).toEqual([]);
   });
 
+  test('finds a name and plaintext bytes in each encoding the guard claims to cover', () => {
+    const name = 'Bob\'s "Q3" report (v2), final+draft ü.pdf';
+    const origin = 'http://localhost:5184';
+    const utf8 = (s: string) => Buffer.from(s, 'utf8');
+    // Each leak is built here, independently of textVariants(), the way the code that leaks would build it.
+    const names: Record<string, LeakGuard> = {
+      'raw bytes': guardWith(Buffer.concat([Buffer.from([0, 1]), utf8(name)])),
+      'JSON body (escaped quotes)': guardWith(JSON.stringify({ name })),
+      encodeURIComponent: guardWith('{}', `${origin}/api/x?n=${encodeURIComponent(name)}`),
+      encodeURI: guardWith('{}', `${origin}/api/x?n=${encodeURI(name)}`),
+      'HTML form body': guardWith(new URLSearchParams({ name }).toString()),
+      'query as the URL parser writes it': guardWith('{}', new URL(`${origin}/x?n=${name}`).href),
+      'path as the URL parser writes it': guardWith('{}', new URL(`${origin}/f/${name}`).href),
+      base64: guardWith(utf8(name).toString('base64')),
+      base64url: guardWith(utf8(name).toString('base64url')),
+    };
+    for (const [how, guard] of Object.entries(names)) {
+      guard.forbidText('file name', name);
+      expect(guard.findLeaks(), how).toHaveLength(1);
+    }
+
+    const plain = Buffer.concat([Buffer.from([0xfb, 0xef, 0xbe, 0xff]), randomBytes(60)]);
+    // A longer buffer that starts with the plaintext, as an encrypting bug would send the whole file.
+    const file = Buffer.concat([plain, randomBytes(100)]);
+    const bytes: Record<string, LeakGuard> = {
+      'raw inside a binary body': guardWith(Buffer.concat([Buffer.from([9]), file])),
+      'standard base64 of the file': guardWith(JSON.stringify({ d: file.toString('base64') })),
+      'base64url of the file': guardWith(file.toString('base64url')),
+      'lower-case hex': guardWith(file.toString('hex')),
+      'upper-case hex': guardWith(file.toString('hex').toUpperCase()),
+    };
+    for (const [how, guard] of Object.entries(bytes)) {
+      guard.forbidBytes('plaintext bytes', plain);
+      expect(guard.findLeaks(), how).toHaveLength(1);
+    }
+  });
+
+  test('record() skips data: and blob: URLs, which never reach a server, and keeps the rest', () => {
+    const guard = new LeakGuard({ origins: ['http://localhost:5184'] });
+    const fake = (url: string) => ({
+      url: () => url,
+      method: () => 'GET',
+      headers: () => ({}),
+      allHeaders: () => Promise.resolve({}),
+      postDataBuffer: () => null,
+    });
+    guard.record(fake('data:text/plain,tax-return-2025.pdf'));
+    guard.record(fake('DATA:text/plain;base64,dGF4LXJldHVybi0yMDI1LnBkZg=='));
+    guard.record(fake('blob:http://localhost:5184/7d4f1a52-2c0e-4c51-9a3b-0f1e2d3c4b5a'));
+    guard.forbidText('file name', 'tax-return-2025.pdf');
+    expect(guard.requests).toEqual([]);
+    expect(guard.findLeaks()).toEqual([]);
+    // A network request that only mentions a data: URL is recorded like any other.
+    guard.record(fake('http://localhost:5184/api/x?u=data:text/plain,tax-return-2025.pdf'));
+    expect(guard.findLeaks()).toEqual([
+      'file name found in GET /api/x?u=data:text/plain,tax-return-2025.pdf',
+    ]);
+  });
+
   test('stays quiet for unrelated bodies', () => {
     const guard = guardWith('{"encryptedManifest":"AAAA"}');
     guard.forbidText('file name', 'tax-return-2025.pdf');
@@ -205,6 +264,34 @@ test.describe('leak guard in the browser', () => {
     expect(guard.findForeign()).toEqual([]);
   });
 
+  test("finds a file name as the browser itself encodes it in a URL (' is %27 in a query)", async ({
+    browser,
+    baseURL,
+  }) => {
+    const name = "Bob's report (v2).pdf";
+    const guard = await browse(browser, baseURL, async (page) => {
+      await page.goto('/SECURITY.md');
+      // The page builds both URLs, so the browser's URL parser encodes them (page.goto lets Node do it).
+      await Promise.all([
+        page.waitForRequest((r) => r.url().includes('/files/')),
+        page.evaluate((n) => {
+          const img = new Image();
+          img.src = `/files/${n}`;
+          document.body.append(img);
+        }, name),
+      ]);
+      await Promise.all([
+        page.waitForURL(/\?name=/),
+        page.evaluate((n) => location.assign(`/SECURITY.md?name=${n}`), name),
+      ]);
+    });
+    guard.forbidText('file name', name);
+    expect(guard.findLeaks()).toEqual([
+      "file name found in GET /files/Bob's%20report%20(v2).pdf",
+      'file name found in GET /SECURITY.md?name=Bob%27s%20report%20(v2).pdf',
+    ]);
+  });
+
   test('reports a request to another origin', async ({ browser, baseURL }) => {
     const guard = await browse(browser, baseURL, async (page, context) => {
       // Answered by the route: nothing leaves this machine.
@@ -216,12 +303,17 @@ test.describe('leak guard in the browser', () => {
     expect(guard.findForeign()).toEqual(['GET http://cdn.example.test/lib.js?v=1']);
   });
 
-  test('stays quiet for data: and blob: URLs, which never reach a server', async ({
+  test('stays quiet for a blob: URL, which never reaches a server', async ({
     browser,
     baseURL,
   }) => {
     const name = 'holiday-photo-2026.svg';
-    const guard = await browse(browser, baseURL, async (page) => {
+    const blobRequests: string[] = [];
+    const guard = await browse(browser, baseURL, async (page, context) => {
+      // Playwright reports blob: loads as requests (record() must skip them); it never reports data: ones.
+      context.on('request', (r) => {
+        if (r.url().startsWith('blob:')) blobRequests.push(r.url());
+      });
       await page.goto('/SECURITY.md');
       await page.evaluate(async (title) => {
         const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><title>${title}</title></svg>`;
@@ -232,6 +324,7 @@ test.describe('leak guard in the browser', () => {
         await Promise.all([fromData.decode(), fromBlob.decode()]);
       }, name);
     });
+    expect(blobRequests).toHaveLength(1);
     guard.forbidText('file name', name);
     expect(guard.requests.map((r) => r.url)).toEqual([`${new URL(baseURL!).origin}/SECURITY.md`]);
     expect(guard.findLeaks()).toEqual([]);

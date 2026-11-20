@@ -4,8 +4,10 @@
  *
  * Error policy:
  * - unauthenticated proofs (login, MFA step, recovery) fail with a generic 401;
- * - a wrong re-authentication proof on a signed-in route (current authKey, TOTP/backup code) is a 403, so the
- *   SPA does not mistake it for an expired session and refresh;
+ * - every sensitive signed-in action asks for the same re-authentication (requireAccountProof: the current authKey,
+ *   plus a TOTP or backup code when TOTP is on): password change, recovery-key rotation, TOTP enable and disable,
+ *   backup codes, session revocation (and DELETE /me). A wrong proof is a 403, so the SPA does not mistake it for
+ *   an expired session and refresh;
  * - lockout (10 consecutive failures -> 15 min) answers exactly like a wrong password.
  * Rate limits (ctx.rateLimit): prelogin + login per IP+email, failed logins per client (IPv4 address or IPv6
  * /48), loginMfa per IP, register and recovery per IP, and `reauth` (10 per 15 min per user) on the signed-in
@@ -30,6 +32,7 @@ import {
   RegisterRequestSchema,
   SessionIdParamsSchema,
   SessionListResponseSchema,
+  SessionRevokeRequestSchema,
   TotpDisableRequestSchema,
   TotpEnableRequestSchema,
   TotpSetupResponseSchema,
@@ -46,11 +49,7 @@ import { signPurposeToken, verifyPurposeToken } from '../../lib/jwt';
 import { createRouter, type AppRouter } from '../../lib/router';
 import { encryptTotpSecret, generateTotpSecret, totpOtpauthUrl, verifyTotp } from '../../lib/totp';
 import { authUser } from '../../middleware/auth';
-import {
-  hashAccountAuthKey,
-  verifyAccountAuthKey,
-  verifyAccountAuthKeyOrDummy,
-} from './authKeyHash';
+import { hashAccountAuthKey, verifyAccountAuthKeyOrDummy } from './authKeyHash';
 import {
   GENERIC_LOGIN_ERROR,
   GENERIC_RECOVERY_ERROR,
@@ -385,7 +384,8 @@ export function authRoutes(ctx: AppContext): AppRouter {
       request: { body: PasswordChangeRequestSchema },
       responses: {
         204: { description: 'Password changed' },
-        403: { description: 'Wrong currentAuthKey (FORBIDDEN)' },
+        400: { description: 'Invalid input, or the two-factor code is missing while TOTP is on' },
+        403: { description: 'Wrong currentAuthKey or two-factor code (FORBIDDEN)' },
       },
     },
     reauthLimit,
@@ -393,10 +393,15 @@ export function authRoutes(ctx: AppContext): AppRouter {
       const me = authUser(req);
       const user = await loadUser(ctx, me.id);
       const body = req.body;
-      const current = keyBytes(body.currentAuthKey, 'currentAuthKey');
       const next = keyBytes(body.newAuthKey, 'newAuthKey');
-      if (!(await verifyAccountAuthKey(ctx, user.authKeyHash, current)))
-        throw forbidden('Incorrect password');
+      await requireAccountProof(
+        ctx,
+        user,
+        { authKey: body.currentAuthKey, code: body.code },
+        req,
+        'password-change',
+        { field: 'currentAuthKey' },
+      );
       await prisma.user.update({
         where: { id: user.id },
         data: {
@@ -584,13 +589,14 @@ export function authRoutes(ctx: AppContext): AppRouter {
     {
       method: 'post',
       path: '/mfa/totp/enable',
-      summary: 'Verify a code, enable TOTP and issue 10 backup codes',
+      summary:
+        'Verify the authKey and a code of the new authenticator, enable TOTP, issue 10 backup codes',
       tags,
       auth: 'user',
       request: { body: TotpEnableRequestSchema },
       responses: {
         200: { description: 'Backup codes (shown once)', schema: BackupCodesResponseSchema },
-        403: { description: 'Wrong code (FORBIDDEN)' },
+        403: { description: 'Wrong authKey or code (FORBIDDEN)' },
         409: { description: 'Already enabled, or no pending setup (CONFLICT)' },
       },
     },
@@ -600,6 +606,9 @@ export function authRoutes(ctx: AppContext): AppRouter {
       if (user.totpEnabledAt) throw conflict('Two-factor authentication is already enabled');
       const pending = user.totpPendingSecretEnc;
       if (!pending) throw conflict('Start the two-factor setup first');
+      // The password too: with a stolen access token alone, enrolling the thief's authenticator would lock the
+      // owner out for good (sign-in and recovery would then ask for a code only the thief has).
+      await requireAccountProof(ctx, user, { authKey: req.body.authKey }, req, 'totp-enable');
       const step = verifyTotp(
         { id: user.id, totpSecretEnc: pending, totpLastStep: user.totpLastStep },
         req.body.code,
@@ -670,13 +679,13 @@ export function authRoutes(ctx: AppContext): AppRouter {
     {
       method: 'post',
       path: '/mfa/backup-codes',
-      summary: 'Regenerate backup codes',
+      summary: 'Regenerate backup codes (authKey + TOTP code)',
       tags,
       auth: 'user',
       request: { body: BackupCodesRegenerateRequestSchema },
       responses: {
         200: { description: 'New backup codes (shown once)', schema: BackupCodesResponseSchema },
-        403: { description: 'Wrong code (FORBIDDEN)' },
+        403: { description: 'Wrong authKey or TOTP code (FORBIDDEN)' },
         409: { description: 'TOTP is not enabled (CONFLICT)' },
       },
     },
@@ -684,11 +693,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       if (!user.totpEnabledAt) throw conflict('Two-factor authentication is not enabled');
-      const factor = await verifySecondFactor(ctx, user, req.body.code, req, {
-        allowBackup: false,
-        context: 'backup-codes',
-      });
-      if (!factor) throw forbidden('Invalid two-factor code');
+      await requireAccountProof(ctx, user, req.body, req, 'backup-codes', { allowBackup: false });
       const backupCodes = await issueBackupCodes(ctx, user.id);
       await ctx.audit.record({ userId: user.id, action: 'BACKUP_CODES_REGENERATED', req });
       res.json({ backupCodes });
@@ -727,14 +732,20 @@ export function authRoutes(ctx: AppContext): AppRouter {
     {
       method: 'delete',
       path: '/sessions/:id',
-      summary: 'Revoke one session (denylists its sid)',
+      summary: 'Revoke one session (authKey + code when TOTP is on; denylists its sid)',
       tags,
       auth: 'user',
-      request: { params: SessionIdParamsSchema },
-      responses: { 204: { description: 'Revoked' }, 404: { description: 'Unknown session' } },
+      request: { params: SessionIdParamsSchema, body: SessionRevokeRequestSchema },
+      responses: {
+        204: { description: 'Revoked' },
+        403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
+        404: { description: 'Unknown session' },
+      },
     },
+    reauthLimit,
     async (req, res) => {
       const me = authUser(req);
+      await requireAccountProof(ctx, await loadUser(ctx, me.id), req.body, req, 'session-revoke');
       const session = await prisma.session.findFirst({
         where: { id: req.validatedParams.id, userId: me.id, revokedAt: null },
         select: { id: true },
@@ -756,13 +767,19 @@ export function authRoutes(ctx: AppContext): AppRouter {
     {
       method: 'post',
       path: '/sessions/revoke-others',
-      summary: 'Revoke every other session (denylists their sids)',
+      summary: 'Revoke every other session (authKey + code when TOTP is on; denylists their sids)',
       tags,
       auth: 'user',
-      responses: { 204: { description: 'Revoked' } },
+      request: { body: SessionRevokeRequestSchema },
+      responses: {
+        204: { description: 'Revoked' },
+        403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
+      },
     },
+    reauthLimit,
     async (req, res) => {
       const me = authUser(req);
+      await requireAccountProof(ctx, await loadUser(ctx, me.id), req.body, req, 'session-revoke');
       const revoked = await revokeUserSessions(ctx, me.id, { exceptSid: me.sid });
       if (revoked.length > 0) {
         await ctx.audit.record({

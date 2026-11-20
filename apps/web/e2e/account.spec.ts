@@ -84,6 +84,8 @@ test('5. register, send, dashboard names, reload + unlock, enable TOTP, logout, 
   expect(secret).toMatch(/^[A-Z2-7]{16,}$/);
   leaks.forbidText('totp secret', secret);
   await expect(page.getByRole('img', { name: 'QR code for your authenticator app' })).toBeVisible();
+  // Turning 2FA on re-authenticates: a stolen session alone cannot enrol someone else's authenticator.
+  await page.getByLabel('Your password').fill(password);
   await page.getByLabel('6-digit code').fill(totpCode(secret));
   await page.getByRole('button', { name: /Turn on|Verify|Enable/ }).click();
   await expect(page.getByText('Save these backup codes now')).toBeVisible({ timeout: 20_000 });

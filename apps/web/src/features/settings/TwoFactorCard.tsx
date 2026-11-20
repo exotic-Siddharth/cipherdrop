@@ -101,13 +101,13 @@ export function TwoFactorCard() {
         open={dialog === 'regenerate'}
         onOpenChange={(open) => setDialog(open ? 'regenerate' : null)}
         title="Regenerate backup codes"
-        description="Your old backup codes stop working. Enter a code from your authenticator app to continue."
+        description="Your old backup codes stop working. Enter your password and a code from your authenticator app to continue."
         confirmLabel="Regenerate"
-        password={false}
+        password
         code="totp"
-        errorContext="totp"
-        onSubmit={async ({ code }) => {
-          setCodes((await actions.regenerateBackupCodes(code)).backupCodes);
+        busyHint="Checking your password locally…"
+        onSubmit={async ({ password, code }) => {
+          setCodes((await actions.regenerateBackupCodes(password, code)).backupCodes);
         }}
       />
       <ReauthDialog

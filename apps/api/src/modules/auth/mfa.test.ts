@@ -75,14 +75,14 @@ describe('TOTP setup -> enable -> backup codes -> disable', () => {
     const wrong = await request(t.app)
       .post('/api/auth/mfa/totp/enable')
       .set(auth)
-      .send({ code: wrongTotpCode(secret) });
+      .send({ authKey: u.authKey, code: wrongTotpCode(secret) });
     expect(wrong.status).toBe(403);
     expect(await count(u.user.id, 'MFA_CHALLENGE_FAILED')).toBe(1);
 
     const enable = await request(t.app)
       .post('/api/auth/mfa/totp/enable')
       .set(auth)
-      .send({ code: totpCode(secret) });
+      .send({ authKey: u.authKey, code: totpCode(secret) });
     expect(enable.status).toBe(200);
     const { backupCodes } = BackupCodesResponseSchema.parse(enable.body);
     expect(new Set(backupCodes).size).toBe(10);
@@ -110,12 +110,12 @@ describe('TOTP setup -> enable -> backup codes -> disable', () => {
     const wrongRegen = await request(t.app)
       .post('/api/auth/mfa/backup-codes')
       .set(auth)
-      .send({ code: wrongTotpCode(secret) });
+      .send({ authKey: u.authKey, code: wrongTotpCode(secret) });
     expect(wrongRegen.status).toBe(403);
     const regen = await request(t.app)
       .post('/api/auth/mfa/backup-codes')
       .set(auth)
-      .send({ code: totpCode(secret, 30_000) });
+      .send({ authKey: u.authKey, code: totpCode(secret, 30_000) });
     expect(regen.status).toBe(200);
     const fresh = BackupCodesResponseSchema.parse(regen.body).backupCodes;
     expect(fresh.some((c) => backupCodes.includes(c))).toBe(false);
@@ -159,7 +159,7 @@ describe('TOTP setup -> enable -> backup codes -> disable', () => {
     const res = await request(t.app)
       .post('/api/auth/mfa/totp/enable')
       .set('Authorization', bearer(u.accessToken))
-      .send({ code: '123456' });
+      .send({ authKey: u.authKey, code: '123456' });
     expect(res.status).toBe(409);
   });
 });
@@ -167,7 +167,7 @@ describe('TOTP setup -> enable -> backup codes -> disable', () => {
 describe('login with MFA', () => {
   it('mfaToken -> /login/mfa; wrong code 401 + MFA_CHALLENGE_FAILED; replayed code rejected', async () => {
     const u = await registerViaApi(t.app);
-    const { secret } = await enableTotpViaApi(t.app, u.accessToken);
+    const { secret } = await enableTotpViaApi(t.app, u);
 
     const token = await mfaToken(u.email, u.password);
     // An mfaToken is not an access token.
@@ -208,7 +208,7 @@ describe('login with MFA', () => {
 
   it('a backup code works exactly once (case and dash insensitive)', async () => {
     const u = await registerViaApi(t.app);
-    const { backupCodes } = await enableTotpViaApi(t.app, u.accessToken);
+    const { backupCodes } = await enableTotpViaApi(t.app, u);
     const code = backupCodes[3] as string;
     const typed = code.replace('-', '').toUpperCase();
 
@@ -226,7 +226,7 @@ describe('login with MFA', () => {
 
   it('wrong MFA codes count toward the 10-failure lockout', async () => {
     const u = await registerViaApi(t.app);
-    const { secret, backupCodes } = await enableTotpViaApi(t.app, u.accessToken);
+    const { secret, backupCodes } = await enableTotpViaApi(t.app, u);
     const token = await mfaToken(u.email, u.password);
     for (let i = 0; i < 10; i++) {
       expect((await loginMfa(token, wrongTotpCode(secret))).status).toBe(401);
@@ -243,7 +243,7 @@ describe('login with MFA', () => {
 describe('TOTP on recovery and recovery-key rotation', () => {
   it('recovery/complete requires a valid code when TOTP is enabled', async () => {
     const u = await registerViaApi(t.app);
-    const { secret } = await enableTotpViaApi(t.app, u.accessToken);
+    const { secret } = await enableTotpViaApi(t.app, u);
     const keys = await deriveRecoveryKeys(parseRecoveryKey(u.bundle.recoveryKey));
     const started = await request(t.app)
       .post('/api/auth/recovery/start')
@@ -281,7 +281,7 @@ describe('TOTP on recovery and recovery-key rotation', () => {
 
   it('recovery/rotate requires a code when TOTP is enabled (400 without, 403 wrong, 204 right)', async () => {
     const u = await registerViaApi(t.app);
-    const { secret, backupCodes } = await enableTotpViaApi(t.app, u.accessToken);
+    const { secret, backupCodes } = await enableTotpViaApi(t.app, u);
     const recovery = await createRecoveryBundle(u.bundle.accountKey);
     const rotate = (extra: Record<string, string>) =>
       request(t.app)

@@ -56,7 +56,7 @@ describe('logging', () => {
       .send({ email: u.email, recoveryAuthKey });
     secrets.push(started.body.recoveryToken as string);
 
-    const { secret, backupCodes } = await enableTotpViaApi(t.app, u.accessToken);
+    const { secret, backupCodes } = await enableTotpViaApi(t.app, u);
     secrets.push(secret, ...backupCodes);
     const mfa = await loginViaApi(t.app, u.email, u.password);
     secrets.push(mfa.body.mfaToken as string);

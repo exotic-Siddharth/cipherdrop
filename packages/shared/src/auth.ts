@@ -97,9 +97,24 @@ export const VaultSchema = z.object({
 });
 export type Vault = z.infer<typeof VaultSchema>;
 
+/**
+ * Re-authentication for sensitive signed-in actions (review server-3): the current authKey, plus a TOTP or backup
+ * code when TOTP is enabled. Every route that changes how the account signs in, destroys data or ends sessions
+ * asks for it: password change, recovery-key rotation, TOTP enable and disable, backup-code regeneration, session
+ * revocation and account deletion (DeleteMeRequestSchema has the same shape).
+ */
+export const AccountProofSchema = z.object({
+  authKey: AuthKeySchema,
+  /** Required when TOTP is enabled. */
+  code: MfaCodeSchema.optional(),
+});
+export type AccountProof = z.infer<typeof AccountProofSchema>;
+
 /* POST /auth/password -> 204 (other sessions revoked and denylisted) */
 export const PasswordChangeRequestSchema = z.object({
   currentAuthKey: AuthKeySchema,
+  /** Required when TOTP is enabled (TOTP or backup code). */
+  code: MfaCodeSchema.optional(),
   newAuthKey: AuthKeySchema,
   kdf: KdfParamsSchema,
   wrappedAccountKey: WrappedKeySchema,
@@ -152,8 +167,8 @@ export const TotpSetupResponseSchema = z.object({
 });
 export type TotpSetupResponse = z.infer<typeof TotpSetupResponseSchema>;
 
-/* POST /auth/mfa/totp/enable -> {backupCodes} */
-export const TotpEnableRequestSchema = z.object({ code: TotpCodeSchema });
+/* POST /auth/mfa/totp/enable -> {backupCodes}. `code` comes from the NEW authenticator (pending secret). */
+export const TotpEnableRequestSchema = z.object({ authKey: AuthKeySchema, code: TotpCodeSchema });
 export type TotpEnableRequest = z.infer<typeof TotpEnableRequestSchema>;
 
 /** 10 single-use backup codes, `xxxxx-xxxxx`, shown once. */
@@ -166,8 +181,11 @@ export type BackupCodesResponse = z.infer<typeof BackupCodesResponseSchema>;
 export const TotpDisableRequestSchema = z.object({ authKey: AuthKeySchema, code: MfaCodeSchema });
 export type TotpDisableRequest = z.infer<typeof TotpDisableRequestSchema>;
 
-/* POST /auth/mfa/backup-codes -> {backupCodes} (regenerate) */
-export const BackupCodesRegenerateRequestSchema = z.object({ code: TotpCodeSchema });
+/* POST /auth/mfa/backup-codes -> {backupCodes} (regenerate). A TOTP code only: a backup code cannot mint more. */
+export const BackupCodesRegenerateRequestSchema = z.object({
+  authKey: AuthKeySchema,
+  code: TotpCodeSchema,
+});
 export type BackupCodesRegenerateRequest = z.infer<typeof BackupCodesRegenerateRequestSchema>;
 
 /* GET /auth/sessions -> SessionInfo[] */
@@ -189,3 +207,7 @@ export type SessionListResponse = z.infer<typeof SessionListResponseSchema>;
 
 /** Path params of DELETE /auth/sessions/:id. */
 export const SessionIdParamsSchema = z.object({ id: IdSchema });
+
+/* DELETE /auth/sessions/:id and POST /auth/sessions/revoke-others -> 204 */
+export const SessionRevokeRequestSchema = AccountProofSchema;
+export type SessionRevokeRequest = z.infer<typeof SessionRevokeRequestSchema>;

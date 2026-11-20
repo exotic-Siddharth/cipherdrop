@@ -400,9 +400,18 @@ export async function loadUser(ctx: AppContext, userId: string): Promise<User> {
   return user;
 }
 
+export interface AccountProofOptions {
+  /** Body field that carries the authKey, for the 400 issue path (default `authKey`). */
+  field?: string;
+  /** Accept a backup code as the second factor (default true; backup-code regeneration needs TOTP). */
+  allowBackup?: boolean;
+}
+
 /**
- * Re-authentication on signed-in routes: the current authKey, plus a TOTP or backup code when TOTP is on.
- * Wrong proofs are 403 (not 401) so the SPA does not treat them as an expired session.
+ * Re-authentication on signed-in routes (review server-3), the one rule for every sensitive action: the current
+ * authKey, plus a TOTP or backup code when TOTP is on. Used by password change, recovery-key rotation, TOTP enable
+ * and disable, backup-code regeneration, session revocation and account deletion, so a stolen access token alone
+ * can do none of them. Wrong proofs are 403 (not 401) so the SPA does not treat them as an expired session.
  */
 export async function requireAccountProof(
   ctx: AppContext,
@@ -410,9 +419,11 @@ export async function requireAccountProof(
   proof: { authKey: string; code?: string },
   req: Req,
   context: string,
+  options: AccountProofOptions = {},
 ): Promise<void> {
-  const bytes = keyBytes(proof.authKey, 'authKey');
-  if (!(await verifyAccountAuthKey(ctx, user.authKeyHash, bytes))) throw forbidden('Incorrect password');
+  const bytes = keyBytes(proof.authKey, options.field ?? 'authKey');
+  if (!(await verifyAccountAuthKey(ctx, user.authKeyHash, bytes)))
+    throw forbidden('Incorrect password');
   if (!user.totpEnabledAt) return;
   if (!proof.code) {
     throw validationError('A two-factor code is required', {
@@ -420,7 +431,7 @@ export async function requireAccountProof(
     });
   }
   const factor = await verifySecondFactor(ctx, user, proof.code, req, {
-    allowBackup: true,
+    allowBackup: options.allowBackup ?? true,
     context,
   });
   if (!factor) throw forbidden('Invalid two-factor code');

@@ -145,20 +145,20 @@ export function wrongTotpCode(secretBase32: string): string {
   }
 }
 
-/** setup + enable through the API, using the code of the current step. */
+/** setup + enable through the API (the authKey re-authenticates), using the code of the current step. */
 export async function enableTotpViaApi(
   app: Express,
-  accessToken: string,
+  u: Pick<RegisteredUser, 'accessToken' | 'authKey'>,
 ): Promise<{ secret: string; backupCodes: string[] }> {
   const setup = await request(app)
     .post('/api/auth/mfa/totp/setup')
-    .set('Authorization', bearer(accessToken));
+    .set('Authorization', bearer(u.accessToken));
   expect(setup.status, JSON.stringify(setup.body)).toBe(200);
   const secret = setup.body.secret as string;
   const enable = await request(app)
     .post('/api/auth/mfa/totp/enable')
-    .set('Authorization', bearer(accessToken))
-    .send({ code: totpCode(secret) });
+    .set('Authorization', bearer(u.accessToken))
+    .send({ authKey: u.authKey, code: totpCode(secret) });
   expect(enable.status, JSON.stringify(enable.body)).toBe(200);
   return { secret, backupCodes: enable.body.backupCodes as string[] };
 }

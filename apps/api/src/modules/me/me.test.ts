@@ -309,7 +309,7 @@ describe('DELETE /me', () => {
 
   it('requires a TOTP code when TOTP is enabled', async () => {
     const u = await registerViaApi(t.app);
-    const { secret } = await enableTotpViaApi(t.app, u.accessToken);
+    const { secret } = await enableTotpViaApi(t.app, u);
     const del = (body: object) =>
       request(t.app).delete('/api/me').set('Authorization', bearer(u.accessToken)).send(body);
     expect((await del({ authKey: u.authKey })).status).toBe(400);

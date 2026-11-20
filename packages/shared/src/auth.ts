@@ -30,8 +30,11 @@ export const MeSchema = z.object({
   role: RoleSchema,
   totpEnabled: z.boolean(),
   autoLockMinutes: AutoLockMinutesSchema,
+  /** The quota that applies now: capped by the new-account probation quota while that lasts. */
   storageQuotaBytes: z.number().int().nonnegative(),
   storageUsedBytes: z.number().int().nonnegative(),
+  /** When the new-account probation quota stops applying; null when none applies (any more). */
+  quotaProbationEndsAt: IsoDateTimeSchema.nullable(),
   createdAt: IsoDateTimeSchema,
 });
 export type Me = z.infer<typeof MeSchema>;

@@ -58,6 +58,7 @@ export const TEST_ME: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 1_000_000_000,
   storageUsedBytes: 12_345_678,
+  quotaProbationEndsAt: null,
   createdAt: '2026-11-07T10:00:00.000Z',
 };
 

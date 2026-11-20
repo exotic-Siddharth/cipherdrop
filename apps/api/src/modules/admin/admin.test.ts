@@ -457,6 +457,7 @@ describe('admin API', () => {
         totpEnabled: true,
         storageQuotaBytes: 5 * 1024 * 1024 * 1024,
         storageUsedBytes: 1234 + 1016,
+        quotaProbationEndsAt: null,
         dropCount: 1,
         lockedUntil: null,
         createdAt: alice.createdAt.toISOString(),

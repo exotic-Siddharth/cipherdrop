@@ -115,6 +115,19 @@ describe('parseEnv outside production', () => {
     ).toBe(1000);
   });
 
+  it('puts new accounts on probation by default (256 MiB for 7 days); 0 days turns it off', () => {
+    expect(parseEnv(dev)).toMatchObject({
+      NEW_ACCOUNT_QUOTA_BYTES: 256 * 1024 ** 2,
+      NEW_ACCOUNT_PROBATION_DAYS: 7,
+    });
+    expect(parseEnv({ ...dev, NEW_ACCOUNT_PROBATION_DAYS: '0' }).NEW_ACCOUNT_PROBATION_DAYS).toBe(
+      0,
+    );
+    expect(() => parseEnv({ ...dev, NEW_ACCOUNT_PROBATION_DAYS: '366' })).toThrow(
+      /NEW_ACCOUNT_PROBATION_DAYS/,
+    );
+  });
+
   it('keeps the local defaults in development and test', () => {
     for (const NODE_ENV of ['development', 'test']) {
       const env = parseEnv({ ...dev, NODE_ENV });

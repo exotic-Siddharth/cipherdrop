@@ -34,6 +34,7 @@ import {
 import { decodeB64url, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
 import { ipPrefix, ipShareKey } from '../../lib/ip';
 import { metrics } from '../../lib/metrics';
+import { effectiveQuotaBytes, probationEndsAt } from '../../lib/quota';
 import { randomToken } from '../../lib/tokens';
 import { recordAfterCommit } from '../audit/service';
 import type { AuthUser } from '../../types/express';
@@ -211,7 +212,7 @@ async function insertWithCapacityChecks(
       if (locked.length === 0) throw unauthorized();
       const owner = await tx.user.findUniqueOrThrow({
         where: { id: user.id },
-        select: { storageQuotaBytes: true, storageUsedBytes: true },
+        select: { storageQuotaBytes: true, storageUsedBytes: true, quotaProbationEndsAt: true },
       });
       // Pending uploads count too, so parallel uploads cannot overshoot the quota.
       const pending = await tx.drop.aggregate({
@@ -219,11 +220,21 @@ async function insertWithCapacityChecks(
         where: { ownerId: user.id, status: 'UPLOADING' },
       });
       const committed = owner.storageUsedBytes + (pending._sum.totalCiphertextBytes ?? 0n);
-      if (committed + BigInt(totalBytes) > owner.storageQuotaBytes) {
-        throw quotaExceeded('Storage quota exceeded', {
-          quotaBytes: Number(owner.storageQuotaBytes),
-          usedBytes: Number(committed),
-        });
+      // A new account on probation has the smaller of its quota and NEW_ACCOUNT_QUOTA_BYTES (lib/quota.ts).
+      const now = ctx.now();
+      const quota = effectiveQuotaBytes(owner, ctx.env, now);
+      if (committed + BigInt(totalBytes) > quota) {
+        const probation = probationEndsAt(owner, now);
+        throw quotaExceeded(
+          probation
+            ? 'Storage quota exceeded. New accounts have a smaller quota for their first days.'
+            : 'Storage quota exceeded',
+          {
+            quotaBytes: Number(quota),
+            usedBytes: Number(committed),
+            ...(probation ? { probationEndsAt: probation.toISOString() } : {}),
+          },
+        );
       }
       await insert(tx);
     });

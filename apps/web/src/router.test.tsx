@@ -16,6 +16,7 @@ const user: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 100,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: '2026-11-07T10:00:00.000Z',
 };
 

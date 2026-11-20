@@ -88,6 +88,7 @@ describe('GET /me and PATCH /me/settings', () => {
       autoLockMinutes: 15,
       storageQuotaBytes: 5 * 1024 ** 3,
       storageUsedBytes: 123_456_789,
+      quotaProbationEndsAt: null,
       createdAt: user.createdAt.toISOString(),
     });
     expect((await request(t.app).get('/api/me')).status).toBe(401);

@@ -26,6 +26,7 @@ import { forbidden, unauthorized, validationError } from '../../lib/errors';
 import { decodeB64url, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
 import { ipPrefix } from '../../lib/ip';
 import { signAccessToken } from '../../lib/jwt';
+import { effectiveQuotaBytes, probationEndsAt } from '../../lib/quota';
 import { denylistSid } from '../../lib/redis';
 import { randomToken } from '../../lib/tokens';
 import { verifyTotp } from '../../lib/totp';
@@ -43,16 +44,18 @@ type Req = Pick<Request, 'ip' | 'headers'>;
 
 const DAY_MS = 86_400_000;
 
-/** Me DTO (spec section 10). */
-export function toMe(user: User): Me {
+/** Me DTO (spec section 10). The quota is the one that applies now (new-account probation, lib/quota.ts). */
+export function toMe(user: User, ctx: Pick<AppContext, 'env' | 'now'>): Me {
+  const now = ctx.now();
   return {
     id: user.id,
     email: user.email,
     role: user.role,
     totpEnabled: user.totpEnabledAt !== null,
     autoLockMinutes: user.autoLockMinutes as AutoLockMinutes,
-    storageQuotaBytes: Number(user.storageQuotaBytes),
+    storageQuotaBytes: Number(effectiveQuotaBytes(user, ctx.env, now)),
     storageUsedBytes: Number(user.storageUsedBytes),
+    quotaProbationEndsAt: probationEndsAt(user, now)?.toISOString() ?? null,
     createdAt: user.createdAt.toISOString(),
   };
 }

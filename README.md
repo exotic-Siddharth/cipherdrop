@@ -1,5 +1,7 @@
 # CipherDrop
 
+[![ci](https://github.com/exotic-Siddharth/cipherdrop/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/exotic-Siddharth/cipherdrop/actions/workflows/ci.yml)
+
 Zero-knowledge, end-to-end encrypted file sharing: files are encrypted in the browser before upload, and the
 server stores only ciphertext it has no key for.
 
@@ -9,6 +11,7 @@ server stores only ciphertext it has no key for.
 
 - **Send** up to 20 files per drop (100 MiB of ciphertext anonymously, 2 GiB with an account). The browser encrypts them
   with AES-256-GCM in 4 MiB chunks and uploads only ciphertext. The share link carries the key after `#`, which browsers never send to a server.
+  A file over 256 MiB can only be received in a Chromium-based desktop browser ([Browser support](#browser-support)).
 - **Password links** as an alternative: the link has no key, and the drop key is unwrapped with a key derived
   from the password through Argon2id.
 - **Burn after reading and expiry**: a download limit of 1 (burn after reading) to 10 anonymously or up to 100
@@ -50,12 +53,19 @@ These are the problems that took the most work, and the parts an interviewer is 
 5. **Abuse resistance on the transfer path.** Per-token and per-IP rate limits (an IP limiter runs first so random
    tokens cannot dodge it), in-flight caps per token, per client and per process with `429` and `Retry-After`, a
    minimum body rate of 4,096 bytes/s against slow-drip uploads, and an idle timeout on downloads so slow readers
-   cannot exhaust the 256-socket S3 pool.
+   cannot exhaust the 256-socket S3 pool. The bundled nginx streams chunk PUTs and GETs instead of buffering them,
+   so these defences act on the real client, and it caps in-flight `/api` requests at 64 per client (16 PUT + 32 GET
+   API shares + 16), keyed like the API by IPv4 address or IPv6 /48. Behind the bundled Caddy it takes the client
+   address from Caddy's fixed address only. The production smoke test checks this with raw-socket slow clients.
 6. **Proving that no plaintext reaches the server.** The Playwright suite runs the production build under the
-   production CSP and records every API request of every browser context, the upload worker's included. A leak
-   guard fails the run if a test file
-   name (raw, URL-encoded, JSON-escaped, base64 or base64url), plaintext bytes or key material appear in any URL,
-   header or body. A tamper test flips one byte of a chunk in flight and expects the UI to block the save.
+   production CSP and records every request of every browser context: navigations, assets, worker scripts, the
+   upload worker's chunk PUTs and the API calls, with every header the browser sent (Cookie included). A leak guard
+   fails the run if a request goes to another origin, or if a test file name (raw, URL-encoded, form-encoded,
+   JSON-escaped, base64 or base64url), plaintext bytes (raw, base64, base64url or hex) or a key (its link text, or
+   its bytes raw, as base64, base64url or hex) appears in any URL, header or body; 12 self-tests check that it
+   catches each case. On the server side, log tests run whole flows, forced 500s included, and fail if a token, key,
+   manifest or file byte reaches the API's logs. A tamper test flips one byte of a chunk in flight and expects the
+   UI to block the save.
 7. **Measuring honestly.** In headless Chromium the app uploads at 13.0 MiB/s (median of 9 runs), while the same
    API takes 82.3 MiB/s from Node. A control with no CipherDrop code shows that headless Chromium itself uploads
    only 17.7 to 20.5 MiB/s on this machine, so most of the gap is the browser's own upload path, not the server; the
@@ -101,7 +111,7 @@ hierarchy, the drop lifecycle and the session flow as diagrams, plus the design 
 | API                  | Express 5, Prisma 6, PostgreSQL 16, Redis 7 (ioredis), zod 3, OpenAPI via `zod-to-openapi`, pino, helmet, `otpauth`, AWS SDK v3 for S3, prom-client |
 | Web                  | React 19, Vite 7, Tailwind CSS 4, React Router 7, TanStack Query 5, Zustand 5                                                                       |
 | Tests                | Vitest 3, Supertest, Testing Library with jsdom, Playwright (Chromium)                                                                              |
-| Infrastructure       | Docker Compose (Postgres, Redis, MinIO), nginx, optional Caddy for TLS, a GitHub Actions workflow                                                   |
+| Infrastructure       | Docker Compose (Postgres, Redis, MinIO), nginx, optional Caddy for TLS, GitHub Actions (CI and a dependency audit gate), Dependabot                 |
 
 ## Quick start
 
@@ -142,15 +152,18 @@ http://localhost:5174/api/docs.
 
 ## Running the tests
 
-| Command                                                     | What it runs                                                                                                                                         | Current result                                                                                 |
-| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `npm test`                                                  | unit and integration tests of all four workspaces; the API tests need the Compose Postgres and Redis and create their own `cipherdrop_test` database | 735 passed: crypto 147, shared 15, API 266 (+10 S3 tests skipped without `S3_TEST=1`), web 307 |
-| `npm run test:s3`                                           | the storage contract suite against MinIO (`S3_TEST=1`)                                                                                               | 27 passed                                                                                      |
-| `npm run e2e`                                               | Playwright against `vite build` + `vite preview` (production CSP on) and a real API on a separate `cipherdrop_e2e` database                          | 26 passed                                                                                      |
-| `npm run typecheck`, `npm run lint`, `npm run format:check` | `tsc` for every workspace, ESLint, Prettier                                                                                                          | clean                                                                                          |
+| Command                                                     | What it runs                                                                                                                                         | Current result                                                                                                                  |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `npm test`                                                  | unit and integration tests of all four workspaces; the API tests need the Compose Postgres and Redis and create their own `cipherdrop_test` database | 761 passed: crypto 147, shared 15, API 284 (+10 S3 tests skipped without `S3_TEST=1`), web 315 (the nginx config test included) |
+| `npm run test:s3`                                           | the storage contract suite against MinIO (`S3_TEST=1`)                                                                                               | 27 passed (2026-11-12, see below)                                                                                               |
+| `npm run e2e`                                               | Playwright against `vite build` + `vite preview` (production CSP on) and a real API on a separate `cipherdrop_e2e` database                          | 34 passed                                                                                                                       |
+| `npm run test:scripts`, `npm run audit:gate`                | the dependency audit gate's own tests (`node:test`), then the gate: `npm audit --omit=dev` against `scripts/audit-allowlist.json`                    | 24 passed; the gate passes (3 high advisories, all on the allowlist)                                                            |
+| `npm run smoke:prod -w @cipherdrop/web`                     | the production smoke test against a running `docker-compose.prod.yml` stack ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))                               | 10 passed (verification record of 2026-11-20)                                                                                   |
+| `npm run typecheck`, `npm run lint`, `npm run format:check` | `tsc` for every workspace, ESLint, Prettier                                                                                                          | clean                                                                                                                           |
 
 Run `npm run e2e:install -w @cipherdrop/web` once to install Playwright's Chromium. Counts were taken on
-2026-11-12 on the development laptop.
+2026-11-20 in a Linux cloud container (Node 22.23.5). The exception is `test:s3`: the MinIO image could not be
+pulled there, so its count is from 2026-11-12 on the development laptop; no storage code or test has changed since.
 
 What the tests cover, in brief: `packages/crypto` tests each security property of the construction, Argon2id
 known-answer vectors from the reference implementation, and a re-implementation of the spec with `node:crypto`
@@ -158,7 +171,9 @@ that pins a golden vector. The API tests run against real Postgres and Redis (co
 session reuse detection, cleanup, retention, the OpenAPI route walk). The e2e suite covers send and receive,
 password drops, burn after reading, tampering, an upload that survives two injected 503 errors, resume after a
 reload, accounts with TOTP and recovery, sessions, the dashboard and the admin console, with the leak guard on
-every test.
+every test. The API's log tests run whole flows and fail if a secret reaches the logs, and
+`apps/web/deploy-checks/nginx-headers.test.ts` keeps `deploy/nginx.conf` in step with the SPA's security headers,
+the API's limits and the compose network.
 
 ## Project layout
 
@@ -196,12 +211,27 @@ docker-compose.prod.yml   production stack
 - **Burn after reading is enforced by the server**, not by cryptography: an honest server deletes the blobs, a
   compromised one could keep them.
 - **Losing both the password and the recovery key loses the account's data.** Nobody can reset it.
+- **With 2FA on, losing the authenticator and every backup code locks the account**, even with the password and the
+  recovery key: recovery asks for a second factor too, and there is no admin reset of 2FA.
 - A stolen database allows offline password guessing at the cost of one Argon2id derivation per guess.
 
 [docs/SECURITY.md](docs/SECURITY.md) has the full threat model (server, network attacker, malicious recipient,
 stolen database, XSS), the cryptographic design in brief, the metadata list, account and session security, and
 the accepted open points from the review. The normative specification is [docs/DESIGN.md](docs/DESIGN.md),
 section 7.
+
+## Browser support
+
+The app needs WebCrypto, module Workers and WebAssembly. What a recipient can save depends on the file size,
+because a file over 256 MiB is streamed to disk through the File System Access API (`showSaveFilePicker`) instead
+of being assembled in memory:
+
+| Recipient's browser                          | Files up to 256 MiB | A file over 256 MiB                                                  |
+| -------------------------------------------- | ------------------- | -------------------------------------------------------------------- |
+| Chromium-based, on a computer (Chrome, Edge) | saved from memory   | streamed to disk after the recipient picks where to save it          |
+| Others (Firefox, Safari, mobile browsers)    | saved from memory   | not possible: the receive page says so before a download is consumed |
+
+The automated tests run in Chromium only; other browsers have not been tested.
 
 ## Deployment
 

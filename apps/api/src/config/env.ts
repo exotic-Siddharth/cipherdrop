@@ -129,6 +129,14 @@ const EnvSchema = z
      * drops are free file hosting, and the server cannot scan ciphertext.
      */
     ANON_TOTAL_PENDING_BYTES: int(10_737_418_240, 0),
+    /**
+     * Rolling per-client budget for anonymous drops: at most this many declared ciphertext bytes per IPv4
+     * address or IPv6 /48 in any ANON_BYTES_WINDOW_HOURS (default 1 GiB per 24 h; 0 = off). Beyond it the
+     * create gets 429 UPLOAD_BUDGET_EXCEEDED with Retry-After. Kept in Redis, so it holds across API processes,
+     * and one client can no longer fill ANON_TOTAL_PENDING_BYTES and lock every other anonymous sender out.
+     */
+    ANON_BYTES_PER_CLIENT: int(1_073_741_824, 0),
+    ANON_BYTES_WINDOW_HOURS: int(24, 1, 720),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),
@@ -141,6 +149,14 @@ const EnvSchema = z
     SEED_DEMO_PASSWORD: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
+    // A budget below the largest anonymous drop would refuse every drop of that size for ever.
+    if (env.ANON_BYTES_PER_CLIENT > 0 && env.ANON_BYTES_PER_CLIENT < env.ANON_MAX_DROP_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ANON_BYTES_PER_CLIENT'],
+        message: 'must be 0 (off) or at least ANON_MAX_DROP_BYTES',
+      });
+    }
     if (env.NODE_ENV !== 'production') return;
     if (!env.RATE_LIMITS_ENABLED) {
       ctx.addIssue({

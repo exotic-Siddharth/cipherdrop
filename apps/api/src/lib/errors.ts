@@ -2,7 +2,7 @@
  * AppError and helpers. The error middleware turns them into `{error:{code, message, details?}}` (spec section 10).
  * Messages are user-facing and must never contain secrets, keys, tokens or plaintext metadata.
  */
-import type { ErrorCode, GoneReason } from '@cipherdrop/shared';
+import type { ErrorCode, GoneReason, UploadBudgetDetails } from '@cipherdrop/shared';
 
 export class AppError extends Error {
   readonly status: number;
@@ -64,6 +64,19 @@ export const payloadTooLarge = (message = 'Payload too large', details?: unknown
 /** 413 QUOTA_EXCEEDED: the user's storage quota (or the per-drop byte limit) would be exceeded. */
 export const quotaExceeded = (message = 'Storage quota exceeded', details?: unknown) =>
   new AppError(413, 'QUOTA_EXCEEDED', message, details);
+
+/**
+ * 429 UPLOAD_BUDGET_EXCEEDED: this client (IPv4 address or IPv6 /48) has created its rolling budget of
+ * anonymous drop bytes. Retry-After is when enough of it frees up; signed-in senders are not affected.
+ */
+export const uploadBudgetExceeded = (retryAfterSec: number, details: UploadBudgetDetails) =>
+  new AppError(
+    429,
+    'UPLOAD_BUDGET_EXCEEDED',
+    'You have sent a lot without an account recently. Try again later, or sign in to send more.',
+    details,
+    { retryAfterSec },
+  );
 
 export const rateLimited = (retryAfterSec?: number) =>
   new AppError(429, 'RATE_LIMITED', 'Too many requests, please try again later', undefined, {

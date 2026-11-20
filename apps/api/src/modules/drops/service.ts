@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Request } from 'express';
 import type { AppContext } from '../../context';
+import { reserveBytes } from '../../lib/byteBudget';
 import {
   conflict,
   forbidden,
@@ -27,10 +28,11 @@ import {
   payloadTooLarge,
   quotaExceeded,
   unauthorized,
+  uploadBudgetExceeded,
   validationError,
 } from '../../lib/errors';
 import { decodeB64url, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
-import { ipPrefix } from '../../lib/ip';
+import { ipPrefix, ipShareKey } from '../../lib/ip';
 import { metrics } from '../../lib/metrics';
 import { randomToken } from '../../lib/tokens';
 import { recordAfterCommit } from '../audit/service';
@@ -75,6 +77,34 @@ export function expectedChunkSize(
 }
 
 /* ---------------------------------------------------------------- create */
+
+/**
+ * Take `bytes` from the rolling anonymous budget of the requesting client (IPv4 address or IPv6 /48), or
+ * throw 429 UPLOAD_BUDGET_EXCEEDED with the wait. Returns the release for a create that fails afterwards, or
+ * null when the budget is off. A drop deleted later does not give its bytes back: the budget meters what a
+ * client asked the server to store, so create-and-delete cycles cannot reset it.
+ */
+async function reserveAnonBudget(
+  ctx: AppContext,
+  req: Req,
+  bytes: number,
+): Promise<(() => Promise<void>) | null> {
+  const { ANON_BYTES_PER_CLIENT: limitBytes, ANON_BYTES_WINDOW_HOURS: windowHours } = ctx.env;
+  if (limitBytes <= 0) return null;
+  const windowMs = windowHours * HOUR_MS;
+  const result = await reserveBytes(
+    ctx.redis,
+    { limitBytes, windowMs },
+    ipShareKey(req.ip),
+    bytes,
+    ctx.now(),
+  );
+  if (!result.ok) {
+    metrics.dropsRefused.inc({ reason: 'client_budget' });
+    throw uploadBudgetExceeded(Math.ceil(result.retryAfterMs / 1000), { limitBytes, windowHours });
+  }
+  return result.release;
+}
 
 export async function createDrop(
   ctx: AppContext,
@@ -149,6 +179,28 @@ export async function createDrop(
       },
     });
 
+  // Checked last among the cheap checks, so a request refused for its shape spends no budget.
+  const releaseBudget = anon ? await reserveAnonBudget(ctx, req, totalBytes) : null;
+  try {
+    await insertWithCapacityChecks(ctx, user, totalBytes, insert);
+  } catch (err) {
+    await releaseBudget?.();
+    throw err;
+  }
+
+  metrics.dropsCreated.inc({ anon: anon ? 'true' : 'false' });
+  if (user)
+    await recordAfterCommit(ctx, { userId: user.id, dropId: id, action: 'DROP_CREATED', req });
+  return { dropId: id, ownerToken, uploadToken, expiresAt: expiresAt.toISOString() };
+}
+
+/** Insert the drop once the storage it reserves fits the owner's quota or the anonymous pool. */
+async function insertWithCapacityChecks(
+  ctx: AppContext,
+  user: AuthUser | undefined,
+  totalBytes: number,
+  insert: (db: Pick<Prisma.TransactionClient, 'drop'>) => Promise<unknown>,
+): Promise<void> {
   if (user) {
     // The quota check and the insert run under a per-user row lock: parallel creates queue on it, so each
     // one sees the pending bytes of the creates before it (READ COMMITTED re-reads after the lock is won).
@@ -190,6 +242,7 @@ export async function createDrop(
         (held._sum.totalCiphertextBytes ?? 0n) + BigInt(totalBytes) >
         ctx.env.ANON_TOTAL_PENDING_BYTES
       ) {
+        metrics.dropsRefused.inc({ reason: 'anon_pool' });
         throw quotaExceeded(
           'Anonymous uploads are at capacity right now, try again later or sign in',
         );
@@ -199,11 +252,6 @@ export async function createDrop(
   } else {
     await insert(ctx.prisma);
   }
-
-  metrics.dropsCreated.inc({ anon: anon ? 'true' : 'false' });
-  if (user)
-    await recordAfterCommit(ctx, { userId: user.id, dropId: id, action: 'DROP_CREATED', req });
-  return { dropId: id, ownerToken, uploadToken, expiresAt: expiresAt.toISOString() };
 }
 
 /* ---------------------------------------------------------------- upload */

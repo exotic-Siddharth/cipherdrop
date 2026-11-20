@@ -25,6 +25,13 @@ export const metrics = {
     labelNames: ['anon'] as const,
     registers: [metricsRegistry],
   }),
+  /** Drop creates refused by a storage control. labels: reason = "client_budget" | "anon_pool" */
+  dropsRefused: new client.Counter({
+    name: 'drops_refused_total',
+    help: 'Drop creates refused by a storage control (per-client budget, anonymous pool)',
+    labelNames: ['reason'] as const,
+    registers: [metricsRegistry],
+  }),
   dropOpens: new client.Counter({
     name: 'drop_opens_total',
     help: 'Successful drop opens (downloads consumed)',

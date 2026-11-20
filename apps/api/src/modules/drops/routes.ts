@@ -225,6 +225,10 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
           description:
             'Per-drop byte limit or storage quota exceeded (PAYLOAD_TOO_LARGE / QUOTA_EXCEEDED)',
         },
+        429: {
+          description:
+            'Too many creates (RATE_LIMITED), or this anonymous client (IPv4 address or IPv6 /48) spent its rolling byte budget (UPLOAD_BUDGET_EXCEEDED, details {limitBytes, windowHours}); Retry-After',
+        },
       },
     },
     createLimiter,

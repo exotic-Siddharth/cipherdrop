@@ -81,6 +81,8 @@ export const ErrorCodeSchema = z.enum([
   'RATE_LIMITED',
   'PAYLOAD_TOO_LARGE',
   'QUOTA_EXCEEDED',
+  /** 429 + Retry-After: this client's rolling byte budget for anonymous drops is spent. */
+  'UPLOAD_BUDGET_EXCEEDED',
   'INTERNAL',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
@@ -98,6 +100,13 @@ export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 /** 410 details: `{reason}`. */
 export const GoneDetailsSchema = z.object({ reason: GoneReasonSchema });
 export type GoneDetails = z.infer<typeof GoneDetailsSchema>;
+
+/** 429 UPLOAD_BUDGET_EXCEEDED details: the per-client budget for anonymous drops (Retry-After says when). */
+export const UploadBudgetDetailsSchema = z.object({
+  limitBytes: z.number().int().positive(),
+  windowHours: z.number().int().positive(),
+});
+export type UploadBudgetDetails = z.infer<typeof UploadBudgetDetailsSchema>;
 
 /** `?page&pageSize` (query strings are coerced). */
 export const PageQuerySchema = z.object({

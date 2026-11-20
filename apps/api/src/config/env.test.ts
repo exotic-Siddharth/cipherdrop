@@ -94,6 +94,27 @@ describe('parseEnv outside production', () => {
     );
   });
 
+  it('meters anonymous bytes per client by default (1 GiB per 24 h); 0 turns it off', () => {
+    expect(parseEnv(dev)).toMatchObject({
+      ANON_BYTES_PER_CLIENT: 1024 ** 3,
+      ANON_BYTES_WINDOW_HOURS: 24,
+    });
+    expect(parseEnv({ ...dev, ANON_BYTES_PER_CLIENT: '0' }).ANON_BYTES_PER_CLIENT).toBe(0);
+    expect(() => parseEnv({ ...dev, ANON_BYTES_WINDOW_HOURS: '0' })).toThrow(
+      /ANON_BYTES_WINDOW_HOURS/,
+    );
+  });
+
+  it('refuses a per-client budget below the largest anonymous drop (it could never be sent)', () => {
+    expect(() =>
+      parseEnv({ ...dev, ANON_MAX_DROP_BYTES: '1000', ANON_BYTES_PER_CLIENT: '999' }),
+    ).toThrow(/ANON_BYTES_PER_CLIENT/);
+    expect(
+      parseEnv({ ...dev, ANON_MAX_DROP_BYTES: '1000', ANON_BYTES_PER_CLIENT: '1000' })
+        .ANON_BYTES_PER_CLIENT,
+    ).toBe(1000);
+  });
+
   it('keeps the local defaults in development and test', () => {
     for (const NODE_ENV of ['development', 'test']) {
       const env = parseEnv({ ...dev, NODE_ENV });

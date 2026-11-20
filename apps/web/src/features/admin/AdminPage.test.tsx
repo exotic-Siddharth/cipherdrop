@@ -120,13 +120,21 @@ interface Call {
   body?: unknown;
 }
 
-function mockApi(overrides: { reportItems?: AdminReport[] } = {}) {
+function mockApi(overrides: { reportItems?: AdminReport[]; mfaRequired?: boolean } = {}) {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), 'http://localhost');
     const method = init.method ?? 'GET';
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
     calls.push({ method, path: url.pathname, search: url.searchParams, body });
+    if (overrides.mfaRequired && url.pathname.startsWith('/api/admin/')) {
+      const error = {
+        code: 'FORBIDDEN',
+        message: 'Admin access needs two-step verification.',
+        details: { reason: 'MFA_REQUIRED' },
+      };
+      return json({ error }, 403);
+    }
     if (method === 'GET' && url.pathname === '/api/admin/stats') return json(stats());
     if (method === 'GET' && url.pathname === '/api/admin/reports') {
       const items = overrides.reportItems ?? reports();
@@ -214,6 +222,29 @@ describe('AdminPage stats and chart', () => {
     expect(columns[12]).toHaveFocus();
     await userEvent.keyboard('{Home}');
     expect(columns[0]).toHaveFocus();
+  });
+});
+
+describe('AdminPage without two-step verification', () => {
+  it('shows the 2FA notice when the API answers MFA_REQUIRED (2FA turned off elsewhere)', async () => {
+    mockApi({ mfaRequired: true });
+    renderAdmin();
+    expect(
+      await screen.findByRole('heading', { name: 'Turn on two-step verification' }),
+    ).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open security settings' })).toBeVisible();
+    expect(screen.queryByRole('list', { name: 'Statistics' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Abuse reports' })).toBeNull();
+  });
+
+  it('the route guard shows it before any admin request when the session says 2FA is off', async () => {
+    const calls = mockApi();
+    useAuth.setState({ user: { ...admin, totpEnabled: false } });
+    renderAdmin();
+    expect(
+      await screen.findByRole('heading', { name: 'Turn on two-step verification' }),
+    ).toBeVisible();
+    expect(calls.filter((c) => c.path.startsWith('/api/admin/'))).toEqual([]);
   });
 });
 

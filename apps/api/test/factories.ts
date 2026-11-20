@@ -73,11 +73,20 @@ export async function createUserRecord(
   return prisma.user.create({ data });
 }
 
+/**
+ * An admin as the admin routes accept one: role ADMIN with two-step verification on (requireRole checks
+ * totpEnabledAt). Pass `{ totpEnabledAt: null }` for an admin who has not turned it on.
+ */
 export function createAdminRecord(
   prisma: PrismaClient,
   overrides: Partial<Prisma.UserCreateInput> = {},
 ): Promise<User> {
-  return createUserRecord(prisma, { email: uniqueEmail('admin'), role: 'ADMIN', ...overrides });
+  return createUserRecord(prisma, {
+    email: uniqueEmail('admin'),
+    role: 'ADMIN',
+    totpEnabledAt: new Date(),
+    ...overrides,
+  });
 }
 
 /**

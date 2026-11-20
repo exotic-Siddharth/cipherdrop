@@ -6,6 +6,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import {
   accountMenu,
+  enableTotpInSettings,
   logIn,
   openLink,
   randomPassword,
@@ -19,18 +20,7 @@ import {
 
 async function enableTotp(page: Page): Promise<{ secret: string; backupCodes: string[] }> {
   await accountMenu(page, 'Settings');
-  await page.getByRole('button', { name: 'Set up two-step verification' }).click();
-  const secret = await page.getByLabel('Secret key').inputValue();
-  await page.getByLabel('6-digit code').fill(totpCode(secret));
-  await page.getByRole('button', { name: /Turn on|Verify|Enable/ }).click();
-  await expect(page.getByText('Save these backup codes now')).toBeVisible({ timeout: 20_000 });
-  const backupCodes = await page
-    .getByRole('list', { name: 'Backup codes' })
-    .getByRole('listitem')
-    .allInnerTexts();
-  await page.getByLabel('I saved my backup codes').check();
-  await page.getByRole('button', { name: 'Done' }).click();
-  return { secret, backupCodes };
+  return enableTotpInSettings(page);
 }
 
 async function loginWithBackupCode(page: Page, email: string, password: string, code: string) {

@@ -69,6 +69,13 @@ export type AuditAction = z.infer<typeof AuditActionSchema>;
 export const GoneReasonSchema = z.enum(['EXPIRED', 'EXHAUSTED', 'DELETED', 'DISABLED']);
 export type GoneReason = z.infer<typeof GoneReasonSchema>;
 
+/**
+ * `details.reason` of a 403 FORBIDDEN that the user can fix. MFA_REQUIRED: an admin without two-step
+ * verification on an admin route (the SPA then asks them to turn it on).
+ */
+export const ForbiddenReasonSchema = z.enum(['MFA_REQUIRED']);
+export type ForbiddenReason = z.infer<typeof ForbiddenReasonSchema>;
+
 /* ---- Errors and paging ---- */
 
 export const ErrorCodeSchema = z.enum([
@@ -98,6 +105,10 @@ export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 /** 410 details: `{reason}`. */
 export const GoneDetailsSchema = z.object({ reason: GoneReasonSchema });
 export type GoneDetails = z.infer<typeof GoneDetailsSchema>;
+
+/** 403 details when the user can fix the refusal: `{reason}`. */
+export const ForbiddenDetailsSchema = z.object({ reason: ForbiddenReasonSchema });
+export type ForbiddenDetails = z.infer<typeof ForbiddenDetailsSchema>;
 
 /** `?page&pageSize` (query strings are coerced). */
 export const PageQuerySchema = z.object({

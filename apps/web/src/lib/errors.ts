@@ -19,6 +19,15 @@ const CRYPTO_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   INVALID_LINK: 'This link is incomplete. Ask the sender to copy the whole link.',
 });
 
+/** The API refused an admin route because the account has no two-step verification (403, MFA_REQUIRED). */
+export function isMfaRequired(err: unknown): boolean {
+  return (
+    isApiError(err) &&
+    err.status === 403 &&
+    (err.details as { reason?: unknown } | null | undefined)?.reason === 'MFA_REQUIRED'
+  );
+}
+
 export function isAbortError(err: unknown): boolean {
   return (
     (err instanceof DOMException || err instanceof Error) &&

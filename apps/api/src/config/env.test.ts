@@ -3,8 +3,11 @@
  * instead of starting with it silently. Development and test keep their defaults.
  */
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseEnv } from './env';
+import { apiRoot } from './paths';
 
 const prod = (): Record<string, string> => ({
   NODE_ENV: 'production',
@@ -95,5 +98,39 @@ describe('parseEnv outside production', () => {
         WEB_ORIGIN: 'http://localhost:5174',
       });
     }
+  });
+});
+
+describe('Argon2id limiter settings (critic-1)', () => {
+  const dev = {
+    JWT_ACCESS_SECRET: 'dev-only-jwt-access-secret-0123456789abcdef',
+    PRELOGIN_SECRET: 'dev-only-prelogin-hmac-secret-0123456789abcdef',
+    TOTP_ENC_KEY: Buffer.alloc(32, 7).toString('base64'),
+  };
+
+  it('defaults: 2 concurrent hashes, 32 waiting, below the libuv default pool of 4', () => {
+    expect(parseEnv(dev)).toMatchObject({
+      ARGON2_MAX_CONCURRENT: 2,
+      ARGON2_MAX_QUEUE: 32,
+      UV_THREADPOOL_SIZE: 4,
+    });
+    expect(parseEnv(prod())).toMatchObject({ ARGON2_MAX_CONCURRENT: 2, UV_THREADPOOL_SIZE: 4 });
+  });
+
+  it('refuses a cap that could take every libuv thread from file I/O, in every environment', () => {
+    expect(() => parseEnv({ ...dev, ARGON2_MAX_CONCURRENT: '4' })).toThrow(/ARGON2_MAX_CONCURRENT/);
+    expect(() =>
+      parseEnv({ ...prod(), ARGON2_MAX_CONCURRENT: '8', UV_THREADPOOL_SIZE: '8' }),
+    ).toThrow(/ARGON2_MAX_CONCURRENT/);
+    expect(
+      parseEnv({ ...prod(), ARGON2_MAX_CONCURRENT: '4', UV_THREADPOOL_SIZE: '8' }),
+    ).toMatchObject({ ARGON2_MAX_CONCURRENT: 4, UV_THREADPOOL_SIZE: 8 });
+  });
+
+  it('accepts the API image setting (UV_THREADPOOL_SIZE=8 in apps/api/Dockerfile)', () => {
+    const dockerfile = readFileSync(path.join(apiRoot, 'Dockerfile'), 'utf8');
+    const size = /UV_THREADPOOL_SIZE=(\d+)/.exec(dockerfile)?.[1];
+    expect(size).toBe('8');
+    expect(parseEnv({ ...prod(), UV_THREADPOOL_SIZE: size }).UV_THREADPOOL_SIZE).toBe(8);
   });
 });

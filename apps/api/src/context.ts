@@ -11,6 +11,7 @@ import type { Request } from 'express';
 import type { Redis } from 'ioredis';
 import { env as globalEnv, type Env } from './config/env';
 import { getPrisma } from './db/prisma';
+import { createArgon2Limiter, type Argon2Limiter } from './lib/argon2Limiter';
 import { logger as defaultLogger, type Logger } from './lib/logger';
 import {
   createRateLimitFactory,
@@ -42,6 +43,8 @@ export interface AppContext {
   now: () => Date;
   logger: Logger;
   audit: AuditService;
+  /** Bounds server-side Argon2id work (ARGON2_MAX_CONCURRENT / ARGON2_MAX_QUEUE); see modules/auth/authKeyHash.ts. */
+  argon2: Argon2Limiter;
   /** Build a rate-limit middleware bound to this app's Redis and rateLimits config. */
   rateLimit: RateLimitFactory;
 }
@@ -58,6 +61,10 @@ export function createContext(deps: AppDeps = {}): AppContext {
     now: deps.now ?? (() => new Date()),
     logger: deps.logger ?? defaultLogger,
     audit: createAuditService(prisma),
+    argon2: createArgon2Limiter({
+      maxConcurrent: env.ARGON2_MAX_CONCURRENT,
+      maxQueue: env.ARGON2_MAX_QUEUE,
+    }),
     rateLimit: createRateLimitFactory({
       redis,
       keyPrefix: globalEnv.KEY_PREFIX,

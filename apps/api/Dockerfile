@@ -1,13 +1,20 @@
 # syntax=docker/dockerfile:1
 # CipherDrop API image (spec section 16). Build context = repository root:
 #   docker build -f apps/api/Dockerfile -t cipherdrop-api .
-# Stages: build (full install, prisma generate, tsup bundle) -> prisma-cli (pinned migrate CLI) -> runtime
-# (production dependencies only, non-root, `prisma migrate deploy` then the server).
-ARG NODE_IMAGE=node:22-alpine
+# Stages: base (the pinned Node image plus OpenSSL) -> build (full install, prisma generate, tsup bundle) ->
+# prisma-cli (the migrate CLI, installed from a lockfile) -> runtime (production dependencies only, non-root,
+# `prisma migrate deploy` then the server).
 
-FROM ${NODE_IMAGE} AS build
-# Prisma's query engine needs OpenSSL (binaryTargets in schema.prisma: linux-musl-openssl-3.0.x).
+# The base image, pinned by its multi-platform index digest: the tag says which line it follows, the digest fixes the
+# bytes. A literal FROM, not an ARG default, so Dependabot (.github/dependabot.yml) can propose the digest bumps: its
+# Dockerfile parser reads only FROM lines that name an image. To build from a registry mirror, configure the mirror in
+# the Docker daemon (registry-mirrors) or edit this line: the digest still has to match.
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS base
+# Prisma's engines need OpenSSL (binaryTargets in schema.prisma: linux-musl-openssl-3.0.x): the build's
+# `prisma generate`, the migrate CLI and the runtime's query engine.
 RUN apk add --no-cache openssl
+
+FROM base AS build
 WORKDIR /repo
 # Manifests first so the dependency layer is cached until a package.json or the lockfile changes.
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -23,18 +30,22 @@ COPY apps/api apps/api
 RUN npm run db:generate -w @cipherdrop/api && npm run build -w @cipherdrop/api
 
 # The Prisma CLI is a devDependency of the API, so the production install below omits it. It is installed on
-# its own, at exactly the version in package-lock.json, so `migrate deploy` can run when the container starts.
-FROM ${NODE_IMAGE} AS prisma-cli
-RUN apk add --no-cache openssl
-COPY package-lock.json /tmp/package-lock.json
+# its own so `migrate deploy` can run when the container starts, from a lockfile cut out of package-lock.json
+# (scripts/prisma-cli-lockfile.mjs): prisma and its whole tree at the root lockfile's versions and integrity hashes,
+# the same tree the dependency audit gate checks. Scripts are skipped as in the other installs; `prisma version`
+# then fetches the engines that @prisma/engines' postinstall would have (the schema engine `migrate deploy` runs, and
+# the query engine), checksum-verified by @prisma/fetch-engine, and proves the CLI starts.
+FROM base AS prisma-cli
+COPY package-lock.json scripts/prisma-cli-lockfile.mjs /tmp/prisma-cli/
 RUN set -eu; \
-    version="$(node -p "require('/tmp/package-lock.json').packages['node_modules/prisma'].version")"; \
-    mkdir /opt/prisma && cd /opt/prisma && npm init -y >/dev/null && \
-    npm install --no-audit --no-fund --loglevel=error "prisma@${version}" && \
-    npm cache clean --force
+    node /tmp/prisma-cli/prisma-cli-lockfile.mjs /tmp/prisma-cli/package-lock.json /opt/prisma && \
+    cd /opt/prisma && \
+    npm ci --ignore-scripts --no-audit --no-fund --loglevel=error && \
+    CHECKPOINT_DISABLE=1 node_modules/.bin/prisma version && \
+    test -x node_modules/@prisma/engines/schema-engine-linux-musl-openssl-3.0.x && \
+    npm cache clean --force && rm -rf /tmp/prisma-cli
 
-FROM ${NODE_IMAGE} AS runtime
-RUN apk add --no-cache openssl
+FROM base AS runtime
 ENV NODE_ENV=production \
     PRISMA_HIDE_UPDATE_MESSAGE=1 \
     CHECKPOINT_DISABLE=1

@@ -107,7 +107,7 @@ npx tsx packages/crypto/src/bench.ts
 - `kdf.test.ts` holds the Argon2id regression vectors (R20). They are the reference implementation's published KATs (m=65536 and m=262144, t=2, p=1), plus cross-checks of hash-wasm against `@node-rs/argon2` `hashRaw` at KDF_MIN, p=2 and KDF_MAX.
 - The other files cover the spec section 14 cases: chunk roundtrips (0 B to 3 chunks), bit flips, swapped, dropped and replayed chunks, wrong keys, manifest schema rejection, password and recovery flows, KDF bounds and link parsing.
 
-`bench.ts` encrypts and decrypts 64 MiB in one stream with sequential 4 MiB chunks, hashes the chunks with SHA-256 and times Argon2id at `KDF_DEFAULT` and `KDF_MIN`. The measured results, with the machine, the method and the load readings, are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md) section 3 (medians of three invocations); this README keeps no second set of numbers.
+`bench.ts` encrypts and decrypts 64 MiB in one stream with sequential 4 MiB chunks, hashes the chunks with SHA-256 and times Argon2id at `KDF_DEFAULT` and `KDF_MIN`. The measured results and their load readings are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md) section 3 (medians of three invocations; the machine and the method are in sections 1 and 2); this README keeps no second set of numbers.
 
 ## Limits
 

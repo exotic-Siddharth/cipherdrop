@@ -26,21 +26,24 @@ passwords, through storage, logs, errors or analytics. Two kinds of test enforce
   upload worker's chunk PUTs) and the API calls. It scans the URL (without the `#fragment`, which is never sent),
   every header the browser sent (`request.allHeaders()`, so Cookie and the other headers the browser adds are
   included) and the body. It fails the test on any hit for the test file names (raw, URL-encoded as
-  `encodeURIComponent`, `encodeURI` and an HTML form encode them, JSON-escaped, base64, base64url), the plaintext
+  `encodeURIComponent`, `encodeURI`, an HTML form and the browser's URL parser encode them, JSON-escaped, base64, base64url), the plaintext
   bytes (raw, base64, base64url, lower- and upper-case hex), and the keys and passwords. A key is forbidden as its
   link text in those encodings and as its 32 bytes raw, as base64 with and without padding (also URL-encoded and
   with JSON's `\/` escape), as base64url and as hex. It also fails on any request to an origin other than the web
   origin. `data:` and `blob:` URLs are skipped because they never leave the browser. A request whose full headers
   cannot be read is still scanned with the headers the page set, and the test gets a note; it is never dropped.
-  Its self-tests are `apps/web/e2e/leakguard.spec.ts` (12 tests).
+  Its self-tests are `apps/web/e2e/leakguard.spec.ts` (15 tests).
 - **What the server logs.** `apps/api/src/modules/auth/logs.test.ts` and `apps/api/src/modules/drops/logs.test.ts`
   capture the API's pino output (the drops test also captures the console, stdout and stderr) while they run whole flows,
   and fail if a token, manifest, wrapped key, authKey or password proof, report key or file byte appears, also on
   forced 500s (a storage error, Prisma errors while a report with its key is stored). Prisma's warnings and errors
-  go through pino; an error event is logged with only the call it came from (for example `report.create`), never
-  its message. A Prisma error is logged as safe fields only: its class, its code, the schema names in `meta`
+  go through pino. An event from a failed call (for example `report.create`) is logged with only that call, never
+  its message; an engine event (a `quaint::` target, such as a lost database connection) keeps its message, which
+  carries no call arguments. A Prisma error is logged as safe fields only: its class, its code, the schema names in `meta`
   (`modelName`, `target`, `constraint`, `field_name`) and the stack frames without the message
-  (`apps/api/src/lib/logger.ts`). The reason: the message of a `PrismaClientValidationError` renders the arguments
+  (`apps/api/src/lib/logger.ts`); an initialization error keeps its message, which names the connection or startup
+  failure. The same serializer is pino-http's, and the audit and cleanup jobs hand it the error itself rather than
+  its message. The reason: the message of a `PrismaClientValidationError` renders the arguments
   of the failed call, a reporter's key included, even with `errorFormat: 'minimal'`.
 
 ## 2. Adversaries
@@ -199,9 +202,11 @@ design: nobody, including the operator, can reset access.
 **With 2FA on, losing both the authenticator and every unused backup code locks the account for good**, even with
 the password and the recovery key in hand. Login asks for a TOTP or backup code, and so does recovery (by design: the
 recovery key alone must not take over an account with 2FA). The app has no admin or operator reset of 2FA. Keep
-the backup codes somewhere other than the authenticator. If the operator loses `TOTP_ENC_KEY`, every enrolled user
-is in this position except those who still have a backup code: backup codes are hashed, not encrypted under that
-key, so they still sign in and can turn 2FA off and on again.
+the backup codes somewhere other than the authenticator. If the operator loses `TOTP_ENC_KEY`, no TOTP code works
+any more. Backup codes are hashed, not encrypted under that key, so they still work, but each works once: signing in
+uses one, turning 2FA off asks for the password and another, and new backup codes can only be issued against a TOTP
+code. A user with at least two unused codes (or one, while still signed in) can therefore turn 2FA off and enrol
+again; every other enrolled user is locked out.
 
 ## 6. KDF parameters
 
@@ -287,7 +292,8 @@ Further limitations, also shown on `/how-it-works`:
 - the security of browser-delivered cryptography depends on the server delivering honest JavaScript
   ([section 2.1](#21-the-server-operator-or-anyone-who-controls-the-server));
 - files above 256 MiB are saved through the File System Access API (`showSaveFilePicker`), which only Chromium-based
-  browsers provide; elsewhere the receive page refuses before consuming a download (review C-03).
+  desktop browsers provide, and not all of them (Brave turns it off by default); elsewhere the receive page refuses a
+  drop that contains such a file as a whole, before consuming a download (review C-03).
 
 ## 8. Reporting a vulnerability
 

@@ -214,7 +214,7 @@ sequenceDiagram
   B->>A: POST /auth/login {email, authKey}
   A-->>B: access JWT (15 min, in memory) + cd_rt cookie (rotating)
   B->>A: GET /auth/vault, then unwrap the account key locally
-  Note over B: vault unlocked; page reload locks it again
+  Note over B: vault unlocked, page reload locks it again
   B->>A: POST /auth/refresh (cookie), 30 s before expiry
   A->>A: mark token used, issue successor (one transaction)
   A-->>B: new JWT + new cookie

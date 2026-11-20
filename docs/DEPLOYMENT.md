@@ -91,18 +91,34 @@ Behind the bundled Caddy that address is already the real client: nginx takes it
 sets (the realip module, `set_real_ip_from 172.16.94.2`, Caddy's fixed address on the compose network `edge`), and Caddy
 replaces whatever a client sent in that header. So:
 
-| Path to the API                                     | `TRUST_PROXY` |
-| --------------------------------------------------- | ------------- |
-| client, nginx (this stack, no TLS proxy)            | `1`           |
-| client, Caddy (profile `tls`), nginx                | `1`           |
-| client, your own proxy or load balancer, nginx      | `2`           |
+| Path to the API                                                                          | `TRUST_PROXY`                                                  |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| client, nginx (this stack, no TLS proxy)                                                 | `1`                                                            |
+| client, Caddy (profile `tls`), nginx                                                     | `1`                                                            |
+| client, your own proxy or load balancer, nginx, with the proxy in `set_real_ip_from`     | `1`                                                            |
+| client, your own proxy or load balancer, nginx, with the proxy not in `set_real_ip_from` | `2`, and only if nothing but that proxy can reach nginx's port |
 
-For your own proxy, prefer adding its fixed address to `set_real_ip_from` in `deploy/nginx.conf` and keeping `1`:
-otherwise nginx sees every client as the proxy's address, and its per-client connection cap counts them all as one
-client. List exact addresses, never a private range. A proxy on the host that connects to `127.0.0.1:WEB_PORT` reaches
-nginx from a Docker network's gateway address (Docker's userland proxy), and trusting that address is safe only while
-`WEB_BIND` is loopback: with a public `WEB_BIND`, other connections that go through the userland proxy (IPv6 ones, for
-example) come from the same address and could then set their own client address.
+With `2`, any client that reaches nginx's port directly can choose its own address (measured below with Caddy), so
+firewall that port so that only the proxy reaches it, or keep `WEB_BIND` on loopback with the proxy on the same host. A
+load balancer on another host needs a non-loopback `WEB_BIND`, which makes the port reachable to others unless a
+firewall stops them. `2` also makes nginx see every client as the proxy's address: its per-client connection cap
+then counts them all as one client, so the whole site shares 64 in-flight `/api` requests.
+
+So for your own proxy, prefer adding its address to `set_real_ip_from` in `deploy/nginx.conf`, rebuilding the web
+image and keeping `1`. List exact addresses, never a private range, and only an address that stays the same:
+
+- A proxy on another host, or in a container on `edge` with a fixed `ipv4_address` (as Caddy has): its own address.
+- A proxy on this host that connects to `127.0.0.1:WEB_PORT` reaches nginx through Docker's userland proxy, from the
+  gateway address of the compose project's `default` network, not of `edge` (checked on 2026-11-20 with Docker 29.10.0
+  and a container on both networks, like `web`). Find it in nginx's access log (`docker compose ... logs web`, the first field of each
+  request line) or with `docker network inspect cipherdrop-prod_default`. Docker picks that network's subnet when it
+  creates the network, so the address can change after `down` and `up` (in the same check it went from `172.19.0.1` to
+  `172.20.0.1` once another network held the old subnet). If it changes, the `set_real_ip_from` entry stops matching
+  and every client silently shares one address again, in nginx's cap and in the API's rate limits. Trust it only after
+  giving `default` a fixed subnet and gateway in `docker-compose.prod.yml`, as `edge` has (the subnet must not overlap
+  another Docker network), and only while `WEB_BIND` is loopback: with a public `WEB_BIND`, other connections that go
+  through the userland proxy (IPv6 ones, for example) come from the same address and could then set their own client
+  address.
 
 Too low puts every client behind the proxy's address (one shared rate-limit bucket); too high lets a client choose its own
 address by sending the header. Verified on 2026-11-20 with the `tls` profile: with `TRUST_PROXY=2`, a client that reached
@@ -169,7 +185,9 @@ Other behaviour worth knowing:
   ([SECURITY.md](SECURITY.md) section 1).
 - **Upgrades:** `git pull`, then `up -d --build`. The API container applies pending Prisma migrations before it starts
   serving (`migrate deploy` takes a Postgres advisory lock, so replicas starting together are safe). Migrations are
-  forward-only: take a database backup before upgrading, because there is no automatic down-migration.
+  forward-only: take a database backup before upgrading, because there is no automatic down-migration. From
+  2026-11-20, a deployment with the `tls` profile must set `TRUST_PROXY=1` (it used to be told 2): `up -d --build`
+  keeps the old `.env.production`, and with 2 a client that reaches nginx's port directly can choose its own address.
 - **Shutdown:** `docker stop` sends SIGTERM; the API stops accepting connections, stops the cleanup job and disconnects
   Prisma and Redis (`stop_grace_period: 15s`; the process forces exit after 10 s). nginx streams chunk transfers, so a
   chunk request lasts as long as the client's own transfer, and the forced exit can cut chunk uploads and downloads in
@@ -184,8 +202,9 @@ Other behaviour worth knowing:
 - **Secrets rotation:** changing `JWT_ACCESS_SECRET` invalidates all access tokens (15-minute lifetime, clients refresh).
   Changing `PRELOGIN_SECRET` changes the fake salts of unknown emails (an observable difference to an attacker who recorded
   them earlier). Changing `TOTP_ENC_KEY` breaks enrolled TOTP secrets; there is no re-encryption tool and no admin
-  reset of 2FA. Users who still have a backup code can sign in and enrol again, the others are locked out
-  ([SECURITY.md](SECURITY.md) section 5).
+  reset of 2FA. Backup codes still work but each only once, and turning 2FA off asks for a code too: users with at least
+  two unused codes (one to sign in, one to turn 2FA off), or one while still signed in, can turn 2FA off and enrol
+  again; the others are locked out ([SECURITY.md](SECURITY.md) section 5).
 - **Seed data is for development.** Do not run `db:seed` in production and do not set `SEED_*` or `VITE_DEMO_CREDENTIALS`;
   the web image is built from a context that excludes every `.env` file, and the smoke test checks that the bundle contains no
   demo credentials.
@@ -382,7 +401,7 @@ image registry was unreachable).
 | Workflows | `docker run --rm -v <repo>:/repo -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667`; `zizmor --offline .github/` (1.32.0) | No findings from either; zizmor's pedantic mode flags only the tag-pinned `postgres` and `redis` service images. |
 | Teardown | `--profile tls down -v --remove-orphans`, `docker rmi` of the built images | No containers, networks, volumes or images of the run left. |
 
-Unit checks at this date: `apps/web/deploy-checks/nginx-headers.test.ts` has 14 tests (besides `deploy/nginx.conf` it
+Unit checks at this date: `apps/web/deploy-checks/nginx-headers.test.ts` has 15 tests (besides `deploy/nginx.conf` it
 reads the API's `env.ts`, `app.ts` and drop `routes.ts`, `docker-compose.prod.yml` and `deploy/Caddyfile`, so the limits,
 the chunk route and Caddy's address cannot drift apart), and `apps/api/src/config/env.production-example.test.ts` has 4.
 

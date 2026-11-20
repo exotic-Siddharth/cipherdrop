@@ -64,9 +64,11 @@ updates:
         patterns: ['*']
         update-types: ['minor', 'patch']
 
-  # Base images. Dependabot reads only FROM lines that name an image: the Dockerfiles take theirs from ARG defaults
-  # (`ARG NODE_IMAGE=node:22-alpine`, `FROM ${NODE_IMAGE}`), which it does not resolve, so this entry finds nothing to
-  # update until the FROM lines are literal (ideally tag plus digest).
+  # Base images of both Dockerfiles. Each FROM line names its image literally, as tag plus index digest
+  # (`FROM node:22-alpine@sha256:... AS base`): Dependabot reads only FROM lines that name an image, so an ARG default
+  # would hide it. With a digest pin it proposes the new digest whenever the tag moves (a rebuilt node:22-alpine with
+  # Alpine or npm fixes), and newer tags within the same line. The group makes that one pull request for both
+  # Dockerfiles, so the node digest moves in both at once.
   - package-ecosystem: docker
     directories:
       - /apps/api
@@ -76,3 +78,11 @@ updates:
       day: monday
     commit-message:
       prefix: build
+    ignore:
+      # The Node major follows engines and @types/node (see the npm entry): a deliberate upgrade, not a bump.
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
+    groups:
+      base-images:
+        patterns: ['*']
+

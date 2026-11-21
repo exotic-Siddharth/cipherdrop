@@ -72,7 +72,7 @@ Every error has the same shape:
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | body, query or path fails its schema; malformed JSON |
 | 401 | `UNAUTHORIZED` | missing or expired token; wrong authKey (always generic for login and recovery) |
-| 403 | `FORBIDDEN` | not the owner, not an admin, or an admin without two-step verification (`details.reason` `MFA_REQUIRED`); a wrong password or code on a re-authenticating route |
+| 403 | `FORBIDDEN` | not the owner, not an admin, or an admin without two-step verification (`details.reason` `MFA_REQUIRED`); a review grant without a recent sign-in or step-up (`details.reason` `STEP_UP_REQUIRED`); a wrong password or code on a re-authenticating route |
 | 403 | `FEATURE_DISABLED` | the operator switched anonymous uploads or registration off; `details.feature` is `anonymousUploads` or `registration` |
 | 404 | `NOT_FOUND` | unknown id; a drop still uploading is also reported as unknown to recipients |
 | 409 | `CONFLICT` | email already registered; `complete` with missing chunks (`details.missing`); promoting an account without two-step verification; an admin turning two-step verification off |

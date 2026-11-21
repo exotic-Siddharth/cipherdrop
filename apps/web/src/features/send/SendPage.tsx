@@ -222,13 +222,14 @@ export function Component() {
   // Same floor as account passwords: a database copy lets an attacker guess the drop password offline.
   const passwordProblem = usePassword ? validateNewPassword(password, passwordScore) : null;
   // The form checks every send runs, Try again included (C-R4-03). A locked vault is not one of them: runNew
-  // handles it, and a resume needs no owner wrap (C-38).
+  // handles it, and a resume needs no owner wrap (C-38). The anonymous-uploads switch blocks new drops only:
+  // an interrupted drop created before it still finishes, as the API accepts its chunks and complete.
   const formReady =
     files.length > 0 &&
     !overLimit &&
     passwordProblem === null &&
     authStatus !== 'booting' &&
-    !anonClosed;
+    (resumeMatch || !anonClosed);
   const canSubmit = formReady && !vaultLocked;
   const running = view.kind === 'running';
 
@@ -778,6 +779,7 @@ export function Component() {
         >
           This server accepts uploads from signed-in users only. Anyone can still open the links
           they receive.
+          {resume ? ' An upload started before can still finish.' : ''}
         </Alert>
       ) : null}
 

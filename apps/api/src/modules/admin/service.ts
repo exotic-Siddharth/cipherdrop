@@ -229,7 +229,10 @@ function toAdminUser(ctx: AppContext, u: UserWithCount): AdminUser {
     email: u.email,
     role: u.role,
     totpEnabled: u.totpEnabledAt !== null,
-    storageQuotaBytes: Number(effectiveQuotaBytes(u, ctx.env, now)),
+    // The stored quota, which the edit dialog changes, and the one that applies now (Me reports only the
+    // latter: it is the user's quota).
+    storageQuotaBytes: Number(u.storageQuotaBytes),
+    effectiveQuotaBytes: Number(effectiveQuotaBytes(u, ctx.env, now)),
     storageUsedBytes: Number(u.storageUsedBytes),
     quotaProbationEndsAt: probationEndsAt(u, now)?.toISOString() ?? null,
     dropCount: u._count.drops,

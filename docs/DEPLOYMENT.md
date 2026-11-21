@@ -716,7 +716,8 @@ able to choose its address, or break `up`, a build or a sidecar.
   one that applies now; `Me` and `AdminUser` gain `quotaProbationEndsAt`. A `PATCH /admin/users/:id` with
   `storageQuotaBytes` ends an account's probation.
 
-- **Moderation (2026-11-22):** migrations `20261122100000_moderation` and `20261122100100_audit_append_only` run on
+- **Moderation (2026-11-22):** migrations `20261122100000_moderation`, `20261122100100_audit_append_only` and
+  `20261122100200_audit_fk_restrict` (the audit foreign keys no longer cascade an update of a user id) run on
   the next start; `migrate` then takes UPDATE and DELETE on `AuditEvent` away from `cipherdrop_app`, whose
   retention runs through `prune_audit_events()`. The first adds `AuditEvent.actorId`,
   `User.suspendedAt` and `suspendedReason` and new audit actions; no action is needed. Admin-action audit events are

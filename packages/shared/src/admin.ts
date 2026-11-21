@@ -157,7 +157,7 @@ export const AdminAuditEventSchema = z.object({
   id: IdSchema,
   action: AuditActionSchema,
   createdAt: IsoDateTimeSchema,
-  /** The acting admin; null for a user's own actions, jobs, the operator CLI and admins who deleted their account. */
+  /** The acting admin (kept after they delete their account); null for jobs and the operator CLI. */
   actor: z.object({ id: IdSchema, email: z.string() }).nullable(),
   /** Recorded by the operator CLI (npm run cli), not through the API. */
   byOperator: z.boolean(),

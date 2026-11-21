@@ -248,11 +248,14 @@ model AuditEvent {
   id        String      @id @default(cuid())
   // Whose log the event is in (the subject); cascades with the account.
   userId    String?
-  user      User?       @relation("AuditSubject", fields: [userId], references: [id], onDelete: Cascade)
+  // ON UPDATE RESTRICT on both relations: ids never change, and a cascade (run as the table owner) would let the
+  // runtime role rewrite the attribution of append-only rows through "User".id.
+  user      User?       @relation("AuditSubject", fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   // Who did it, for admin actions (server-4); null for the subject's own actions, jobs and the operator CLI.
   // Admin-action events have no userId (the target is metadata.targetUserId), so no account deletion erases them.
   actorId   String?
-  actor     User?       @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  // SET NULL on delete; metadata.actorId and actorEmail keep a copy, so who acted survives (server-4).
+  actor     User?       @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   dropId    String?
   action    AuditAction
   ipPrefix  String?

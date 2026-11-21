@@ -58,6 +58,15 @@ async function recordAdminAction(
     metadata?: Prisma.InputJsonObject;
   },
 ): Promise<void> {
+  // A copy of who acted: actorId is SET NULL when the admin deletes their account, and that must not erase who
+  // did it (server-4).
+  const acting =
+    actor === 'operator'
+      ? null
+      : await ctx.prisma.user.findUnique({
+          where: { id: actor.id },
+          select: { id: true, email: true },
+        });
   // Not recordAfterCommit: a moderation action whose record fails must fail loudly (500), not go unrecorded.
   await ctx.audit.record({
     actorId: actorIdOf(actor),
@@ -67,6 +76,7 @@ async function recordAdminAction(
     metadata: {
       ...(input.targetUserId ? { targetUserId: input.targetUserId } : {}),
       ...(actor === 'operator' ? { operator: true } : {}),
+      ...(acting ? { actorId: acting.id, actorEmail: acting.email } : {}),
       ...input.metadata,
     },
   });
@@ -552,7 +562,12 @@ export async function listAudit(
       id: r.id,
       action: r.action,
       createdAt: r.createdAt.toISOString(),
-      actor: r.actor ? { id: r.actor.id, email: r.actor.email } : null,
+      // The metadata copy keeps the actor of an admin who deleted their account.
+      actor: r.actor
+        ? { id: r.actor.id, email: r.actor.email }
+        : typeof m?.actorId === 'string' && typeof m.actorEmail === 'string'
+          ? { id: m.actorId, email: m.actorEmail }
+          : null,
       byOperator: m?.operator === true,
       // A deleted account keeps its id here and loses its email.
       subject: subjectId ? { id: subjectId, email: emailOf.get(subjectId) ?? null } : null,

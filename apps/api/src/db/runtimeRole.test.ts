@@ -156,6 +156,21 @@ describe('provisionRuntimeRole', () => {
       .sort();
     expect(left).toEqual([ids.oldAdmin, ids.fresh].sort());
 
+    // Nor through "User".id: the foreign keys refuse an update (23503 foreign_key_violation) instead of cascading it, which would
+    // otherwise rewrite who a row is about or who acted, as the table owner.
+    const actor = await createUserRecord(owner);
+    const acted = await app.auditEvent.create({
+      data: { actorId: actor.id, action: 'ADMIN_USER_SUSPENDED' },
+    });
+    const users = `"${schema}"."User"`;
+    expect(
+      await sqlState(app, `UPDATE ${users} SET "id" = 'swapped1' WHERE "id" = '${user.id}'`),
+    ).toBe('23503');
+    expect(
+      await sqlState(app, `UPDATE ${users} SET "id" = 'swapped2' WHERE "id" = '${actor.id}'`),
+    ).toBe('23503');
+    await owner.auditEvent.delete({ where: { id: acted.id } });
+
     // Account deletion still cascades to the user's own events (the cascade runs as the owner).
     await app.user.delete({ where: { id: user.id } });
     expect(await owner.auditEvent.count({ where: { id: ids.fresh } })).toBe(0);

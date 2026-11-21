@@ -27,6 +27,21 @@ describe('describeError', () => {
     expect(describeError(new Error('boom'), 'Fallback.')).toBe('Fallback.');
   });
 
+  it('explains a suspended account (server-6) and keeps other 403 messages', () => {
+    const suspended = new ApiError({
+      status: 403,
+      code: 'FORBIDDEN',
+      message: 'x',
+      details: { reason: 'ACCOUNT_SUSPENDED' },
+    });
+    expect(describeError(suspended)).toBe(
+      'This account is suspended, so you cannot sign in. Contact the operator of this server if you think this is a mistake.',
+    );
+    expect(
+      describeError(new ApiError({ status: 403, code: 'FORBIDDEN', message: 'Not yours' })),
+    ).toBe('Not yours');
+  });
+
   it('explains the hosting-abuse controls (server-1, ops-3)', () => {
     const budget = new ApiError({
       status: 429,

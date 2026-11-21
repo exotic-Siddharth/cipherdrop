@@ -35,6 +35,15 @@ export function isMfaRequired(err: unknown): boolean {
   );
 }
 
+/** A correct login proof for a suspended account (403, ACCOUNT_SUSPENDED; server-6). */
+export function isAccountSuspended(err: unknown): boolean {
+  return (
+    isApiError(err) &&
+    err.status === 403 &&
+    (err.details as { reason?: unknown } | null | undefined)?.reason === 'ACCOUNT_SUSPENDED'
+  );
+}
+
 export function isAbortError(err: unknown): boolean {
   return (
     (err instanceof DOMException || err instanceof Error) &&
@@ -91,6 +100,10 @@ export function describeError(
           ? FEATURE_DISABLED_MESSAGES[details.data.feature]
           : err.message || fallback;
       }
+      case 'FORBIDDEN':
+        return isAccountSuspended(err)
+          ? 'This account is suspended, so you cannot sign in. Contact the operator of this server if you think this is a mistake.'
+          : err.message || fallback;
       case 'INTERNAL':
         return 'Something went wrong on our side. Please try again.';
       case 'INVALID_RESPONSE':

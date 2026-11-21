@@ -590,7 +590,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
       method: 'post',
       path: '/mfa/totp/enable',
       summary:
-        'Verify the authKey and a code of the new authenticator, enable TOTP, issue 10 backup codes',
+        'Verify the authKey and a code of the new authenticator, enable TOTP, issue 10 backup codes; other sessions revoked',
       tags,
       auth: 'user',
       request: { body: TotpEnableRequestSchema },
@@ -633,8 +633,17 @@ export function authRoutes(ctx: AppContext): AppRouter {
         },
       });
       if (enabled.count !== 1) throw conflict('Two-factor setup changed, start again');
+      // Every other session was opened with the password alone, possibly by someone who learnt it: end them, as a
+      // password change does, so that from now on every session of the account has passed the second factor
+      // (requireRole('ADMIN') relies on that, review of server-3). The current one has just re-authenticated.
+      const revoked = await revokeUserSessions(ctx, user.id, { exceptSid: authUser(req).sid });
       const backupCodes = await issueBackupCodes(ctx, user.id);
-      await ctx.audit.record({ userId: user.id, action: 'MFA_ENABLED', req });
+      await ctx.audit.record({
+        userId: user.id,
+        action: 'MFA_ENABLED',
+        req,
+        metadata: { revokedSessions: revoked.length },
+      });
       res.json({ backupCodes });
     },
   );

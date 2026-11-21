@@ -45,7 +45,9 @@ export function TwoFactorCard() {
         onEnabled={(backupCodes) => {
           setSetup(null);
           setCodes(backupCodes);
-          toast.success('Two-step verification is on');
+          toast.success('Two-step verification is on', {
+            description: 'Your other devices were signed out.',
+          });
         }}
         onCancel={() => setSetup(null)}
       />

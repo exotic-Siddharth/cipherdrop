@@ -87,6 +87,8 @@ describe('SettingsPage security tab', () => {
       await screen.findByRole('img', { name: /QR code for your authenticator app/i }),
     ).toBeVisible();
     expect(screen.getByDisplayValue('JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP')).toBeVisible();
+    // Says up front that turning it on ends the other sessions (the server revokes them).
+    expect(screen.getByText(/Your other devices are then signed out/)).toBeVisible();
 
     await user.type(screen.getByLabelText('Your password'), PASSWORD);
     await user.type(screen.getByLabelText('6-digit code'), '123456');

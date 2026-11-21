@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
 import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
+import { bearer, enableTotpViaApi, newSession, registerViaApi } from '../auth/testkit';
 import {
   chunkBlobFiles,
   createBody,
@@ -565,5 +566,45 @@ describe('admin API', () => {
         'ADMIN',
       );
     });
+  });
+});
+
+/**
+ * The admin 2FA gate is per account, so it must not let through sessions opened before the second factor existed
+ * (review of server-3). Real clock here: TOTP codes are checked against ctx.now().
+ */
+describe('admin sessions opened before two-step verification was turned on', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('a password-only session from before enrolment cannot reach the admin routes afterwards', async () => {
+    const admin = await registerViaApi(t.app);
+    // An admin without TOTP (the seeded dev admin, or one promoted before admins needed it).
+    await t.prisma.user.update({ where: { id: admin.user.id }, data: { role: 'ADMIN' } });
+    const attacker = await newSession(t.app, admin); // the password alone, while no second factor existed
+    const owner = await newSession(t.app, admin);
+    await enableTotpViaApi(t.app, { accessToken: owner.accessToken, authKey: admin.authKey });
+
+    const reports = await request(t.app)
+      .get('/api/admin/reports?status=OPEN')
+      .set('Authorization', bearer(attacker.accessToken));
+    expect(reports.status).toBe(401);
+    expect(
+      (await request(t.app).post('/api/auth/refresh').set('Cookie', attacker.cookie)).status,
+    ).toBe(401);
+    // The owner, who passed the second factor on this session, opens the console.
+    expect(
+      (
+        await request(t.app)
+          .get('/api/admin/reports?status=OPEN')
+          .set('Authorization', bearer(owner.accessToken))
+      ).status,
+    ).toBe(200);
   });
 });

@@ -313,6 +313,8 @@ export function useAccountActions(): AccountActions {
           { schema: BackupCodesResponseSchema, skipRefresh: true },
         );
         await refreshMe();
+        // The server signed out every other session.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() });
         void queryClient.invalidateQueries({ queryKey: queryKeys.audit() });
         return res;
       },

@@ -16,6 +16,7 @@
  * Every state change is a conditional update, so overlapping runs (or a run racing an owner delete or an
  * admin disable) never double-count: purgeDropBlobs releases quota exactly once.
  */
+import { ADMIN_AUDIT_ACTIONS } from '@cipherdrop/shared';
 import type { DropStatus, Prisma } from '@prisma/client';
 import type { AppContext } from '../context';
 import { createContext } from '../context';
@@ -59,6 +60,8 @@ const GRANT_RETENTION_MS = 24 * HOUR_MS;
 const SESSION_RETENTION_MS = 7 * 24 * HOUR_MS;
 /** Audit events and closed reports are kept this long (the Activity tab shows recent history only). */
 const RECORD_RETENTION_MS = 90 * 24 * HOUR_MS;
+/** Admin and operator actions are kept a year (server-4): the trail that answers "who watches the admins". */
+const ADMIN_RECORD_RETENTION_MS = 365 * 24 * HOUR_MS;
 const LOCK_NAME = 'cleanup';
 
 interface Candidate {
@@ -182,7 +185,16 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     where: { OR: [{ expiresAt: { lte: sessionCutoff } }, { revokedAt: { lte: sessionCutoff } }] },
   });
   const recordCutoff = new Date(now.getTime() - RECORD_RETENTION_MS);
-  await c.prisma.auditEvent.deleteMany({ where: { createdAt: { lte: recordCutoff } } });
+  const adminActions = [...ADMIN_AUDIT_ACTIONS];
+  await c.prisma.auditEvent.deleteMany({
+    where: { createdAt: { lte: recordCutoff }, action: { notIn: adminActions } },
+  });
+  await c.prisma.auditEvent.deleteMany({
+    where: {
+      createdAt: { lte: new Date(now.getTime() - ADMIN_RECORD_RETENTION_MS) },
+      action: { in: adminActions },
+    },
+  });
   await c.prisma.report.deleteMany({
     where: { status: { not: 'OPEN' }, resolvedAt: { lte: recordCutoff } },
   });

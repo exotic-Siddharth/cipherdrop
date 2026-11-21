@@ -43,6 +43,7 @@ import { Prisma, type User } from '@prisma/client';
 import type { Request, Response } from 'express';
 import type { AppContext } from '../../context';
 import {
+  accountSuspended,
   conflict,
   featureDisabled,
   forbidden,
@@ -138,6 +139,8 @@ export function authRoutes(ctx: AppContext): AppRouter {
 
   /** Issue a session + cookie for `user`; returns the AuthSuccess body. */
   async function signIn(user: User, req: Request, res: Response) {
+    // Every way in (login, MFA step, recovery) ends here, so a suspended account never gets a session.
+    if (user.suspendedAt) throw accountSuspended();
     const issued = await createSession(ctx, user, req);
     setRefreshCookie(ctx, res, issued.refreshToken, issued.refreshExpiresAt);
     return { user: toMe(user, ctx), accessToken: issued.accessToken };
@@ -295,6 +298,16 @@ export function authRoutes(ctx: AppContext): AppRouter {
       if (!ok) {
         await registerLoginFailure(user, req, true);
         throw unauthorized(GENERIC_LOGIN_ERROR);
+      }
+      // Only after a correct proof (server-6): without the password nobody learns the account is suspended.
+      if (user.suspendedAt) {
+        await ctx.audit.record({
+          userId: user.id,
+          action: 'LOGIN_FAILURE',
+          req,
+          metadata: { suspended: true },
+        });
+        throw accountSuspended();
       }
       if (user.totpEnabledAt) {
         res.json({

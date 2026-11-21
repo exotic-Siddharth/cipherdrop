@@ -68,6 +68,8 @@ describe('admin API', () => {
       ['post', (i) => `/api/admin/drops/${i.drop}/grant`],
       ['get', () => '/api/admin/users'],
       ['patch', (i) => `/api/admin/users/${i.user}`, { storageQuotaBytes: 1 }],
+      ['post', (i) => `/api/admin/drops/${i.drop}/disable`, { reason: 'x' }],
+      ['get', () => '/api/admin/audit'],
     ];
 
     it('answers 401 without a token and 403 for regular users on every admin route', async () => {
@@ -418,9 +420,11 @@ describe('admin API', () => {
         where: { dropId: drop.dropId },
       });
       expect(grant.isAdmin).toBe(true);
+      // An admin action: the admin is the actor, and it is in nobody's own (cascade-deleted) log.
       const ev = await t.prisma.auditEvent.findFirstOrThrow({
-        where: { userId: admin.id, dropId: drop.dropId },
+        where: { actorId: admin.id, dropId: drop.dropId },
       });
+      expect(ev.userId).toBeNull();
       expect(ev.action).toBe('ADMIN_REVIEW_GRANT');
       expect(ev.metadata).toMatchObject({ adminReview: true });
       expect(ev.ipPrefix).toBe('198.51.100.0/24');
@@ -504,6 +508,8 @@ describe('admin API', () => {
         quotaProbationEndsAt: null,
         dropCount: 1,
         lockedUntil: null,
+        suspendedAt: null,
+        suspendedReason: null,
         createdAt: alice.createdAt.toISOString(),
       });
       expect(JSON.stringify(res.body)).not.toMatch(
@@ -574,7 +580,13 @@ describe('admin API', () => {
       // The read sees 2FA on (it was turned off right after): only the conditional update stands in the way.
       const prisma = {
         user: {
-          findUnique: async () => ({ id: user.id, totpEnabledAt: T0 }),
+          findUnique: async () => ({
+            id: user.id,
+            role: 'USER',
+            totpEnabledAt: T0,
+            storageQuotaBytes: 0n,
+            suspendedAt: null,
+          }),
           updateMany: (args: Prisma.UserUpdateManyArgs) => t.prisma.user.updateMany(args),
           findUniqueOrThrow: (args: Prisma.UserFindUniqueOrThrowArgs) =>
             t.prisma.user.findUniqueOrThrow(args),

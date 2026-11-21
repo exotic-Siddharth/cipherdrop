@@ -98,6 +98,8 @@ function users(): AdminUser[] {
     totpEnabled: false,
     dropCount: 3,
     lockedUntil: null,
+    suspendedAt: null,
+    suspendedReason: null,
     createdAt: iso(-10 * 86_400_000),
     storageQuotaBytes: 5 * GIB,
     effectiveQuotaBytes: 5 * GIB,

@@ -3,6 +3,7 @@
  */
 import { z } from 'zod';
 import {
+  AuditActionSchema,
   DropIdSchema,
   DropStatusSchema,
   IdSchema,
@@ -100,6 +101,9 @@ export const AdminUserSchema = z.object({
   quotaProbationEndsAt: IsoDateTimeSchema.nullable(),
   dropCount: z.number().int().nonnegative(),
   lockedUntil: IsoDateTimeSchema.nullable(),
+  /** Set while the account is suspended (server-6): it cannot sign in or refresh. */
+  suspendedAt: IsoDateTimeSchema.nullable(),
+  suspendedReason: z.string().nullable(),
   createdAt: IsoDateTimeSchema,
 });
 export type AdminUser = z.infer<typeof AdminUserSchema>;
@@ -107,14 +111,63 @@ export const AdminUserPageSchema = pageSchema(AdminUserSchema);
 export type AdminUserPage = z.infer<typeof AdminUserPageSchema>;
 
 export const UserIdParamsSchema = z.object({ id: IdSchema });
+/** Moderation reasons (suspension, takedown): shown to admins in the Audit tab, never to the public. */
+export const ModerationReasonSchema = z.string().trim().min(1).max(500);
+
 export const AdminUserPatchRequestSchema = z
   .object({
     role: RoleSchema.optional(),
     storageQuotaBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    /** true suspends (and signs out every session), false lifts the suspension (server-6). */
+    suspended: z.boolean().optional(),
+    /** Required with suspended: true. */
+    suspendedReason: ModerationReasonSchema.optional(),
   })
-  .refine((v) => v.role !== undefined || v.storageQuotaBytes !== undefined, {
-    message: 'Provide role and/or storageQuotaBytes',
+  .refine(
+    (v) => v.role !== undefined || v.storageQuotaBytes !== undefined || v.suspended !== undefined,
+    { message: 'Provide role, storageQuotaBytes and/or suspended' },
+  )
+  .refine((v) => v.suspended !== true || v.suspendedReason !== undefined, {
+    message: 'A suspension needs a reason',
+    path: ['suspendedReason'],
   });
 export type AdminUserPatchRequest = z.infer<typeof AdminUserPatchRequestSchema>;
 export const AdminUserResponseSchema = z.object({ user: AdminUserSchema });
 export type AdminUserResponse = z.infer<typeof AdminUserResponseSchema>;
+
+/* POST /admin/drops/:id/disable -> 204: a takedown without a report (server-6), audited as ADMIN_DROP_DISABLED */
+export const AdminDropDisableRequestSchema = z.object({ reason: ModerationReasonSchema });
+export type AdminDropDisableRequest = z.infer<typeof AdminDropDisableRequestSchema>;
+
+/* GET /admin/audit?scope&action&actorId&userId&dropId&page&pageSize -> Page<AdminAuditEvent> (server-4) */
+export const AdminAuditQuerySchema = PageQuerySchema.extend({
+  /** admin (default): admin and operator actions only; all: every audit event of the instance. */
+  scope: z.enum(['admin', 'all']).default('admin'),
+  action: AuditActionSchema.optional(),
+  /** The acting admin. */
+  actorId: IdSchema.optional(),
+  /** The account the event is about: its own events and the admin actions that targeted it. */
+  userId: IdSchema.optional(),
+  dropId: DropIdSchema.optional(),
+});
+export type AdminAuditQuery = z.infer<typeof AdminAuditQuerySchema>;
+
+export const AdminAuditEventSchema = z.object({
+  id: IdSchema,
+  action: AuditActionSchema,
+  createdAt: IsoDateTimeSchema,
+  /** The acting admin; null for a user's own actions, jobs, the operator CLI and admins who deleted their account. */
+  actor: z.object({ id: IdSchema, email: z.string() }).nullable(),
+  /** Recorded by the operator CLI (npm run cli), not through the API. */
+  byOperator: z.boolean(),
+  /** The account the event is about (the subject's own log, or the target of an admin action). */
+  subject: z.object({ id: IdSchema, email: z.string().nullable() }).nullable(),
+  dropId: z.string().nullable(),
+  ipPrefix: z.string().nullable(),
+  userAgent: z.string().nullable(),
+  /** Never holds plaintext names, keys or tokens (audit service rule). */
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+});
+export type AdminAuditEvent = z.infer<typeof AdminAuditEventSchema>;
+export const AdminAuditPageSchema = pageSchema(AdminAuditEventSchema);
+export type AdminAuditPage = z.infer<typeof AdminAuditPageSchema>;

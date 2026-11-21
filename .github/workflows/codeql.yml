@@ -28,11 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
-      # Upload the results (SARIF) to code scanning.
-      security-events: write
-      # Read this workflow run's metadata: needed only on private repositories.
-      actions: read
+      contents: read # check out the code
+      security-events: write # upload the results (SARIF) to code scanning
+      actions: read # read this run's metadata: needed only on private repositories
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

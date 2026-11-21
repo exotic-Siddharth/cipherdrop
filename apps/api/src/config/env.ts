@@ -86,6 +86,12 @@ const EnvSchema = z
     S3_ACCESS_KEY_ID: z.string().min(1).optional(),
     S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     S3_FORCE_PATH_STYLE: bool(true),
+    /**
+     * For a bucket with versioning: delete every version and delete marker by its VersionId (ListObjectVersions +
+     * DeleteObjects), so a delete is final. Off, the S3 driver refuses to start on a versioned bucket, where a
+     * plain delete only adds a delete marker (storage/s3.ts). It never accepts a bucket with Object Lock.
+     */
+    S3_DELETE_ALL_VERSIONS: bool(false),
 
     ANON_MAX_DROP_BYTES: int(104_857_600, 1),
     USER_MAX_DROP_BYTES: int(2_147_483_648, 1),

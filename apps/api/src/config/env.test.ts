@@ -86,6 +86,14 @@ describe('parseEnv outside production', () => {
     TOTP_ENC_KEY: Buffer.alloc(32, 7).toString('base64'),
   };
 
+  it('S3_DELETE_ALL_VERSIONS is off unless set, and only takes a boolean (critic-4)', () => {
+    expect(parseEnv({ ...dev, NODE_ENV: 'development' }).S3_DELETE_ALL_VERSIONS).toBe(false);
+    expect(parseEnv({ ...dev, S3_DELETE_ALL_VERSIONS: 'true' }).S3_DELETE_ALL_VERSIONS).toBe(true);
+    expect(() => parseEnv({ ...dev, S3_DELETE_ALL_VERSIONS: 'versions' })).toThrow(
+      /S3_DELETE_ALL_VERSIONS/,
+    );
+  });
+
   it('keeps the local defaults in development and test', () => {
     for (const NODE_ENV of ['development', 'test']) {
       const env = parseEnv({ ...dev, NODE_ENV });

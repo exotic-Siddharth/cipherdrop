@@ -17,6 +17,7 @@ const env: StorageEnv = {
   S3_ACCESS_KEY_ID: process.env.S3_TEST_ACCESS_KEY_ID ?? 'cipherdrop',
   S3_SECRET_ACCESS_KEY: process.env.S3_TEST_SECRET_ACCESS_KEY ?? 'cipherdrop-dev-secret',
   S3_FORCE_PATH_STYLE: true,
+  S3_DELETE_ALL_VERSIONS: false,
 };
 
 describe.skipIf(process.env.S3_TEST !== '1')('s3 driver socket pool', () => {

@@ -159,6 +159,24 @@ export async function expectNoHorizontalScroll(page: Page): Promise<void> {
   expect(overflow, 'page has horizontal overflow').toBeLessThanOrEqual(1);
 }
 
+/**
+ * Follow a main navigation link at any viewport: below the md breakpoint (the phone projects of npm run e2e:cross)
+ * the links sit behind the "Open menu" button.
+ */
+export async function navTo(
+  page: Page,
+  label: 'Send' | 'How it works' | 'Dashboard',
+): Promise<void> {
+  const toggle = page.getByRole('button', { name: 'Open menu' });
+  if (await toggle.isVisible()) await toggle.click();
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: label, exact: true })
+    .locator('visible=true')
+    .first()
+    .click();
+}
+
 /** Open the account menu in the navbar and pick an item (desktop viewport). */
 export async function accountMenu(
   page: Page,

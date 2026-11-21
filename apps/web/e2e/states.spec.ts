@@ -10,12 +10,12 @@ import path from 'node:path';
 
 const DOWNLOAD_DIR = path.join(import.meta.dirname, '..', 'test-results', 'downloads');
 
-test('unknown drop id shows "doesn\'t exist"', async ({ page }) => {
+test('unknown drop id shows "doesn\'t exist" @cross', async ({ page }) => {
   await openLink(page, '/d/AAAAAAAAAAAAAAAAAAAAAA#' + 'A'.repeat(43));
   await expect(page.getByText("This drop doesn't exist")).toBeVisible({ timeout: 20_000 });
 });
 
-test('expired drop shows the expired state (no key needed to know)', async ({
+test('expired drop shows the expired state (no key needed to know) @cross', async ({
   page,
   newContext,
   leaks,
@@ -31,7 +31,11 @@ test('expired drop shows the expired state (no key needed to know)', async ({
   await expect(visitor.getByRole('button', { name: 'Decrypt & download' })).toHaveCount(0);
 });
 
-test('"Delete now" on the success card kills the link', async ({ page, newContext, leaks }) => {
+test('"Delete now" on the success card kills the link @cross', async ({
+  page,
+  newContext,
+  leaks,
+}) => {
   const file = textFile('oops-wrong-file.txt', 'STATES-MARKER-2');
   await page.goto('/');
   const link = await sendDrop(page, [file], { maxDownloads: 5 });
@@ -50,7 +54,7 @@ test('"Delete now" on the success card kills the link', async ({ page, newContex
   }).toPass({ timeout: 20_000 });
 });
 
-test('missing, truncated and wrong keys; mangled links still open', async ({
+test('missing, truncated and wrong keys; mangled links still open @cross', async ({
   page,
   newContext,
   leaks,

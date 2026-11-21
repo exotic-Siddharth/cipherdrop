@@ -29,10 +29,14 @@ const DOWNLOAD_DIR = path.join(
   'downloads',
 );
 
-/** Console messages a browser prints when the CSP blocks something, and uncaught page errors. */
+/**
+ * Console messages a browser prints when the CSP blocks something or the report-only Trusted Types policy
+ * reports a violation (Chromium's message for that names no policy), and uncaught page errors.
+ */
 function watchCsp(page: Page, sink: string[]): void {
   page.on('console', (msg) => {
-    if (/content security policy/i.test(msg.text())) sink.push(msg.text());
+    const text = msg.text();
+    if (/content security policy|requires 'Trusted\w+' assignment/i.test(text)) sink.push(text);
   });
   page.on('pageerror', (err) => sink.push(`pageerror: ${err.message}`));
 }

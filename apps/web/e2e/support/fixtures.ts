@@ -11,7 +11,8 @@
  *   e2e half of "no plaintext metadata reaches the server" (the reviewers check request payloads in the
  *   traces). The server half, what the API writes to its logs, is apps/api/src/modules/{auth,drops}/
  *   logs.test.ts.
- * - Uncaught page errors and CSP violations (the preview build runs with the production CSP) fail the test.
+ * - Uncaught page errors and CSP violations (the preview build runs with the production CSP) fail the test,
+ *   Trusted Types violations of the report-only policy included (crypto-7).
  */
 import {
   test as base,
@@ -99,6 +100,18 @@ const firstLine = (err: unknown) =>
 /** How long settle() waits for the full headers before it falls back to the provisional ones. */
 const SETTLE_TIMEOUT_MS = 10_000;
 
+/**
+ * A console message the browser prints for a CSP violation: a blocked load or evaluation, or a Trusted Types
+ * violation of the report-only policy (Chromium: "This document requires 'TrustedHTML' assignment...", which
+ * names no policy), so the e2e suite is the reporter for report-only Trusted Types (crypto-7).
+ */
+export function isCspViolation(text: string): boolean {
+  return (
+    /Content Security Policy|Refused to (load|execute|connect|apply|create|evaluate)/i.test(text) ||
+    /requires 'Trusted(HTML|Script|ScriptURL)' assignment/i.test(text)
+  );
+}
+
 export class LeakGuard {
   readonly requests: CapturedRequest[] = [];
   readonly forbidden: Forbidden[] = [];
@@ -177,9 +190,7 @@ export class LeakGuard {
       page.on('pageerror', (err) => this.problems.push(`pageerror: ${err.message}`));
       page.on('console', (msg) => {
         const text = msg.text();
-        if (/Content Security Policy|Refused to (load|execute|connect|apply|create)/i.test(text)) {
-          this.problems.push(`CSP: ${text.slice(0, 240)}`);
-        }
+        if (isCspViolation(text)) this.problems.push(`CSP: ${text.slice(0, 240)}`);
       });
     };
     context.on('page', watchPage);

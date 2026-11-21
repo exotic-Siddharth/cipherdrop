@@ -1,7 +1,7 @@
 /** The leak guard is only worth something if it can fail: prove it catches each kind of leak. */
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
-import { LeakGuard, test as guarded, textVariants } from './support/fixtures';
+import { isCspViolation, LeakGuard, test as guarded, textVariants } from './support/fixtures';
 
 function guardWith(body: string | Buffer, url = 'http://localhost:5184/api/drops'): LeakGuard {
   const guard = new LeakGuard();
@@ -186,6 +186,21 @@ test.describe('leak guard', () => {
     ]);
   });
 
+  test('treats CSP and Trusted Types console messages as violations, and nothing else', () => {
+    for (const text of [
+      "Refused to load the script 'https://cdn.example.test/x.js' because it violates the following Content Security Policy directive: \"script-src 'self'\".",
+      "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script.",
+      "This document requires 'TrustedHTML' assignment and the 'default' policy failed to execute. The policy is report-only, so the violation has been logged but no further action has been taken.",
+      "This document requires 'TrustedScriptURL' assignment. The policy is report-only, so the violation has been logged but no further action has been taken.",
+      '[Report Only] Refused to create a TrustedTypePolicy named \'x\' because it violates the following Content Security Policy directive: "trusted-types default".',
+    ]) {
+      expect(isCspViolation(text), text).toBe(true);
+    }
+    for (const text of ['Download the React DevTools', 'worker says hi', 'Trusted contacts: 2']) {
+      expect(isCspViolation(text), text).toBe(false);
+    }
+  });
+
   test('stays quiet for unrelated bodies', () => {
     const guard = guardWith('{"encryptedManifest":"AAAA"}');
     guard.forbidText('file name', 'tax-return-2025.pdf');
@@ -290,6 +305,25 @@ test.describe('leak guard in the browser', () => {
       "file name found in GET /files/Bob's%20report%20(v2).pdf",
       'file name found in GET /SECURITY.md?name=Bob%27s%20report%20(v2).pdf',
     ]);
+  });
+
+  test('reports a Trusted Types violation: the preview sends the report-only policy (crypto-7)', async ({
+    browser,
+    baseURL,
+  }) => {
+    const guard = await browse(browser, baseURL, async (page) => {
+      await page.goto('/');
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      // A plain string into an HTML sink: the 'default' policy answers null, so the browser logs a violation.
+      const html = await page.evaluate(() => {
+        const div = document.createElement('div');
+        div.innerHTML = '<b>untrusted</b>';
+        return div.innerHTML;
+      });
+      // Report-only: the value is still used.
+      expect(html).toBe('<b>untrusted</b>');
+    });
+    expect(guard.problems).toEqual([expect.stringMatching(/^CSP: .*'TrustedHTML' assignment/)]);
   });
 
   test('reports a request to another origin', async ({ browser, baseURL }) => {

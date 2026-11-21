@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LIMITS } from '@cipherdrop/shared';
 import { describe, expect, it } from 'vitest';
+import { ipPrefix } from '../../api/src/lib/ip';
 import { PRODUCTION_ONLY_HEADERS, SECURITY_HEADERS } from '../securityHeaders';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -360,5 +361,147 @@ describe('deploy/nginx.conf slow-client defences (ops-1)', () => {
       expect(size, m).toBeDefined();
       expect(bytes(size as string), m).toBeLessThanOrEqual(64 * 1024 * 1024);
     }
+  });
+});
+
+/**
+ * nginx's text form of an IPv6 address (ngx_inet6_ntop in src/core/ngx_inet.c): the first longest run of two or more
+ * zero groups becomes "::", groups have no leading zeros, and ::ffff:a.b.c.d (or ::a.b.c.d) ends in dotted IPv4.
+ */
+function nginxIpv6Text(bytes: number[]): string {
+  const group = (i: number) => (bytes[i] as number) * 256 + (bytes[i + 1] as number);
+  let zero = -1;
+  let last = -1;
+  let max = 1;
+  let n = 0;
+  for (let i = 0; i < 16; i += 2) {
+    if (group(i) !== 0) {
+      if (max < n) [zero, max] = [last, n];
+      n = 0;
+      continue;
+    }
+    if (n++ === 0) last = i;
+  }
+  if (max < n) [zero, max] = [last, n];
+  let out = '';
+  let end = 16;
+  if (zero === 0) {
+    const mapped = max === 5 && bytes[10] === 0xff && bytes[11] === 0xff;
+    if (mapped || max === 6 || (max === 7 && bytes[14] !== 0 && bytes[15] !== 1)) end = 12;
+    out += ':';
+  }
+  for (let i = 0; i < end; i += 2) {
+    if (i === zero) {
+      out += ':';
+      i += (max - 1) * 2;
+      continue;
+    }
+    out += group(i).toString(16);
+    if (i < 14) out += ':';
+  }
+  return end === 12 ? `${out}${bytes.slice(12).join('.')}` : out;
+}
+
+describe('deploy/nginx.conf access log (ops-6)', () => {
+  const format = /^log_format privacy '([^']*)';/m.exec(httpLevel)?.[1] ?? '';
+
+  it('writes every request this server answers in the privacy format, replacing the image `main` format', () => {
+    // At server level, so the http-level `access_log ... main` of the image's nginx.conf is not inherited; none at
+    // http level here (two access_log lines on one level would both log).
+    expect(directive(serverOwn, 'access_log')).toEqual(['/var/log/nginx/access.log privacy']);
+    expect(directive(httpLevel, 'access_log')).toEqual([]);
+    // Every other access_log turns logging off for its location; none names another format.
+    const all = [...code.matchAll(/(?:^|[;{}])\s*access_log\s+([^;]*);/g)].map((m) => m[1]);
+    expect(all.filter((args) => args !== 'off')).toEqual(['/var/log/nginx/access.log privacy']);
+  });
+
+  it('logs only the IP prefix, the method, the path without its query string and the outcome', () => {
+    expect(format).not.toBe('');
+    const variables = [...format.matchAll(/\$(\w+)/g)].map((m) => m[1]);
+    expect(variables.sort()).toEqual(
+      [
+        'time_iso8601',
+        'client_prefix',
+        'request_method',
+        'uri',
+        'status',
+        'body_bytes_sent',
+        'request_time',
+      ].sort(),
+    );
+    // In particular none of these (full address, request line with query, user agent, referer, proxy chain).
+    for (const forbidden of [
+      'remote_addr',
+      'binary_remote_addr',
+      'realip_remote_addr',
+      'request',
+      'request_uri',
+      'args',
+      'query_string',
+      'http_user_agent',
+      'http_referer',
+      'http_x_forwarded_for',
+      'proxy_add_x_forwarded_for',
+    ]) {
+      expect(variables, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('writes the client prefix exactly as the API ipPrefix() does, for every form nginx prints an address in', () => {
+    const map = block(code, 'map $remote_addr $client_prefix');
+    const rules = [...map.matchAll(/"~(\*?)([^"]+)"\s+(\S+);/g)].map(
+      ([, ci, re, value]) => [new RegExp(re as string, ci ? 'i' : ''), value as string] as const,
+    );
+    const fallback = /default\s+(\S+);/.exec(map)?.[1];
+    expect(rules.length).toBeGreaterThan(0);
+    // nginx map semantics: the first regex that matches, its value with the named captures substituted.
+    const prefixOf = (addr: string): string | undefined => {
+      for (const [re, value] of rules) {
+        const m = re.exec(addr);
+        if (m) return value.replace(/\$(\w+)/g, (_, name: string) => m.groups?.[name] ?? '');
+      }
+      return fallback;
+    };
+
+    // Deterministic pseudo-random addresses (mulberry32), each group zero half of the time, so runs of zero groups
+    // of every length and position appear, plus the special forms.
+    let seed = 0x5eed;
+    const next = (bound: number) => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) % bound;
+    };
+    const v6: number[][] = [
+      Array(16).fill(0),
+      [...Array(15).fill(0), 1],
+      [...Array(10).fill(0), 0xff, 0xff, 198, 51, 100, 7],
+      [...Array(12).fill(0), 1, 2, 3, 4],
+      [0x20, 0x01, 0x0d, 0xb8, ...Array(11).fill(0), 1],
+    ];
+    for (let i = 0; i < 4000; i++) {
+      v6.push(
+        Array.from({ length: 8 }).flatMap(() => {
+          const g = next(2) === 0 ? 0 : next(2) === 0 ? next(16) : next(65536);
+          return [g >> 8, g & 0xff];
+        }),
+      );
+    }
+    const addrs = [
+      ...v6.map(nginxIpv6Text),
+      '198.51.100.7',
+      '10.0.0.1',
+      '0.0.0.0',
+      ...Array.from({ length: 200 }, () => [next(256), next(256), next(256), next(256)].join('.')),
+    ];
+    // The forms the special cases are about, as nginx prints them.
+    expect(addrs).toEqual(
+      expect.arrayContaining(['::', '::1', '::ffff:198.51.100.7', '::1.2.3.4', '2001:db8::1']),
+    );
+    for (const addr of addrs) {
+      // The API sees the same text: nginx forwards $remote_addr in X-Forwarded-For.
+      expect(prefixOf(addr), addr).toBe(ipPrefix(addr));
+    }
+    expect(prefixOf('unix:')).toBe('-');
   });
 });

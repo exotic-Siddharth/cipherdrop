@@ -21,6 +21,7 @@ import {
   CardHeader,
   ConfirmDialog,
   CopyButton,
+  CopyField,
   EmptyState,
   ProgressBar,
 } from '../../../components/ui';
@@ -131,6 +132,9 @@ export function ReadyView({
   const [reopen, setReopen] = useState<{ remaining: number } | null>(null);
   const [windowExpired, setWindowExpired] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  // "Copy link" failed (no clipboard permission, some WebViews): show the link itself, selectable, since the
+  // address bar no longer holds it (crypto-4). Shown only then, so the key is not on screen by default.
+  const [copyFailed, setCopyFailed] = useState(false);
   useEffect(() => {
     if (remaining === 0) onNoDownloadsLeft?.();
   }, [remaining, onNoDownloadsLeft]);
@@ -481,20 +485,36 @@ export function ReadyView({
       </Card>
 
       {review ? null : (
-        <div className="flex flex-wrap justify-center gap-2">
-          {shareLink && remaining !== 0 ? (
-            <CopyButton
+        <>
+          {shareLink && remaining !== 0 && copyFailed ? (
+            <CopyField
+              label="Link to this drop"
               value={shareLink}
-              label="Copy link"
-              copiedLabel="Link copied"
-              variant="ghost"
-              size="sm"
+              copyLabel="Copy link"
+              autoFocus
+              hint={
+                authKey
+                  ? 'Copying did not work in this browser. Select the link and copy it yourself. Send the password separately.'
+                  : 'Copying did not work in this browser. Select the link and copy it yourself. It contains the key: send it only to people who should get the files.'
+              }
             />
           ) : null}
-          <Button variant="ghost" size="sm" icon={Flag} onClick={() => setReportOpen(true)}>
-            Report abuse
-          </Button>
-        </div>
+          <div className="flex flex-wrap justify-center gap-2">
+            {shareLink && remaining !== 0 && !copyFailed ? (
+              <CopyButton
+                value={shareLink}
+                label="Copy link"
+                copiedLabel="Link copied"
+                variant="ghost"
+                size="sm"
+                onFailed={() => setCopyFailed(true)}
+              />
+            ) : null}
+            <Button variant="ghost" size="sm" icon={Flag} onClick={() => setReportOpen(true)}>
+              Report abuse
+            </Button>
+          </div>
+        </>
       )}
 
       <ReportDialog dropId={dropId} dk={dk} open={reportOpen} onOpenChange={setReportOpen} />

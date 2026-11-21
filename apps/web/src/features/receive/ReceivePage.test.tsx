@@ -366,6 +366,33 @@ describe('ReceivePage', () => {
       );
       expect(screen.getByRole('button', { name: 'Link copied' })).toBeVisible();
     });
+
+    it('when copying fails, shows the whole link selectable instead (the address bar no longer has it)', async () => {
+      const user = userEvent.setup();
+      const writeText = vi
+        .spyOn(navigator.clipboard, 'writeText')
+        .mockRejectedValue(new DOMException('Denied', 'NotAllowedError'));
+      const f = await fixture();
+      mockApi(f);
+      renderAt(`/d/${f.dropId}#${f.dkB64}`);
+      const link = `${window.location.origin}/d/${f.dropId}#${f.dkB64}`;
+      // Not on screen until it is needed.
+      expect(await screen.findByRole('button', { name: 'Copy link' })).toBeVisible();
+      expect(screen.queryByDisplayValue(link)).toBeNull();
+
+      await user.click(screen.getByRole('button', { name: 'Copy link' }));
+      const field = await screen.findByRole('textbox', { name: 'Link to this drop' });
+      expect(field).toHaveValue(link);
+      expect(field).toHaveAttribute('readonly');
+      expect(field).toHaveAccessibleDescription(/It contains the key/);
+      // Focused and selected, ready for Ctrl+C.
+      expect(field).toHaveFocus();
+      const input = field as HTMLInputElement;
+      expect([input.selectionStart, input.selectionEnd]).toEqual([0, link.length]);
+      expect(writeText).toHaveBeenCalledWith(link);
+      // One way to copy, not two.
+      expect(screen.getAllByRole('button', { name: 'Copy link' })).toHaveLength(1);
+    });
   });
 
   describe('active content (crypto-3)', () => {

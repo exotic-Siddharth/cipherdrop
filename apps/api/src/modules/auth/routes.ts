@@ -10,7 +10,7 @@
  *   an expired session and refresh;
  * - lockout (10 consecutive failures -> 15 min) answers exactly like a wrong password.
  * Rate limits (ctx.rateLimit): prelogin + login per IP+email, failed logins per client (IPv4 address or IPv6
- * /48), loginMfa per IP, register and recovery per IP, and `reauth` (10 per 15 min per user) on the signed-in
+ * /48), loginMfa per IP, register and recovery per IP, and `reauth` (10 per 15 min per session) on the signed-in
  * re-authentication routes. Every Argon2id hash also takes a slot of ctx.argon2 (429 when its queue is full).
  */
 import { KDF_DEFAULT } from '@cipherdrop/crypto/constants';
@@ -64,6 +64,7 @@ import {
   keyBytes,
   loadUser,
   refreshTokenOf,
+  reauthLimit,
   requireAccountProof,
   revokeSession,
   revokeUserSessions,
@@ -117,12 +118,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
     name: 'recovery',
     key: (req) => `complete|${ipKey(req.ip)}`,
   });
-  const reauthLimit = ctx.rateLimit({
-    name: 'reauth',
-    windowMs: 15 * 60_000,
-    limit: 10,
-    key: (req) => `user|${req.user?.id ?? ipKey(req.ip)}`,
-  });
+  const reauth = reauthLimit(ctx);
 
   /** Issue a session + cookie for `user`; returns the AuthSuccess body. */
   async function signIn(user: User, req: Request, res: Response) {
@@ -390,7 +386,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         403: { description: 'Wrong currentAuthKey or two-factor code (FORBIDDEN)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const me = authUser(req);
       const user = await loadUser(ctx, me.id);
@@ -546,7 +542,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       const body = req.body;
@@ -602,7 +598,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         409: { description: 'Already enabled, or no pending setup (CONFLICT)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       if (user.totpEnabledAt) throw conflict('Two-factor authentication is already enabled');
@@ -664,7 +660,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         409: { description: 'TOTP is not enabled, or the account is an admin (CONFLICT)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       if (!user.totpEnabledAt) throw conflict('Two-factor authentication is not enabled');
@@ -706,7 +702,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         409: { description: 'TOTP is not enabled (CONFLICT)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       if (!user.totpEnabledAt) throw conflict('Two-factor authentication is not enabled');
@@ -768,7 +764,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         404: { description: 'Unknown session' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const me = authUser(req);
       await requireAccountProof(ctx, await loadUser(ctx, me.id), req.body, req, 'session-revoke');
@@ -802,7 +798,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
         403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const me = authUser(req);
       await requireAccountProof(ctx, await loadUser(ctx, me.id), req.body, req, 'session-revoke');

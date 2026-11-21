@@ -35,6 +35,12 @@ export const RATE_LIMIT_RULES = {
    * many clients is bounded by ctx.argon2 (lib/argon2Limiter.ts) instead.
    */
   loginIp: { windowMs: 15 * MIN, limit: 30 },
+  /**
+   * Not in the spec table: re-authentication on signed-in routes (password change, recovery-key rotation, TOTP
+   * enable/disable, backup codes, session revocation, DELETE /me), 10 per 15 min per SESSION, successes included
+   * (modules/auth/service.ts reauthLimit has the key and the reasons).
+   */
+  reauth: { windowMs: 15 * MIN, limit: 10 },
   /** Not in the spec table: /auth/login/mfa code attempts, 10 per 15 min per IP. */
   loginMfa: { windowMs: 15 * MIN, limit: 10 },
   register: { windowMs: HOUR, limit: 5 },

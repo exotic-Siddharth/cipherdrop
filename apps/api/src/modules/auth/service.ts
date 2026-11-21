@@ -20,11 +20,11 @@ import {
   type Me,
 } from '@cipherdrop/shared';
 import type { Session, User } from '@prisma/client';
-import type { Request, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 import type { AppContext } from '../../context';
 import { forbidden, unauthorized, validationError } from '../../lib/errors';
 import { decodeB64url, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
-import { ipPrefix } from '../../lib/ip';
+import { ipKey, ipPrefix } from '../../lib/ip';
 import { signAccessToken } from '../../lib/jwt';
 import { denylistSid } from '../../lib/redis';
 import { randomToken } from '../../lib/tokens';
@@ -415,6 +415,22 @@ export async function loadUser(ctx: AppContext, userId: string): Promise<User> {
   const user = await ctx.prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw unauthorized();
   return user;
+}
+
+/**
+ * The `reauth` limiter (RATE_LIMIT_RULES.reauth) of every route that calls requireAccountProof, in the auth and me
+ * modules alike: one Redis bucket per SESSION (user id + sid), shared by those routes. Per session, not per user
+ * (review of server-3): a thief holding one stolen session could otherwise spend the whole account's budget with
+ * wrong proofs and stop the owner, on their own session, from signing that session out or changing the password.
+ * A new session needs the password (and the second factor), so a token thief still gets 10 guesses per window.
+ * Successful proofs count too: each one runs a server-side Argon2id.
+ */
+export function reauthLimit(ctx: Pick<AppContext, 'rateLimit'>): RequestHandler {
+  return ctx.rateLimit({
+    name: 'reauth',
+    key: (req) =>
+      req.user ? `session|${req.user.id}|${req.user.sid}` : `anonymous|${ipKey(req.ip)}`,
+  });
 }
 
 export interface AccountProofOptions {

@@ -1,8 +1,11 @@
 /**
- * /api/admin routes (spec section 10 "Admin", R13). Every route is auth 'admin' (requireAuth + requireRole
+ * /api/admin routes (spec section 10 "Admin", R13; audit log server-4, suspension and takedown server-6). Every route is auth 'admin' (requireAuth + requireRole
  * with a DB re-check). Logic lives in service.ts.
  */
 import {
+  AdminAuditPageSchema,
+  AdminAuditQuerySchema,
+  AdminDropDisableRequestSchema,
   AdminGrantResponseSchema,
   AdminReportPageSchema,
   AdminReportsQuerySchema,
@@ -19,7 +22,16 @@ import {
 import type { AppContext } from '../../context';
 import { authUser } from '../../middleware/auth';
 import { createRouter, type AppRouter } from '../../lib/router';
-import { getStats, listReports, listUsers, patchUser, resolveReport, reviewGrant } from './service';
+import {
+  disableDrop,
+  getStats,
+  listAudit,
+  listReports,
+  listUsers,
+  patchUser,
+  resolveReport,
+  reviewGrant,
+} from './service';
 
 export function adminRoutes(ctx: AppContext): AppRouter {
   const r = createRouter('/api/admin');
@@ -64,7 +76,7 @@ export function adminRoutes(ctx: AppContext): AppRouter {
       responses: { 204: { description: 'Resolved' }, 404: { description: 'Unknown report' } },
     },
     async (req, res) => {
-      await resolveReport(ctx, req.validatedParams.id, req.body.action, authUser(req));
+      await resolveReport(ctx, req.validatedParams.id, req.body.action, authUser(req), req);
       res.status(204).end();
     },
   );
@@ -114,7 +126,46 @@ export function adminRoutes(ctx: AppContext): AppRouter {
       },
     },
     async (req, res) => {
-      res.json({ user: await patchUser(ctx, req.validatedParams.id, req.body, authUser(req)) });
+      res.json({
+        user: await patchUser(ctx, req.validatedParams.id, req.body, authUser(req), req),
+      });
+    },
+  );
+  r.route(
+    {
+      method: 'post',
+      path: '/drops/:id/disable',
+      summary: 'Take a drop down without a report (blobs deleted, open reports resolved, audited)',
+      tags,
+      auth,
+      request: { params: DropIdParamsSchema, body: AdminDropDisableRequestSchema },
+      responses: {
+        204: { description: 'Disabled' },
+        404: { description: 'Unknown drop' },
+        409: { description: 'Already disabled or deleted (CONFLICT)' },
+      },
+    },
+    async (req, res) => {
+      await disableDrop(ctx, req.validatedParams.id, authUser(req), {
+        reason: req.body.reason,
+        req,
+        requireChange: true,
+      });
+      res.status(204).end();
+    },
+  );
+  r.route(
+    {
+      method: 'get',
+      path: '/audit',
+      summary: 'Instance audit log, newest first (admin and operator actions by default)',
+      tags,
+      auth,
+      request: { query: AdminAuditQuerySchema },
+      responses: { 200: { description: 'Page of audit events', schema: AdminAuditPageSchema } },
+    },
+    async (req, res) => {
+      res.json(await listAudit(ctx, req.validatedQuery));
     },
   );
 

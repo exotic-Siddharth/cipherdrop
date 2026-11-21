@@ -339,13 +339,16 @@ describe('cleanup job', () => {
       expect(hashes).toEqual(['fresh', 'used']);
     });
 
-    it('ages out audit events after 90 days and closed reports after 90 days; open reports stay', async () => {
+    it('ages out audit events after 90 days (admin actions after a year) and closed reports after 90 days; open reports stay', async () => {
       const user = await createUserRecord(t.prisma);
       const drop = await createReadyDrop(t.app);
       await t.prisma.auditEvent.createMany({
         data: [
           { userId: user.id, action: 'LOGIN_SUCCESS', createdAt: at(-91 * DAY) },
           { userId: user.id, action: 'LOGIN_SUCCESS', createdAt: at(-89 * DAY) },
+          // Admin actions are kept a year (server-4).
+          { action: 'ADMIN_USER_SUSPENDED', createdAt: at(-200 * DAY) },
+          { action: 'ADMIN_DROP_DISABLED', createdAt: at(-366 * DAY) },
         ],
       });
       const rep = (status: 'OPEN' | 'RESOLVED' | 'DISMISSED', resolvedAt: Date | null) =>
@@ -365,6 +368,13 @@ describe('cleanup job', () => {
       expect(
         await t.prisma.auditEvent.count({ where: { userId: user.id, action: 'LOGIN_SUCCESS' } }),
       ).toBe(1);
+      expect(
+        (
+          await t.prisma.auditEvent.findMany({
+            where: { action: { in: ['ADMIN_USER_SUSPENDED', 'ADMIN_DROP_DISABLED'] } },
+          })
+        ).map((e) => e.action),
+      ).toEqual(['ADMIN_USER_SUSPENDED']);
       const ids = (await t.prisma.report.findMany()).map((r) => r.id).sort();
       expect(ids).toEqual([recentClosed.id, oldOpen.id].sort());
       expect(ids).not.toContain(oldClosed.id);

@@ -148,6 +148,12 @@ const EnvSchema = z
      * at a time).
      */
     MAX_CHUNK_DOWNLOADS_PER_GRANT: int(8, 1, 10_000),
+    /**
+     * Byte budget of one download grant (critic-2): chunk GETs on a grant may serve at most this many times the
+     * drop's ciphertext size, so a consumed download cannot be replayed without limit for 24 h. 3 leaves room for
+     * resumes and retries (an aborted chunk counts in full).
+     */
+    DOWNLOAD_GRANT_BYTE_FACTOR: int(3, 1, 100),
     MAX_CHUNK_DOWNLOADS_PER_IP: int(32, 1, 10_000),
     /** Chunk PUTs in flight per API process (each buffers up to 4 MiB); more get 429 + Retry-After. */
     MAX_CONCURRENT_CHUNK_UPLOADS: int(64, 1, 10_000),

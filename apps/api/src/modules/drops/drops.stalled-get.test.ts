@@ -38,7 +38,8 @@ describe('stalled chunk GET', () => {
       storage,
       prisma: t.prisma,
       redis: t.redis,
-      env: { CHUNK_IDLE_TIMEOUT_SEC: 1 },
+      // Re-fetches on one grant; the byte budget has its own test (drops.grant-budget.test.ts).
+      env: { CHUNK_IDLE_TIMEOUT_SEC: 1, DOWNLOAD_GRANT_BYTE_FACTOR: 100 },
     });
     server = stalled.app.listen(0, '127.0.0.1');
     await new Promise<void>((r) => server.once('listening', () => r()));
@@ -57,6 +58,11 @@ describe('stalled chunk GET', () => {
     await t.prisma.dropChunk.updateMany({
       where: { dropId: drop.dropId },
       data: { size: 500 * 1024 * 1024 },
+    });
+    // ... and a drop size to match, so the grant's byte budget (critic-2) covers it.
+    await t.prisma.drop.update({
+      where: { id: drop.dropId },
+      data: { totalCiphertextBytes: 500 * 1024 * 1024 },
     });
     const open = await openDrop(t.app, drop.dropId);
     const token = open.body.downloadToken as string;

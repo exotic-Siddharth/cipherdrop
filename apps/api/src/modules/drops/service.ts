@@ -716,13 +716,15 @@ export async function grantForDownload(
   ctx: AppContext,
   dropId: string,
   token: string | null,
-): Promise<{ grantId: string; createdAt: Date }> {
+): Promise<{ grantId: string; createdAt: Date; byteBudget: bigint }> {
   if (!token) throw unauthorized();
   const now = ctx.now();
   const grant = await ctx.prisma.downloadGrant.findUnique({
     where: { tokenHash: sha256B64url(token) },
     include: {
-      drop: { select: { status: true, expiresAt: true, blobsDeletedAt: true } },
+      drop: {
+        select: { status: true, expiresAt: true, blobsDeletedAt: true, totalCiphertextBytes: true },
+      },
     },
   });
   if (!grant || grant.dropId !== dropId || grant.expiresAt.getTime() <= now.getTime()) {
@@ -734,7 +736,36 @@ export async function grantForDownload(
   if (blobsDeletedAt || (status !== 'READY' && status !== 'EXHAUSTED' && status !== 'EXPIRED')) {
     throw gone(status === 'EXHAUSTED' ? 'EXHAUSTED' : 'EXPIRED');
   }
-  return { grantId: grant.id, createdAt: grant.createdAt };
+  return {
+    grantId: grant.id,
+    createdAt: grant.createdAt,
+    byteBudget: grant.drop.totalCiphertextBytes * BigInt(ctx.env.DOWNLOAD_GRANT_BYTE_FACTOR),
+  };
+}
+
+/** 401 once a grant has served its byte budget (critic-2): the recipient opens the drop again. */
+export const GRANT_BUDGET_SPENT_MESSAGE =
+  'This download has used up its transfer allowance. Open the link again to download it.';
+
+/**
+ * Charge one chunk to the grant's byte budget and slide its expiry (R12), in one conditional write: a chunk that
+ * would take the grant past `byteBudget` is refused and nothing changes. Chunks are charged before they stream, so
+ * an aborted chunk counts in full; the budget's factor leaves room for that and for resumes.
+ */
+export async function chargeGrant(
+  ctx: AppContext,
+  grant: { grantId: string; createdAt: Date; byteBudget: bigint },
+  chunkBytes: number,
+): Promise<void> {
+  const size = BigInt(chunkBytes);
+  const { count } = await ctx.prisma.downloadGrant.updateMany({
+    where: { id: grant.grantId, servedBytes: { lte: grant.byteBudget - size } },
+    data: {
+      servedBytes: { increment: size },
+      expiresAt: grantExpiry(ctx, grant.createdAt, ctx.now()),
+    },
+  });
+  if (count !== 1) throw unauthorized(GRANT_BUDGET_SPENT_MESSAGE);
 }
 
 /* ---------------------------------------------------------------- owner */

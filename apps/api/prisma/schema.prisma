@@ -209,14 +209,16 @@ model DropChunk {
 }
 
 model DownloadGrant {
-  id        String   @id @default(cuid())
-  dropId    String
-  drop      Drop     @relation(fields: [dropId], references: [id], onDelete: Cascade)
-  tokenHash String   @unique
-  isAdmin   Boolean  @default(false)
-  ipPrefix  String?
-  createdAt DateTime @default(now())
-  expiresAt DateTime
+  id          String   @id @default(cuid())
+  dropId      String
+  drop        Drop     @relation(fields: [dropId], references: [id], onDelete: Cascade)
+  tokenHash   String   @unique
+  isAdmin     Boolean  @default(false)
+  ipPrefix    String?
+  /// Ciphertext bytes served on this grant (critic-2): capped at DOWNLOAD_GRANT_BYTE_FACTOR x the drop's size.
+  servedBytes BigInt   @default(0)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
 
   @@index([dropId, expiresAt])
 }

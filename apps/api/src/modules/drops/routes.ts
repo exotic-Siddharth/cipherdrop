@@ -52,7 +52,7 @@ import {
   deleteDrop,
   dropForUploadToken,
   expectedChunkSize,
-  grantExpiry,
+  chargeGrant,
   grantForDownload,
   openDrop,
   reportDrop,
@@ -467,11 +467,9 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
         { key: `grant:${grant.grantId}`, max: ctx.env.MAX_CHUNK_DOWNLOADS_PER_GRANT },
         { key: `ip:${ipShareKey(req.ip)}`, max: ctx.env.MAX_CHUNK_DOWNLOADS_PER_IP },
       ]);
-      // R12: every successful chunk GET slides the grant, capped at createdAt + 24 h.
-      await ctx.prisma.downloadGrant.update({
-        where: { id: grant.grantId },
-        data: { expiresAt: grantExpiry(ctx, grant.createdAt, ctx.now()) },
-      });
+      // R12: every successful chunk GET slides the grant, capped at createdAt + 24 h; critic-2: and counts
+      // against the grant's byte budget.
+      await chargeGrant(ctx, grant, chunk.size);
       const stream = await ctx.storage.getChunkStream(
         id,
         fileId,

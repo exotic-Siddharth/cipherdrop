@@ -55,6 +55,8 @@ describe('C-R2-04: chunk GET in-flight caps', () => {
         MAX_CHUNK_DOWNLOADS_PER_GRANT: 1,
         MAX_CHUNK_DOWNLOADS_PER_IP: 2,
         CHUNK_IDLE_TIMEOUT_SEC: 1,
+        // These tests re-fetch one small chunk many times on a grant; the byte budget has its own test.
+        DOWNLOAD_GRANT_BYTE_FACTOR: 100,
       },
     });
     server = capped.app.listen(0, '127.0.0.1');
@@ -79,6 +81,11 @@ describe('C-R2-04: chunk GET in-flight caps', () => {
     await t.prisma.dropChunk.updateMany({
       where: { dropId: drop.dropId, fileId: drop.files[0]!.id },
       data: { size: 500 * 1024 * 1024 },
+    });
+    // The drop size to match, so the grant's byte budget (critic-2) covers the huge chunk.
+    await t.prisma.drop.update({
+      where: { id: drop.dropId },
+      data: { totalCiphertextBytes: 501 * 1024 * 1024 },
     });
     return drop;
   }

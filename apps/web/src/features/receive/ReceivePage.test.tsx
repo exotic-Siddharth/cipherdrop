@@ -221,6 +221,9 @@ describe('ReceivePage', () => {
     expect(
       await screen.findByText(/If the sender has an account, they see when this link was opened/),
     ).toBeVisible();
+    // Never "none of it is stored": the request logs keep the network prefix either way.
+    expect(screen.getByText(/no sender sees any of it/)).toBeVisible();
+    expect(screen.queryByText(/none of it is stored/)).toBeNull();
   });
 
   it('ready: decrypted note, file list and downloads left; download verifies and saves', async () => {

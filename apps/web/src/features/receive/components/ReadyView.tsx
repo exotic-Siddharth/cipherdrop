@@ -484,8 +484,9 @@ export function ReadyView({
           {review ? null : (
             <p className="text-center text-xs text-muted">
               If the sender has an account, they see when this link was opened, from which network
-              (for example 203.0.113.0/24) and in which browser. Without an account, none of it is
-              stored.
+              (for example 203.0.113.0/24) and in which browser. Without an account, no sender sees
+              any of it. Either way the server keeps the network and time of each request in its
+              short-lived logs.
             </p>
           )}
         </CardContent>

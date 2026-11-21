@@ -666,7 +666,6 @@ export async function openDrop(
   const now = ctx.now();
   const downloadToken = randomToken();
   const expiresAt = grantExpiry(ctx, now, now);
-  const prefix = ipPrefix(req.ip);
 
   // Spec section 9: ONE conditional UPDATE consumes a download; the same statement flips the status to
   // EXHAUSTED when it takes the last one. Concurrent opens serialise on the row lock and re-check the WHERE.
@@ -689,7 +688,7 @@ export async function openDrop(
         dropId,
         tokenHash: sha256B64url(downloadToken),
         isAdmin: false,
-        ipPrefix: prefix,
+        // No ipPrefix: nothing reads it, and the recipient's network is the owner's audit event alone (critic-7).
         createdAt: now,
         expiresAt,
       },

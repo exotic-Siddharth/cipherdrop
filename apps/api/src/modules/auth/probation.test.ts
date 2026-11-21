@@ -111,21 +111,27 @@ describe('new-account probation quota', () => {
         .set('Authorization', authHeader(admin))
         .send(body);
 
-    const roleOnly = AdminUserResponseSchema.parse((await patch({ role: 'USER' })).body);
-    expect(roleOnly.user).toMatchObject({
-      storageQuotaBytes: PROBATION_QUOTA,
+    // The admin sees the stored quota (what the edit dialog changes) and the one that applies now.
+    const onProbation = {
+      storageQuotaBytes: t.ctx.env.USER_DEFAULT_QUOTA_BYTES,
+      effectiveQuotaBytes: PROBATION_QUOTA,
       quotaProbationEndsAt: expect.any(String),
-    });
+    };
+    const roleOnly = AdminUserResponseSchema.parse((await patch({ role: 'USER' })).body);
+    expect(roleOnly.user).toMatchObject(onProbation);
     const listed = await request(t.app)
       .get('/api/admin/users')
       .set('Authorization', authHeader(admin));
-    expect(listed.body.items.find((u: { id: string }) => u.id === user.id)).toMatchObject({
-      storageQuotaBytes: PROBATION_QUOTA,
-      quotaProbationEndsAt: expect.any(String),
-    });
+    expect(listed.body.items.find((u: { id: string }) => u.id === user.id)).toMatchObject(
+      onProbation,
+    );
 
     const raised = AdminUserResponseSchema.parse((await patch({ storageQuotaBytes: 10_000 })).body);
-    expect(raised.user).toMatchObject({ storageQuotaBytes: 10_000, quotaProbationEndsAt: null });
+    expect(raised.user).toMatchObject({
+      storageQuotaBytes: 10_000,
+      effectiveQuotaBytes: 10_000,
+      quotaProbationEndsAt: null,
+    });
     expect(
       (await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).quotaProbationEndsAt,
     ).toBeNull();

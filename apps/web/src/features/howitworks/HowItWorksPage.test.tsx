@@ -84,6 +84,15 @@ describe('HowItWorksPage', () => {
     expect(screen.queryByText(/never have to fit in memory/i)).toBeNull();
   });
 
+  it('says the key leaves the address bar but not the browser history (crypto-4)', () => {
+    renderPage();
+    const heading = screen.getByRole('heading', { name: /link stays in your browser history/i });
+    expect(heading).toBeVisible();
+    const text = heading.parentElement?.textContent ?? '';
+    expect(text).toMatch(/takes the key out of the address bar/);
+    expect(text).toMatch(/saved the full link to its history/);
+  });
+
   it('keeps the CTA banner line at AA contrast (C-40)', () => {
     renderPage();
     expect(screen.getByText(/No account needed\. Drops up to 72 hours/)).toHaveClass(

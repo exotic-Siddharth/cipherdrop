@@ -121,10 +121,13 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
 
   // Review: the grant does not consume a download, and the manifest decrypts with the reporter's key.
   const before = await downloadCount(id1);
-  await page.getByRole('link', { name: `Review drop ${id1}` }).click();
-  await expect(page).toHaveURL(new RegExp(`/d/${id1}\\?review=1#`));
+  const reviewLink = page.getByRole('link', { name: `Review drop ${id1}` });
+  await expect(reviewLink).toHaveAttribute('href', new RegExp(`/d/${id1}\\?review=1#`));
+  await reviewLink.click();
   await expect(page.getByText('Review mode')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(reviewed.name)).toBeVisible({ timeout: 20_000 });
+  // The reporter's key opened the drop, then left the address bar (crypto-4); the review query stays.
+  await expect(page).toHaveURL(new RegExp(`/d/${id1}\\?review=1$`));
   expect(await downloadCount(id1)).toBe(before);
   expect(leaks.count('POST', '/admin/drops/')).toBe(1);
   void key1;

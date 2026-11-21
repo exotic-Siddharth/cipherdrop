@@ -236,6 +236,105 @@ describe('ReceivePage', () => {
     }
   });
 
+  describe('the key leaves the address bar (crypto-4)', () => {
+    const fragmentOf = (router: ReturnType<typeof renderAt>) =>
+      (router.state.location.state as { shareFragment?: unknown } | null)?.shareFragment;
+
+    it('reads the key once, then replaces the entry with the same path and query and no fragment', async () => {
+      const f = await fixture();
+      mockApi(f);
+      const router = renderAt(`/d/${f.dropId}?review=1#${f.dkB64}`);
+      expect(await screen.findByText('report.bin')).toBeVisible();
+      await waitFor(() => expect(router.state.location.hash).toBe(''));
+      expect(router.state.historyAction).toBe('REPLACE');
+      expect(router.state.location.pathname).toBe(`/d/${f.dropId}`);
+      expect(router.state.location.search).toBe('?review=1');
+      // The entry keeps the fragment, so a reload of this tab still opens the drop.
+      expect(fragmentOf(router)).toBe(`#${f.dkB64}`);
+      expect(screen.getByText('report.bin')).toBeVisible();
+    });
+
+    it('a reload (the same entry, no fragment in the URL) still decrypts the file list', async () => {
+      const f = await fixture();
+      mockApi(f);
+      const router = createMemoryRouter(routes, {
+        initialEntries: [{ pathname: `/d/${f.dropId}`, state: { shareFragment: `#${f.dkB64}` } }],
+      });
+      render(<RouterProvider router={router} />);
+      expect(await screen.findByText('report.bin')).toBeVisible();
+      expect(router.state.location.hash).toBe('');
+    });
+
+    it('takes a mangled or incomplete fragment out of the address bar too', async () => {
+      const f = await fixture();
+      mockApi(f);
+      const router = renderAt(`/d/${f.dropId}#${f.dkB64.slice(0, 30)}`);
+      expect(await screen.findByRole('heading', { name: 'This link is incomplete' })).toBeVisible();
+      await waitFor(() => expect(router.state.location.hash).toBe(''));
+    });
+
+    it('the last download drops the reload copy; the page keeps its key and its saved files', async () => {
+      const f = await fixture({ remaining: 1, max: 1 });
+      mockApi(f);
+      const router = renderAt(`/d/${f.dropId}#${f.dkB64}`);
+      expect(await screen.findByRole('button', { name: 'Copy link' })).toBeVisible();
+      await waitFor(() => expect(fragmentOf(router)).toBe(`#${f.dkB64}`));
+      await userEvent.click(screen.getByRole('button', { name: /decrypt & download/i }));
+      const dialog = await screen.findByRole('dialog', { name: 'This is the last download' });
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Download now' }));
+      const list = screen.getByRole('list', { name: 'Files in this drop' });
+      expect(await within(list).findByText('Integrity verified')).toBeVisible();
+      await waitFor(() => expect(fragmentOf(router)).toBeUndefined());
+      expect(router.state.location.hash).toBe('');
+      expect(JSON.stringify(router.state.location.state ?? null)).not.toContain(f.dkB64);
+      // The link is used up: nothing left to forward.
+      expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
+      expect(within(list).getByRole('button', { name: 'Save report.bin again' })).toBeVisible();
+    });
+
+    it('a drop that is gone keeps no copy of the key', async () => {
+      const f = await fixture();
+      mockApi(f, (url) =>
+        url.pathname === `/api/drops/${f.dropId}`
+          ? json(
+              { error: { code: 'GONE', message: 'Gone', details: { reason: 'EXHAUSTED' } } },
+              410,
+            )
+          : undefined,
+      );
+      const router = renderAt(`/d/${f.dropId}#${f.dkB64}`);
+      expect(
+        await screen.findByRole('heading', { name: 'All downloads have been used' }),
+      ).toBeVisible();
+      await waitFor(() => expect(router.state.location.hash).toBe(''));
+      await waitFor(() => expect(fragmentOf(router)).toBeUndefined());
+    });
+
+    it('a drop that is still uploading keeps the copy for a reload later', async () => {
+      const f = await fixture();
+      f.meta = { ...f.meta, status: 'UPLOADING', encryptedManifest: null };
+      mockApi(f);
+      const router = renderAt(`/d/${f.dropId}#${f.dkB64}`);
+      expect(
+        await screen.findByRole('heading', { name: 'This drop is still uploading' }),
+      ).toBeVisible();
+      await waitFor(() => expect(router.state.location.hash).toBe(''));
+      expect(fragmentOf(router)).toBe(`#${f.dkB64}`);
+    });
+
+    it('"Copy link" puts the whole link, key included, on the clipboard', async () => {
+      const user = userEvent.setup();
+      const f = await fixture();
+      mockApi(f);
+      renderAt(`/d/${f.dropId}#${f.dkB64}`);
+      await user.click(await screen.findByRole('button', { name: 'Copy link' }));
+      expect(await navigator.clipboard.readText()).toBe(
+        `${window.location.origin}/d/${f.dropId}#${f.dkB64}`,
+      );
+      expect(screen.getByRole('button', { name: 'Link copied' })).toBeVisible();
+    });
+  });
+
   describe('active content (crypto-3)', () => {
     const HTML = '<script>alert(document.domain)</script><img src=x onerror="alert(1)">';
     const SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
@@ -442,6 +541,22 @@ describe('ReceivePage', () => {
       expect(calls.find((c) => c.path.endsWith('/open'))?.body).toEqual({ authKey });
       // The password itself never leaves the page.
       expect(JSON.stringify(calls)).not.toContain('right password');
+    });
+
+    it('"Copy link" copies the link without any key (the password is the secret)', async () => {
+      const user = userEvent.setup();
+      const { f, keys, protection, original } = await passwordFixture();
+      vi.mocked(kdfClient.deriveDropPasswordKeys).mockResolvedValue(keys);
+      mockApi(f, (url) =>
+        url.pathname.endsWith('/unlock')
+          ? json({ wrappedDropKey: protection.wrappedDropKey, encryptedManifest: original })
+          : undefined,
+      );
+      renderAt(`/d/${f.dropId}`);
+      await user.type(await screen.findByLabelText('Password'), 'right password');
+      await user.click(screen.getByRole('button', { name: 'Unlock' }));
+      await user.click(await screen.findByRole('button', { name: 'Copy link' }));
+      expect(await navigator.clipboard.readText()).toBe(`${window.location.origin}/d/${f.dropId}`);
     });
   });
 });

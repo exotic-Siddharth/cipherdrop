@@ -1276,6 +1276,49 @@ describe('SendPage hosting-abuse controls (server-1, ops-3)', () => {
     expect(calls.some((c) => c.path === '/api/drops')).toBe(false);
   });
 
+  it('anonymous uploads switched off: an interrupted drop created before still resumes', async () => {
+    const dropId = generateFileId();
+    const fileId = generateFileId();
+    const file = new File(['resume me'], 'r.txt', { lastModified: 1234 });
+    writeResumeRecord({
+      dropId,
+      uploadToken: token(),
+      dk: b64urlEncode(randomBytes(32)),
+      files: [{ id: fileId, size: file.size, lastModified: 1234, chunkCount: 1 }],
+      ownerToken: token(),
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      maxDownloads: 1,
+      passwordProtected: false,
+      anonymous: true,
+      ownerId: null,
+      expiresInHours: 24,
+      hasNote: false,
+    });
+    const { calls } = mockApi((path, method) =>
+      method === 'GET' && path === `/api/drops/${dropId}/upload-status`
+        ? json({ files: [{ id: fileId, chunkCount: 1, received: [] }] })
+        : undefined,
+    );
+    useServerConfig.setState({ config: { anonymousUploads: false, registration: true } });
+    renderSend();
+    await addFile(file);
+    expect(await screen.findByText('Ready to resume your upload')).toBeVisible();
+    expect(notice()).toHaveTextContent('An upload started before can still finish.');
+    const resume = screen.getByRole('button', { name: 'Resume upload' });
+    expect(resume).toBeEnabled();
+    await userEvent.click(resume);
+    expect(
+      await screen.findByRole('heading', { name: 'Your encrypted link is ready' }),
+    ).toBeVisible();
+    // The stored drop: its chunks (the worker) and complete, and no new drop.
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/api/drops')).toBe(false);
+    expect(vi.mocked(runUploadInWorker).mock.calls[0]![0].dropId).toBe(dropId);
+    expect(
+      calls.some((c) => c.method === 'POST' && c.path === `/api/drops/${dropId}/complete`),
+    ).toBe(true);
+  });
+
   it('does not offer sign-up when registration is switched off too', async () => {
     mockApi();
     useServerConfig.setState({ config: { anonymousUploads: false, registration: false } });

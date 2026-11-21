@@ -19,6 +19,7 @@ import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { unlockPath } from '../../lib/paths';
 import { useAuth, type AuthStatus } from '../../stores/auth';
+import { useServerConfig } from '../../stores/serverConfig';
 import { useVault } from '../../stores/vault';
 import { Button, ButtonLink } from '../ui/Button';
 import { DropdownMenu, type DropdownMenuEntry } from '../ui/DropdownMenu';
@@ -152,6 +153,9 @@ const mobileLinkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? 'bg-primary/10 text-primary-ink' : 'text-foreground hover:bg-surface-2',
   );
 
+/** Sign up is offered unless the operator closed registration (ops-3); unknown config counts as open. */
+const useRegistrationOpen = () => useServerConfig((s) => s.config?.registration !== false);
+
 function MobileNav({
   id,
   items,
@@ -163,6 +167,7 @@ function MobileNav({
   user: Me | null;
   status: AuthStatus;
 }) {
+  const registrationOpen = useRegistrationOpen();
   const signOut = useSignOut();
   return (
     <div id={id} className="border-t border-border bg-background md:hidden">
@@ -199,11 +204,11 @@ function MobileNav({
               </Button>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2">
+            <div className={cn('grid gap-2', registrationOpen && 'grid-cols-2')}>
               <ButtonLink to="/login" variant="outline">
                 Log in
               </ButtonLink>
-              <ButtonLink to="/register">Sign up</ButtonLink>
+              {registrationOpen ? <ButtonLink to="/register">Sign up</ButtonLink> : null}
             </div>
           )}
         </div>
@@ -217,6 +222,7 @@ export function Navbar() {
   const status = useAuth((s) => s.status);
   const user = useAuth((s) => s.user);
   const items = navItems(user);
+  const registrationOpen = useRegistrationOpen();
   const [menuOpen, setMenuOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const { pathname } = useLocation();
@@ -271,9 +277,11 @@ export function Navbar() {
                 <ButtonLink to="/login" variant="ghost" size="sm">
                   Log in
                 </ButtonLink>
-                <ButtonLink to="/register" size="sm">
-                  Sign up
-                </ButtonLink>
+                {registrationOpen ? (
+                  <ButtonLink to="/register" size="sm">
+                    Sign up
+                  </ButtonLink>
+                ) : null}
               </>
             )}
           </div>

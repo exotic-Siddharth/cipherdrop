@@ -9,6 +9,7 @@ import { defineConfig, devices } from '@playwright/test';
  * and set WEB_ORIGIN of the stack to the same origin. Point it at nginx's own port (WEB_BIND:WEB_PORT): the
  * slow-client checks open raw sockets to it. The account and the anonymous drop it creates stay in the stack's
  * database (the drop is deleted again), and the slow-client checks take about 50 s.
+ * With SMOKE_WEB_CONTAINER=<name of the web container> (and the docker CLI) it also reads nginx's access log.
  */
 const baseURL = process.env.SMOKE_BASE_URL;
 if (!baseURL) throw new Error('SMOKE_BASE_URL is required, e.g. http://127.0.0.1:8080');

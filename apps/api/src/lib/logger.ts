@@ -235,7 +235,13 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
 /** Default process logger. */
 export const logger: Logger = createLogger();
 
-const pathOnly = (url: string | undefined) => (url ?? '').split('?')[0] ?? '';
+/**
+ * The path of a request target, without its query string or fragment (the same cut as nginx's `$request_path` in
+ * deploy/nginx.conf). A browser never sends a fragment, but a client that requests a link verbatim does, as "#" or,
+ * through a proxy that re-encodes it (Caddy), as "%23"; in a share link the fragment is the decryption key.
+ */
+export const pathOnly = (url: string | undefined): string =>
+  (url ?? '').split(/[?#]|%23/, 1)[0] ?? '';
 
 /** HTTP access log middleware with privacy-preserving serializers. */
 export function createHttpLogger(log: Logger): HttpLogger {

@@ -47,6 +47,18 @@ const base64Key32 = z
 
 const secret = z.string().min(32, 'must be at least 32 characters');
 
+/** What marks a development, test or template value: refused in production (secrets and connection passwords). */
+const PLACEHOLDER = /dev-only|test-only|change-me/i;
+
+/** The decoded password of a connection URL, or '' when it has none or does not parse. */
+function urlPassword(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).password);
+  } catch {
+    return '';
+  }
+}
+
 const EnvSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -86,6 +98,12 @@ const EnvSchema = z
     S3_ACCESS_KEY_ID: z.string().min(1).optional(),
     S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     S3_FORCE_PATH_STYLE: bool(true),
+    /**
+     * For a bucket with versioning: delete every version and delete marker by its VersionId (ListObjectVersions +
+     * DeleteObjects), so a delete is final. Off, the S3 driver refuses to start on a versioned bucket, where a
+     * plain delete only adds a delete marker (storage/s3.ts). It never accepts a bucket with Object Lock.
+     */
+    S3_DELETE_ALL_VERSIONS: bool(false),
 
     ANON_MAX_DROP_BYTES: int(104_857_600, 1),
     USER_MAX_DROP_BYTES: int(2_147_483_648, 1),
@@ -178,11 +196,21 @@ const EnvSchema = z
       const value = env[key];
       const decoded =
         key === 'TOTP_ENC_KEY' ? Buffer.from(value, 'base64').toString('latin1') : value;
-      if (/dev-only|test-only|change-me/i.test(decoded)) {
+      if (PLACEHOLDER.test(decoded)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: [key],
           message: 'a development/test secret cannot be used in production',
+        });
+      }
+    }
+    // The template's POSTGRES_APP_PASSWORD and REDIS_PASSWORD reach these URLs through docker-compose.prod.yml.
+    for (const key of ['DATABASE_URL', 'REDIS_URL'] as const) {
+      if (PLACEHOLDER.test(urlPassword(env[key]))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: 'its password is a development/test placeholder',
         });
       }
     }

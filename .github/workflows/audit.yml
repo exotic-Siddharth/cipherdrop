@@ -34,6 +34,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
-      # The gate's own tests (node:test, no dependencies) first: a broken gate must not pass silently.
+      # The scripts' tests (node:test, no dependencies) first: a broken gate must not pass silently. They also check
+      # that ci.yml's service images still equal docker-compose.prod.yml's (scripts/image-pins.test.mjs), so a
+      # Dependabot compose bump fails here until the workflows are moved with it.
       - run: npm run test:scripts
       - run: npm run audit:gate

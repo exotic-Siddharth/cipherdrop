@@ -99,6 +99,15 @@ const firstLine = (err: unknown) =>
 /** How long settle() waits for the full headers before it falls back to the provisional ones. */
 const SETTLE_TIMEOUT_MS = 10_000;
 
+/**
+ * Whether a console message is a CSP violation report, in the wording of each engine npm run e2e:cross runs:
+ * Chromium "... violates the following Content Security Policy directive ...", WebKit "Refused to load ... of the
+ * Content Security Policy", Firefox "Content-Security-Policy: The page's settings blocked ..." (hyphenated).
+ */
+export function isCspViolationMessage(text: string): boolean {
+  return /Content[- ]Security[- ]Policy|Refused to (load|execute|connect|apply|create)/i.test(text);
+}
+
 export class LeakGuard {
   readonly requests: CapturedRequest[] = [];
   readonly forbidden: Forbidden[] = [];
@@ -177,7 +186,7 @@ export class LeakGuard {
       page.on('pageerror', (err) => this.problems.push(`pageerror: ${err.message}`));
       page.on('console', (msg) => {
         const text = msg.text();
-        if (/Content Security Policy|Refused to (load|execute|connect|apply|create)/i.test(text)) {
+        if (isCspViolationMessage(text)) {
           this.problems.push(`CSP: ${text.slice(0, 240)}`);
         }
       });

@@ -2,7 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 /**
  * Smoke test of a RUNNING production stack (docker-compose.prod.yml, docs/DEPLOYMENT.md), through nginx.
- * Not part of `npm run e2e` or CI: it needs a stack to point at.
+ * Not part of `npm run e2e`: it needs a stack to point at. CI runs it in the prod-stack job (.github/workflows/ci.yml)
+ * against docker-compose.prod.yml built from the Dockerfiles and booted with generated secrets.
  *   SMOKE_BASE_URL=http://127.0.0.1:8080 npm run smoke:prod -w @cipherdrop/web
  * Use 127.0.0.1 or localhost over plain HTTP (WebCrypto needs a secure context and the refresh cookie is Secure),
  * and set WEB_ORIGIN of the stack to the same origin. Point it at nginx's own port (WEB_BIND:WEB_PORT): the

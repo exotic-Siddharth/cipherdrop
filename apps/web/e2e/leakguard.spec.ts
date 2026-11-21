@@ -1,7 +1,12 @@
 /** The leak guard is only worth something if it can fail: prove it catches each kind of leak. */
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
-import { LeakGuard, test as guarded, textVariants } from './support/fixtures';
+import {
+  isCspViolationMessage,
+  LeakGuard,
+  test as guarded,
+  textVariants,
+} from './support/fixtures';
 
 function guardWith(body: string | Buffer, url = 'http://localhost:5184/api/drops'): LeakGuard {
   const guard = new LeakGuard();
@@ -217,6 +222,28 @@ test.describe('leak guard', () => {
     expect(guard.notes[0]).toContain('allHeaders() failed');
     expect(guard.notes[1]).toContain('no full headers after 50 ms');
   });
+
+  test('recognises a CSP violation report in the wording of each engine', () => {
+    // How each engine reports a blocked image (captured with the Playwright 1.65 browsers).
+    const reports = {
+      chromium:
+        "Loading the image 'https://example.invalid/x.png' violates the following Content Security Policy " +
+        'directive: "img-src \'self\'". The action has been blocked.',
+      firefox:
+        '[JavaScript Error: "Content-Security-Policy: The page\u2019s settings blocked the loading of a resource ' +
+        '(img-src) at https://example.invalid/x.png because it violates the following directive: \u201cimg-src ' +
+        '\'self\'\u201d" {file: "http://127.0.0.1:5184/" line: 0}]',
+      webkit:
+        'Refused to load https://example.invalid/x.png because it does not appear in the img-src directive of ' +
+        'the Content Security Policy.',
+    };
+    for (const [engine, text] of Object.entries(reports)) {
+      expect(isCspViolationMessage(text), engine).toBe(true);
+    }
+    expect(isCspViolationMessage('Failed to load resource: the server responded with 404')).toBe(
+      false,
+    );
+  });
 });
 
 test.describe('leak guard in the browser', () => {
@@ -290,6 +317,33 @@ test.describe('leak guard in the browser', () => {
       "file name found in GET /files/Bob's%20report%20(v2).pdf",
       'file name found in GET /SECURITY.md?name=Bob%27s%20report%20(v2).pdf',
     ]);
+  });
+
+  // In every engine of npm run e2e:cross: each words its console report differently (Firefox hyphenates the name).
+  test('reports a CSP violation of the preview build as a problem @cross', async ({
+    browser,
+    baseURL,
+  }) => {
+    const guard = new LeakGuard({ origins: [baseURL!] });
+    const context = await browser.newContext({ baseURL });
+    guard.watch(context);
+    try {
+      const page = await context.newPage();
+      await page.goto('/how-it-works');
+      // script-src 'self' blocks an inline script, whoever inserts it.
+      const ran = await page.evaluate(() => {
+        const script = document.createElement('script');
+        script.textContent = 'document.documentElement.dataset.inlineRan = "yes"';
+        document.head.append(script);
+        return document.documentElement.dataset.inlineRan === 'yes';
+      });
+      expect(ran, 'the CSP blocked the inline script').toBe(false);
+      await expect
+        .poll(() => guard.problems.filter((p) => p.startsWith('CSP: ')).length)
+        .toBeGreaterThan(0);
+    } finally {
+      await context.close();
+    }
   });
 
   test('reports a request to another origin', async ({ browser, baseURL }) => {

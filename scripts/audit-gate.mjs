@@ -255,7 +255,7 @@ export function annotations(result) {
 }
 
 /** One `::error::` workflow command; `%` and line breaks are escaped as the runner expects. */
-function annotation(title, message) {
+export function annotation(title, message) {
   const escape = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
   return `::error title=${escape(title).replace(/[,:]/g, ' ')}::${escape(message)}`;
 }

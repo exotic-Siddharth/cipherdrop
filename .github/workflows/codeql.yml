@@ -1,0 +1,45 @@
+# Code scanning (docs/SECURITY.md, supply chain): CodeQL's javascript-typescript analysis with the security-extended
+# query suite, on pushes to main, pull requests and weekly (new queries find old code). Alerts appear under the
+# repository's Security tab, and on a pull request as annotations of the lines it changes.
+#
+# No build: JavaScript and TypeScript are analysed from source (build-mode none). CodeQL is free on public
+# repositories; a private one needs GitHub Code Security, or the upload step fails.
+# A separate workflow from ci.yml, so only this job holds security-events: write.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Tuesdays 04:41 UTC.
+    - cron: '41 4 * * 2'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the code
+      security-events: write # upload the results (SARIF) to code scanning
+      actions: read # read this run's metadata: needed only on private repositories
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          queries: security-extended
+      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          category: /language:javascript-typescript

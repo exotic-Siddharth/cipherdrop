@@ -24,7 +24,7 @@ export interface TotpSetupProps {
 /**
  * Step 2 of enabling 2FA: scan the QR (or type the secret), then prove the app works with a 6-digit code. The
  * password is asked too: with a stolen session alone, enrolling someone else's authenticator would lock the owner
- * out of sign-in and recovery.
+ * out of sign-in and recovery. The server then signs out every other session, since those never passed the code.
  */
 export function TotpSetup({ setup, onVerify, onEnabled, onCancel }: TotpSetupProps) {
   const [password, setPassword] = useState('');
@@ -64,6 +64,7 @@ export function TotpSetup({ setup, onVerify, onEnabled, onCancel }: TotpSetupPro
         <li>Scan the QR code, or type the secret key by hand.</li>
         <li>
           Enter your password and the 6-digit code the app shows to turn two-step verification on.
+          Your other devices are then signed out: they sign in again with a code.
         </li>
       </ol>
 

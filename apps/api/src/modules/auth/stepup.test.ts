@@ -10,6 +10,7 @@ import { createTestApp, type TestApp } from '../../../test/app';
 import {
   bearer,
   enableTotpViaApi,
+  newMfaSession,
   newSession,
   registerViaApi,
   totpCode,
@@ -122,8 +123,9 @@ const challengeFailures = (userId: string) =>
 describe('every sensitive route needs the authKey and, with TOTP on, a second factor', () => {
   it.each(ROUTES.map((r) => [r.name, r] as const))('%s', async (_name, route) => {
     const u = await registerViaApi(t.app);
-    const other = await newSession(t.app, u); // before TOTP is on, while a password login suffices
     const { secret, backupCodes } = await enableTotpViaApi(t.app, u);
+    // Opened after TOTP is on (enabling it signs out every other session), so with a second factor.
+    const other = await newMfaSession(t.app, u, backupCodes[9] as string);
     const extra = { otherSid: other.sid };
     const goodCode = route.totpOnly ? totpCode(secret, 30_000) : (backupCodes[0] as string);
     const before = await snapshot(u.user.id);

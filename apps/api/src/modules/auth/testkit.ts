@@ -117,6 +117,23 @@ export async function newSession(
   return { accessToken, cookie: cookieFrom(res), sid: sidOf(accessToken) };
 }
 
+/** A session from a full login with the second factor (`code`: a TOTP or backup code). */
+export async function newMfaSession(
+  app: Express,
+  u: Pick<RegisteredUser, 'email' | 'password'>,
+  code: string,
+): Promise<{ accessToken: string; cookie: string; sid: string }> {
+  const login = await loginViaApi(app, u.email, u.password);
+  expect(login.status, JSON.stringify(login.body)).toBe(200);
+  expect(login.body.mfaRequired).toBe(true);
+  const res = await request(app)
+    .post('/api/auth/login/mfa')
+    .send({ mfaToken: login.body.mfaToken as string, code });
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  const accessToken = res.body.accessToken as string;
+  return { accessToken, cookie: cookieFrom(res), sid: sidOf(accessToken) };
+}
+
 /** The sid claim of an access token (no verification). */
 export function sidOf(accessToken: string): string {
   const payload = JSON.parse(

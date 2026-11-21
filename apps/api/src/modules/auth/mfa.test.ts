@@ -21,8 +21,10 @@ import {
   bearer,
   enableTotpViaApi,
   loginViaApi,
+  newSession,
   refreshTokenFrom,
   registerViaApi,
+  sidOf,
   totpCode,
   wrongTotpCode,
 } from './testkit';
@@ -152,6 +154,42 @@ describe('TOTP setup -> enable -> backup codes -> disable', () => {
       .set(auth)
       .send({ authKey: u.authKey, code: '123456' });
     expect(again.status).toBe(409);
+  });
+
+  it('enabling TOTP signs out every other session (they were opened with the password alone)', async () => {
+    const u = await registerViaApi(t.app);
+    // Opened before the second factor existed, e.g. by someone who learnt the password.
+    const other = await newSession(t.app, u);
+    const second = await newSession(t.app, u);
+    await enableTotpViaApi(t.app, u);
+
+    // Their access tokens stop at once (denylisted sids), and their refresh cookies are dead.
+    for (const s of [other, second]) {
+      const vault = await request(t.app)
+        .get('/api/auth/vault')
+        .set('Authorization', bearer(s.accessToken));
+      expect(vault.status).toBe(401);
+      expect((await request(t.app).post('/api/auth/refresh').set('Cookie', s.cookie)).status).toBe(
+        401,
+      );
+    }
+    // The session that re-authenticated and enrolled stays signed in.
+    expect(
+      (await request(t.app).get('/api/auth/vault').set('Authorization', bearer(u.accessToken)))
+        .status,
+    ).toBe(200);
+    expect((await request(t.app).post('/api/auth/refresh').set('Cookie', u.cookie)).status).toBe(
+      200,
+    );
+    const live = await t.prisma.session.findMany({
+      where: { userId: u.user.id, revokedAt: null },
+      select: { id: true },
+    });
+    expect(live.map((s) => s.id)).toEqual([sidOf(u.accessToken)]);
+    const event = await t.prisma.auditEvent.findFirstOrThrow({
+      where: { userId: u.user.id, action: 'MFA_ENABLED' },
+    });
+    expect(event.metadata).toEqual({ revokedSessions: 2 });
   });
 
   it('enable without a pending setup is a 409', async () => {

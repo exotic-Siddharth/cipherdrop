@@ -84,7 +84,9 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the drop expired or was used up; later reports do not
   extend it. [docs/ABUSE.md](docs/ABUSE.md) describes the
   abuse process.
-- The receive page says what a sender with an account sees of an open (time, network prefix, browser).
+- The receive page says what a sender with an account sees of an open (time, network prefix, browser), and that
+  the server's short-lived request logs keep the network prefix either way. A recipient's download grant no longer
+  stores the network prefix (nothing read it).
 
 - `/.well-known/security.txt` (RFC 9116), generated at build time from `SECURITY_TXT_CONTACT` and
   `SECURITY_TXT_POLICY`, and a vulnerability disclosure policy in `.github/SECURITY.md` (GitHub private

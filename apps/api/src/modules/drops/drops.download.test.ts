@@ -388,10 +388,11 @@ describe('drop download', () => {
       expect(ev.userAgent).toBeTruthy();
       const row = await t.prisma.drop.findUniqueOrThrow({ where: { id: drop.dropId } });
       expect(row.lastOpenedAt?.toISOString()).toBe(T0.toISOString());
+      // The grant keeps no copy of the recipient's network: the owner's event is the only record.
       const grant = await t.prisma.downloadGrant.findFirstOrThrow({
         where: { dropId: drop.dropId },
       });
-      expect(grant.ipPrefix).toBe('2001:db8:abcd::/48');
+      expect(grant.ipPrefix).toBeNull();
     });
 
     it('stores neither the IP prefix nor the browser of opens of a drop without an owner (critic-7)', async () => {
@@ -407,6 +408,10 @@ describe('drop download', () => {
         where: { dropId: drop.dropId, action: 'DROP_OPENED' },
       });
       expect(ev).toMatchObject({ userId: null, ipPrefix: null, userAgent: null });
+      const grant = await t.prisma.downloadGrant.findFirstOrThrow({
+        where: { dropId: drop.dropId },
+      });
+      expect(grant.ipPrefix).toBeNull();
     });
 
     it('answers 404 for unknown drops and 410 for expired ones', async () => {

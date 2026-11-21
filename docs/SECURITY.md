@@ -260,7 +260,8 @@ The server does see, and stores:
 - the time each chunk was last written (`DropChunk.storedAt`), kept with the chunk row until the drop's blobs are
   purged; the free-disk floor uses it to tell active uploads from idle ones;
 - IP addresses as **prefixes only** in the database (IPv4 /24, IPv6 /48) and user-agent strings: on sessions,
-  download grants, audit events and abuse reports;
+  admin review grants, audit events and abuse reports (a recipient's download grant stores none since
+  2026-11-22: the owner's audit event is the only record of an open);
 - full IPv4 addresses and IPv6 /64 prefixes (/48 for the anonymous-create, register and failed-login-per-client
   limiters) as rate-limit keys in Redis, for the length of each limiter window (at most one hour);
 - for each anonymous client key (an IPv4 address or an IPv6 /48), the MiB total of its anonymous drop creates per

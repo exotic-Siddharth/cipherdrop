@@ -10,6 +10,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { PRODUCTION_ONLY_HEADERS, SECURITY_HEADERS } from '../securityHeaders';
+import { isCspViolationMessage } from '../e2e/support/fixtures';
 import {
   downloadFromReady,
   openLink,
@@ -29,10 +30,14 @@ const DOWNLOAD_DIR = path.join(
   'downloads',
 );
 
-/** Console messages a browser prints when the CSP blocks something, and uncaught page errors. */
+/**
+ * Console messages a browser prints when the CSP blocks something or the report-only Trusted Types policy
+ * reports a violation (the e2e leak guard's matcher), and uncaught page errors.
+ */
 function watchCsp(page: Page, sink: string[]): void {
   page.on('console', (msg) => {
-    if (/content security policy/i.test(msg.text())) sink.push(msg.text());
+    const text = msg.text();
+    if (isCspViolationMessage(text)) sink.push(text);
   });
   page.on('pageerror', (err) => sink.push(`pageerror: ${err.message}`));
 }
@@ -328,6 +333,28 @@ test('operational endpoints are not exposed through nginx', async ({ request }) 
   for (const url of ['/readyz', '/metrics']) {
     expect((await request.get(url)).status(), url).toBe(404);
   }
+});
+
+test('Swagger UI is not served on the SPA origin; the OpenAPI JSON is', async ({ request }) => {
+  // Express mounts are case-insensitive, so the mixed-case paths would reach a misconfigured API's Swagger UI.
+  for (const url of [
+    '/api/docs',
+    '/api/docs/',
+    '/api/docs/swagger-ui-bundle.js',
+    '/api/DOCS/',
+    '/api/Docs/swagger-ui-bundle.js',
+  ]) {
+    const res = await request.get(url);
+    expect(res.status(), url).toBe(404);
+    // nginx's own 404 (not the API's JSON one), with the SPA's section 12 headers.
+    expect(res.headers()['content-type'], url).toContain('text/html');
+    expect(res.headers()['content-security-policy'], url).toBe(
+      SECURITY_HEADERS['Content-Security-Policy'],
+    );
+  }
+  const spec = await request.get('/api/openapi.json');
+  expect(spec.status()).toBe(200);
+  expect((await spec.json()).openapi).toMatch(/^3\./);
 });
 
 test('the SPA bundle carries no demo credentials', async ({ request }) => {

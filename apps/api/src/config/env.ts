@@ -132,6 +132,12 @@ const EnvSchema = z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
     LOG_PRETTY: bool(false),
+    /**
+     * Serve Swagger UI at /api/docs. Off unless set (the dev .env.example turns it on) and refused in production:
+     * the API shares its origin with the SPA, which holds the vault key, drop keys and the refresh cookie, and
+     * Swagger UI is a large third-party script bundle. /api/openapi.json (plain JSON) is always served.
+     */
+    API_DOCS_UI: bool(false),
 
     SEED_ADMIN_PASSWORD: z.string().min(1).optional(),
     SEED_DEMO_PASSWORD: z.string().min(1).optional(),
@@ -143,6 +149,14 @@ const EnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ['RATE_LIMITS_ENABLED'],
         message: 'rate limits cannot be disabled in production',
+      });
+    }
+    if (env.API_DOCS_UI) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['API_DOCS_UI'],
+        message:
+          'Swagger UI cannot run in production: it would share the origin that holds the keys (publish /api/openapi.json elsewhere instead)',
       });
     }
     if (!env.COOKIE_SECURE) {

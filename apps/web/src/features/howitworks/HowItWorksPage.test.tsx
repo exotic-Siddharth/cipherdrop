@@ -84,6 +84,32 @@ describe('HowItWorksPage', () => {
     expect(screen.queryByText(/never have to fit in memory/i)).toBeNull();
   });
 
+  it('says the key leaves the address bar but not the browser history (crypto-4)', () => {
+    renderPage();
+    const heading = screen.getByRole('heading', { name: /link stays in your browser history/i });
+    expect(heading).toBeVisible();
+    const text = heading.parentElement?.textContent ?? '';
+    expect(text).toMatch(/takes the key out of the address bar/);
+    expect(text).toMatch(/saved the full link to its history/);
+  });
+
+  it('says a link proves nothing about who sent it, and what "Integrity verified" means (crypto-5)', () => {
+    renderPage();
+    const heading = screen.getByRole('heading', { name: /link does not prove who sent it/i });
+    const text = heading.parentElement?.textContent ?? '';
+    expect(text).toMatch(/exactly what was encrypted with the link's key/);
+    expect(text).toMatch(/does not mean they come from the person you expect or are safe to open/);
+  });
+
+  it('states the in-memory download limit in MiB and what larger files need', () => {
+    renderPage();
+    const heading = screen.getByRole('heading', { name: /large files in some browsers/i });
+    const text = heading.parentElement?.textContent ?? '';
+    expect(text).toMatch(/up to 256 MiB/);
+    expect(text).toMatch(/File System Access API/);
+    expect(text).not.toMatch(/256 MB\b/);
+  });
+
   it('keeps the CTA banner line at AA contrast (C-40)', () => {
     renderPage();
     expect(screen.getByText(/No account needed\. Drops up to 72 hours/)).toHaveClass(

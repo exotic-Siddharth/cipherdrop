@@ -17,7 +17,11 @@ export function shareLinkFor(dropId: string, dropKey: Uint8Array | null): string
   return buildShareLink(appOrigin(), dropId, dropKey);
 }
 
-/** The drop key from a location hash, or null when missing/incomplete ("this link is incomplete"). */
-export function readShareKey(hash: string = window.location.hash): Uint8Array<ArrayBuffer> | null {
+/**
+ * The drop key from a share fragment, or null when missing/incomplete ("this link is incomplete"). No default:
+ * the receive page takes #key out of the address bar once it has read it (crypto-4), so window.location.hash is
+ * empty by then; callers pass the fragment useShareFragment kept.
+ */
+export function readShareKey(hash: string): Uint8Array<ArrayBuffer> | null {
   return parseShareFragment(hash);
 }

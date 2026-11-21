@@ -3,7 +3,9 @@
  * production build (CSP on) against the real API. Every test also runs the leak guard (fixtures.ts): no request
  * may carry the file name, the plaintext bytes, the key after `#` or a password.
  */
+import fs from 'node:fs';
 import path from 'node:path';
+import type { Download } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import {
   composeDrop,
@@ -168,6 +170,81 @@ test('4. tamper: one flipped ciphertext byte shows the integrity error and saves
   expect(tampered).toBeGreaterThan(0);
   expect(saved, 'a tampered file must never be saved').toBe(false);
   await expect(recipient.getByText('Integrity verified')).toHaveCount(0);
+});
+
+test('active content: HTML and SVG files are saved as application/octet-stream and never rendered', async ({
+  page,
+  newContext,
+  leaks,
+}) => {
+  const html = {
+    name: 'invoice-5512.html',
+    mimeType: 'text/html',
+    buffer: Buffer.from(
+      `<!doctype html><title>t</title><script>alert('HTML-RAN')</script><p>HTML-MARKER-5512</p>`,
+    ),
+  };
+  const svg = {
+    name: 'logo-5512.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><script>alert('SVG-RAN')</script><rect width="8" height="8"/></svg>`,
+    ),
+  };
+  for (const f of [html, svg]) leaks.forbidText('file name', f.name);
+  leaks.forbidText('plaintext marker', 'HTML-MARKER-5512');
+
+  await page.goto('/');
+  const link = await sendDrop(page, [html, svg]);
+  leaks.forbidKey('link key', keyOf(link));
+
+  const recipient = await (await newContext()).newPage();
+  // Record the type of every Blob the page turns into an object URL (the saves, and any preview).
+  await recipient.addInitScript(() => {
+    const w = window as unknown as { __objectUrlTypes: string[] };
+    w.__objectUrlTypes = [];
+    const original = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (obj: Blob | MediaSource) => {
+      w.__objectUrlTypes.push(obj instanceof Blob ? obj.type : 'MediaSource');
+      return original(obj);
+    };
+  });
+  const dialogs: string[] = [];
+  recipient.on('dialog', (d) => {
+    dialogs.push(d.message());
+    void d.dismiss();
+  });
+  const downloads: Download[] = [];
+  recipient.on('download', (d) => downloads.push(d));
+
+  await openLink(recipient, link);
+  await recipient.getByRole('button', { name: 'Decrypt & download' }).click();
+  // The default limit is one download: confirm the "last download" dialog.
+  await recipient.getByRole('button', { name: 'Download now' }).click();
+  await expect.poll(() => downloads.length, { timeout: 30_000 }).toBe(2);
+
+  for (const download of downloads) {
+    const source = [html, svg].find((f) => f.name === download.suggestedFilename());
+    expect(source, download.suggestedFilename()).toBeDefined();
+    const file = path.join(DOWNLOAD_DIR, `${Date.now()}-${download.suggestedFilename()}`);
+    await download.saveAs(file);
+    expect(fs.readFileSync(file).equals(source!.buffer)).toBe(true);
+    fs.rmSync(file);
+  }
+  // Both saves were application/octet-stream Blobs, and nothing else got an object URL (no image preview).
+  expect(
+    await recipient.evaluate(
+      () => (window as unknown as { __objectUrlTypes: string[] }).__objectUrlTypes,
+    ),
+  ).toEqual(['application/octet-stream', 'application/octet-stream']);
+  const list = recipient.getByRole('list', { name: 'Files in this drop' });
+  // The HTML shows as its source text; the SVG is not previewed at all.
+  await expect(list.getByLabel(`Preview of ${html.name}`)).toContainText(
+    "<script>alert('HTML-RAN')",
+  );
+  await expect(list.getByLabel(`Preview of ${svg.name}`)).toHaveCount(0);
+  await expect(list.locator('img, iframe, object, embed')).toHaveCount(0);
+  expect(dialogs, 'no script from a received file ran').toEqual([]);
 });
 
 test('upload survives two injected 503s', async ({ page, newContext, leaks }) => {

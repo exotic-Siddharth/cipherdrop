@@ -37,6 +37,43 @@ describe('Blob sink', () => {
     expect(safeBlobType('')).toBe('application/octet-stream');
     expect(safeBlobType('nonsense')).toBe('application/octet-stream');
   });
+
+  it.each([
+    'text/html',
+    'TEXT/HTML',
+    'application/xhtml+xml',
+    'image/svg+xml',
+    'text/xml',
+    'application/xml',
+    'application/rss+xml',
+    'application/mathml+xml',
+    'application/xslt+xml',
+    'text/xsl',
+    'text/javascript',
+    'application/javascript',
+    'application/ecmascript',
+    'text/css',
+    'application/wasm',
+    'application/pdf',
+    'multipart/x-mixed-replace',
+    'multipart/related',
+    'message/rfc822',
+    'application/x-shockwave-flash',
+    'application/vnd.apple.mpegurl',
+    'application/zip',
+  ])('saves the active or unknown type %s as application/octet-stream (crypto-3)', async (type) => {
+    expect(safeBlobType(type)).toBe('application/octet-stream');
+    const sink = createBlobSink(type);
+    await sink.write(new TextEncoder().encode('<script>alert(document.domain)</script>'));
+    expect((await sink.close())!.type).toBe('application/octet-stream');
+  });
+
+  it.each(['text/plain', 'text/csv', 'image/jpeg', 'image/webp', 'audio/mpeg', 'video/mp4'])(
+    'keeps the inert type %s',
+    (type) => {
+      expect(safeBlobType(type)).toBe(type);
+    },
+  );
 });
 
 describe('File-system sink', () => {

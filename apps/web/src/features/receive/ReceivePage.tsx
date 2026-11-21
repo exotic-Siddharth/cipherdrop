@@ -5,6 +5,8 @@
  * -> ready (note, files, "N of M downloads left", Decrypt & download, previews, integrity verdicts, report).
  * `?review=1` for admins uses the non-consuming admin grant (R13). The DropMeta query is read once per page
  * view (dropMetaQueryOptions) so a consuming /open never flips the page to "used up" mid-download.
+ * The key after `#` is read once and taken out of the address bar (useShareFragment, crypto-4); the views get
+ * the parsed key, never the hash.
  */
 import { AAD, b64urlEncode, decryptManifest, unwrapKey, type Manifest } from '@cipherdrop/crypto';
 import {
@@ -29,19 +31,20 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
-import { useLocation, useParams, useSearchParams } from 'react-router';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useParams, useSearchParams } from 'react-router';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { ButtonLink, Card, EmptyState, ErrorState, PageLoader } from '../../components/ui';
 import { kdfClient } from '../../crypto/kdfClient';
 import type { DownloadGrant } from '../../crypto/downloader';
 import { api, isApiError } from '../../lib/api';
 import { describeError } from '../../lib/errors';
-import { readShareKey } from '../../lib/links';
+import { readShareKey, shareLinkFor } from '../../lib/links';
 import { dropMetaQueryOptions, queryClient, queryKeys } from '../../lib/queryClient';
 import { useAuth } from '../../stores/auth';
 import { PasswordPrompt } from './components/PasswordPrompt';
 import { ReadyView } from './components/ReadyView';
+import { useShareFragment } from './useShareFragment';
 
 const GONE_COPY: Record<GoneReason, { icon: LucideIcon; title: string; description: string }> = {
   EXPIRED: {
@@ -102,7 +105,7 @@ function goneReason(err: unknown): GoneReason | null {
 }
 
 /** Decrypt the manifest of a key link (null key = incomplete link; IntegrityError = wrong key). */
-function useKeyLinkManifest(meta: DropMeta | undefined, hash: string) {
+function useKeyLinkManifest(meta: DropMeta | undefined, dk: Uint8Array | null) {
   const [state, setState] = useState<
     | { kind: 'idle' }
     | { kind: 'incomplete' }
@@ -111,7 +114,6 @@ function useKeyLinkManifest(meta: DropMeta | undefined, hash: string) {
   >({ kind: 'idle' });
   useEffect(() => {
     if (!meta || meta.passwordProtected || meta.status !== 'READY') return;
-    const dk = readShareKey(hash);
     if (!dk || !meta.encryptedManifest) {
       setState({ kind: 'incomplete' });
       return;
@@ -124,12 +126,11 @@ function useKeyLinkManifest(meta: DropMeta | undefined, hash: string) {
     return () => {
       alive = false;
     };
-  }, [meta, hash]);
+  }, [meta, dk]);
   return state;
 }
 
-function ReviewView({ dropId, hash }: { dropId: string; hash: string }) {
-  const dk = readShareKey(hash);
+function ReviewView({ dropId, dk }: { dropId: string; dk: Uint8Array | null }) {
   const review = useQuery(
     {
       queryKey: ['admin', 'review', dropId],
@@ -186,6 +187,7 @@ function ReviewView({ dropId, hash }: { dropId: string; hash: string }) {
       manifest={review.data.manifest}
       meta={null}
       authKey={null}
+      shareLink={null}
       review={{
         grant: {
           downloadToken: review.data.grant.downloadToken,
@@ -197,7 +199,16 @@ function ReviewView({ dropId, hash }: { dropId: string; hash: string }) {
   );
 }
 
-function PublicView({ dropId, hash }: { dropId: string; hash: string }) {
+function PublicView({
+  dropId,
+  dk,
+  forgetKey,
+}: {
+  dropId: string;
+  dk: Uint8Array | null;
+  /** The drop can no longer be downloaded: drop the reload copy of the key (useShareFragment). */
+  forgetKey: () => void;
+}) {
   const metaQuery = useQuery(
     {
       queryKey: queryKeys.dropMeta(dropId),
@@ -212,11 +223,20 @@ function PublicView({ dropId, hash }: { dropId: string; hash: string }) {
     queryClient,
   );
   const meta = metaQuery.data;
-  const keyLink = useKeyLinkManifest(meta, hash);
+  const keyLink = useKeyLinkManifest(meta, dk);
   const [unlocked, setUnlocked] = useState<Unlocked | null>(null);
   const [pwError, setPwError] = useState<string | null>(null);
   const [shakeKey, setShakeKey] = useState(0);
   const [pwBusy, setPwBusy] = useState(false);
+  // Not found, or gone for good (expired, used up, deleted, disabled): no reload can use the key any more.
+  // A drop that is still uploading keeps it, for a reload once the upload is done.
+  const gone = metaQuery.isError
+    ? (isApiError(metaQuery.error) && metaQuery.error.status === 404) ||
+      goneReason(metaQuery.error) !== null
+    : meta !== undefined && meta.status !== 'READY' && meta.status !== 'UPLOADING';
+  useEffect(() => {
+    if (gone) forgetKey();
+  }, [gone, forgetKey]);
 
   if (metaQuery.isPending) return <PageLoader label="Loading the drop..." />;
   if (metaQuery.isError) {
@@ -293,7 +313,9 @@ function PublicView({ dropId, hash }: { dropId: string; hash: string }) {
           manifest={unlocked.manifest}
           meta={summary}
           authKey={unlocked.authKey}
+          shareLink={shareLinkFor(dropId, null)}
           review={null}
+          onNoDownloadsLeft={forgetKey}
         />
       );
     }
@@ -357,7 +379,9 @@ function PublicView({ dropId, hash }: { dropId: string; hash: string }) {
       manifest={keyLink.value.manifest}
       meta={summary}
       authKey={null}
+      shareLink={shareLinkFor(dropId, keyLink.value.dk)}
       review={null}
+      onNoDownloadsLeft={forgetKey}
     />
   );
 }
@@ -365,7 +389,9 @@ function PublicView({ dropId, hash }: { dropId: string; hash: string }) {
 export function Component() {
   const { id = '' } = useParams();
   const [params] = useSearchParams();
-  const { hash } = useLocation();
+  const { fragment, forget } = useShareFragment();
+  // The one parse of the key for this page view; the views below get the key, never the hash.
+  const dk = useMemo(() => readShareKey(fragment), [fragment]);
   const authStatus = useAuth((s) => s.status);
   const role = useAuth((s) => s.user?.role);
   const wantsReview = params.get('review') === '1';
@@ -373,8 +399,8 @@ export function Component() {
   let body: ReactNode;
   if (wantsReview && authStatus === 'booting')
     body = <PageLoader label="Checking your session..." />;
-  else if (wantsReview && role === 'ADMIN') body = <ReviewView key={id} dropId={id} hash={hash} />;
-  else body = <PublicView key={id} dropId={id} hash={hash} />;
+  else if (wantsReview && role === 'ADMIN') body = <ReviewView key={id} dropId={id} dk={dk} />;
+  else body = <PublicView key={id} dropId={id} dk={dk} forgetKey={forget} />;
 
   return (
     <>

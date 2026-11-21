@@ -19,6 +19,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 
 ### Security
 
+- Lock vault and sign-out apply to every open tab of the browser (a `BroadcastChannel`, with a `storage`-event
+  fallback; only the signal crosses tabs, never key material). Before, another unlocked tab kept the account key.
 - Admin routes require two-step verification on the account (403 `MFA_REQUIRED` otherwise), because the console can
   return reporters' decryption keys. Only accounts with 2FA can be promoted, admins cannot turn 2FA off, and turning
   2FA on signs out every other session of the account.

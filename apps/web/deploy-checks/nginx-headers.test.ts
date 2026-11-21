@@ -70,8 +70,45 @@ describe('deploy/nginx.conf', () => {
     expect(block).toMatch(/try_files \$uri =404;/);
   });
 
-  it('answers /api/docs (Swagger UI) with its own 404, never the API, and keeps the inherited headers', () => {
-    const docs = ownLevel(block(stripComments(conf), 'location ^~ /api/docs'));
+  it('answers /api/docs (Swagger UI) in any letter case with its own 404, never the API, and keeps the inherited headers', () => {
+    // Express mounts are case-insensitive and end at a segment boundary: /api/DOCS/ reaches Swagger UI too.
+    const mount = /app\.use\(\s*'([^']+)',\s*swaggerUi\.serve/.exec(
+      read('apps', 'api', 'src', 'app.ts'),
+    )?.[1];
+    expect(mount).toBe('/api/docs');
+    const express = new RegExp(`^${mount}(?:/|$)`, 'i');
+    const docsPaths = [
+      '/api/docs',
+      '/api/docs/',
+      '/api/docs/swagger-ui-bundle.js',
+      '/api/DOCS/',
+      '/api/Docs/swagger-ui-bundle.js',
+      '/api/dOcS',
+    ];
+    const otherPaths = ['/api/docsx', '/api/doc', '/api/openapi.json', '/api/drops', '/docs'];
+    for (const p of [...docsPaths, ...otherPaths]) {
+      expect(express.test(p), p).toBe(docsPaths.includes(p));
+    }
+
+    // nginx: the first top-level regex location that matches each path must be the docs one, and nothing may stop
+    // nginx from trying the regexes (an exact match or a ^~ prefix that covers the path).
+    const top = [...ownLevelLocations(server)];
+    const regexes = top.filter((l) => l.modifier === '~' || l.modifier === '~*');
+    const docsHeader = 'location ~* ^/api/docs(?:/|$)';
+    for (const p of docsPaths) {
+      const first = regexes.find((l) => l.matches(p));
+      expect(first?.header, p).toBe(docsHeader);
+      for (const l of top.filter((l) => l.modifier === '=' || l.modifier === '^~')) {
+        expect(l.matches(p), `${l.header} hides the regexes for ${p}`).toBe(false);
+      }
+      // A regex nested in /api/ (the longest prefix) is tried first.
+      expect(chunkRe.test(p), p).toBe(false);
+    }
+    for (const p of otherPaths) {
+      expect(regexes.find((l) => l.matches(p))?.header, p).not.toBe(docsHeader);
+    }
+
+    const docs = ownLevel(block(server, docsHeader));
     expect(directive(docs, 'return')).toEqual(['404']);
     expect(directive(docs, 'proxy_pass')).toEqual([]);
     expect(directive(docs, 'add_header')).toEqual([]);
@@ -137,6 +174,37 @@ function directive(level: string, name: string): string[] {
     .filter((m) => m[2] === ';')
     .map((m) => named.exec((m[1] as string).trim())?.[1])
     .filter((args): args is string => args !== undefined);
+}
+
+/** The locations declared directly in a block (not nested deeper), with how nginx matches a URI against each. */
+function* ownLevelLocations(body: string): Generator<{
+  header: string;
+  modifier: string;
+  matches: (uri: string) => boolean;
+}> {
+  let depth = 0;
+  let quoted = false;
+  let statement = '';
+  for (const ch of body) {
+    if (ch === '"') quoted = !quoted;
+    if (!quoted && (ch === '{' || ch === '}' || ch === ';')) {
+      const m = /^location\s+(?:(=|\^~|~\*|~)\s+)?(\S+)$/.exec(statement.trim());
+      if (ch === '{' && depth === 0 && m) {
+        const modifier = m[1] ?? '';
+        const arg = m[2] as string;
+        const re = modifier.startsWith('~') ? new RegExp(arg, modifier === '~*' ? 'i' : '') : null;
+        yield {
+          header: statement.trim().replace(/\s+/g, ' '),
+          modifier,
+          matches: (uri) =>
+            re ? re.test(uri) : modifier === '=' ? uri === arg : uri.startsWith(arg),
+        };
+      }
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+      statement = '';
+    } else statement += ch;
+  }
 }
 
 /** nginx size ("5m", "128k", "4096") in bytes. */

@@ -123,6 +123,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 - Account deletion keeps the reports against the account's drops: a reported drop stays as an ownerless row
   without blobs or key, instead of cascading its reports away.
 - Opens and failed unlocks of a drop without an owner no longer store the IP prefix or the browser.
+- The audit log is append-only for the runtime role `cipherdrop_app` (no UPDATE or DELETE on `AuditEvent`);
+  retention runs through the owner's `prune_audit_events()` (migration `20261122100100_audit_append_only`).
 - `ADMIN_REVIEW_GRANT` is recorded with the admin as the actor and no longer appears in the admin's own Activity.
 - `AdminUser` gains `suspendedAt` and `suspendedReason`; `PATCH /admin/users/:id` takes `suspended` and
   `suspendedReason`.

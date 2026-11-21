@@ -3,6 +3,10 @@
 A live demo script for the local dev stack: what to click, in order, and what to say. It uses the seed data
 from `npm run db:seed` (see the [README quick start](../README.md#quick-start)).
 
+To watch it without running anything, open [screenshots/demo.gif](screenshots/demo.gif) (about 90 seconds, the
+same flow with captions) or the [screenshots](../README.md#screenshots). Both are recorded from the real app by
+`npm run media -w @cipherdrop/web` ([Recording the demo and the screenshots](#recording-the-demo-and-the-screenshots)).
+
 ## Before you start
 
 - Stack running: `docker compose up -d --wait`, then `npm run dev` (web on http://localhost:5174, API on port 4100).
@@ -54,13 +58,43 @@ from `npm run db:seed` (see the [README quick start](../README.md#quick-start)).
   blobs. Review is refused once the drop has expired (an accepted open point in
   [SECURITY.md](SECURITY.md#7-accepted-open-points)). In **Users**, try to make `demo@cipherdrop.local` an admin: it
   is refused, because that account has no two-step verification.
-- **Tamper evidence.** Show `docs/screenshots/receive-tamper-blocked-light.png`, captured by flipping one byte of
-  every chunk response with a Playwright route, or run `npm run e2e` and point at test 4 in
-  `apps/web/e2e/drops.spec.ts`.
+- **Tamper evidence.** Show [screenshots/receive-tamper-blocked-light.png](screenshots/receive-tamper-blocked-light.png)
+  (or the phone version, `receive-tamper-blocked-mobile-light.png`), which the media run captures by flipping one byte
+  of every chunk response with a Playwright route, as test 4 in `apps/web/e2e/drops.spec.ts` does; the GIF shows the
+  same moment. Or run `npm run e2e` and point at that test.
 - **API.** Open http://localhost:5174/api/docs (Swagger UI) and show that `POST /drops` takes only an encrypted
   manifest, sizes and options.
 - **Network tab.** In the browser's developer tools, filter on `/api/drops` during an upload: the request bodies
   are base64url blobs and raw ciphertext, and no request contains the file name.
+
+## Recording the demo and the screenshots
+
+`npm run media -w @cipherdrop/web` records the script above on video, turns it into `docs/screenshots/demo.gif`, and
+regenerates every PNG in `docs/screenshots`. It is opt-in: `npm run e2e` and CI never run it, because it writes into
+the repository.
+
+- **Needs** the Compose Postgres and Redis (`docker compose up -d --wait`), Playwright's Chromium and its video
+  recorder (`npm run e2e:install -w @cipherdrop/web`), and `ffmpeg` on the `PATH` for the GIF. Without `ffmpeg` the
+  screenshots are still made and the recorded scenes stay in `apps/web/test-results/media-video`.
+- **Runs** like `npm run e2e` (`apps/web/playwright.media.config.ts`, specs `apps/web/e2e/*.media.ts`): it builds the
+  SPA, serves it with `vite preview` under the production CSP, starts the API on the wiped `cipherdrop_e2e` database
+  and the e2e ports, so it cannot run at the same time as an e2e run. It seeds that database with
+  `apps/api/prisma/seed.ts`, with random passwords for the demo and admin accounts (never the `.env` ones), and creates
+  the rest through the UI. Each browser's clock is frozen (`page.clock`), so countdowns read the same in every
+  picture, and the e2e leak guard stays on: no file name, note, password or link key may appear in any request.
+- **Screenshots** are 1440x900 (desktop) and 390x844 (phone) CSS pixels at device scale factor 2, in light and dark
+  where both exist. `send-progress-*` parks the chunk uploads after the fifth, so its MB/s and time left describe a
+  stalled upload, not a measurement. `hero.png` is the dark upload view and the light receive view side by side, at
+  1280x640.
+- **The GIF** is about 90 seconds at 960 px wide and 8 frames per second, under 6 MB (the run fails above that). The
+  captions are added to the page for the recording, and each chunk upload is delayed by 600 ms so the ciphertext strip
+  stays on screen, so the speed shown in the clip is not a measurement either.
+- **Before committing**, look at the pictures. They show dev data only: the seeded accounts, throwaway drops, a
+  recovery key and a TOTP secret of accounts in the disposable e2e database, and links to `localhost`; passwords are
+  masked. The committed PNGs were then recompressed losslessly with [oxipng](https://github.com/shssoichiro/oxipng)
+  at level 4 with safe chunk stripping, through its Python binding `pyoxipng` (the command-line equivalent is
+  `oxipng -o 4 --strip safe docs/screenshots/*.png`): the same pixels in about a quarter fewer bytes. The run itself
+  writes Playwright's PNGs as they are.
 
 ## Questions to expect
 

@@ -423,13 +423,14 @@ export async function loadUser(ctx: AppContext, userId: string): Promise<User> {
  * (review of server-3): a thief holding one stolen session could otherwise spend the whole account's budget with
  * wrong proofs and stop the owner, on their own session, from signing that session out or changing the password.
  * A new session needs the password (and the second factor), so a token thief still gets 10 guesses per window.
- * Successful proofs count too: each one runs a server-side Argon2id.
+ * Successful proofs count too: each one runs a server-side Argon2id. A 429 from a full Argon2id queue does not.
  */
 export function reauthLimit(ctx: Pick<AppContext, 'rateLimit'>): RequestHandler {
   return ctx.rateLimit({
     name: 'reauth',
     key: (req) =>
       req.user ? `session|${req.user.id}|${req.user.sid}` : `anonymous|${ipKey(req.ip)}`,
+    refundServerBusy: true,
   });
 }
 

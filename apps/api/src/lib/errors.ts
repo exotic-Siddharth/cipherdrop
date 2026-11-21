@@ -10,13 +10,18 @@ export class AppError extends Error {
   readonly details?: unknown;
   /** Sets the Retry-After header (seconds) on 429/503 responses. */
   readonly retryAfterSec?: number;
+  /**
+   * A 429 because the server is at capacity, not because this client went over a limit: the request was refused
+   * before anything was checked, so limiters created with `refundServerBusy` do not count it (lib/rateLimit.ts).
+   */
+  readonly serverBusy: boolean;
 
   constructor(
     status: number,
     code: ErrorCode,
     message: string,
     details?: unknown,
-    options: { retryAfterSec?: number; cause?: unknown } = {},
+    options: { retryAfterSec?: number; cause?: unknown; serverBusy?: boolean } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'AppError';
@@ -24,6 +29,7 @@ export class AppError extends Error {
     this.code = code;
     this.details = details;
     this.retryAfterSec = options.retryAfterSec;
+    this.serverBusy = options.serverBusy ?? false;
   }
 }
 
@@ -76,6 +82,16 @@ export const quotaExceeded = (message = 'Storage quota exceeded', details?: unkn
 export const rateLimited = (retryAfterSec?: number) =>
   new AppError(429, 'RATE_LIMITED', 'Too many requests, please try again later', undefined, {
     retryAfterSec,
+  });
+
+/**
+ * 429 RATE_LIMITED for a full server-side queue (ctx.argon2): the same answer as rateLimited for the client, but
+ * marked serverBusy so that per-client limiters with `refundServerBusy` take the request back.
+ */
+export const serverBusy = (retryAfterSec: number) =>
+  new AppError(429, 'RATE_LIMITED', 'Too many requests, please try again later', undefined, {
+    retryAfterSec,
+    serverBusy: true,
   });
 
 export const internal = (message = 'Internal server error', cause?: unknown) =>

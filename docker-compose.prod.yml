@@ -6,6 +6,9 @@
 # Optional profiles:   --profile minio   S3-compatible storage in this stack (STORAGE_DRIVER=s3, S3_ENDPOINT=http://minio:9000)
 #                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS; TRUST_PROXY=1, not 2)
 # Nothing but the web port (and Caddy's 80/443 with the tls profile) is published. The dev stack is docker-compose.yml.
+# Third-party images are pinned by tag plus multi-platform index digest (Dependabot's docker-compose entry proposes the
+# bumps), except MinIO's: its registry, cgr.dev, could not be reached to resolve a digest. CI's service containers and
+# its MinIO use the same references; scripts/image-pins.test.mjs fails when a bump here leaves them behind.
 name: cipherdrop-prod
 
 x-logging: &logging
@@ -16,7 +19,7 @@ x-logging: &logging
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
     environment:
       POSTGRES_USER: cipherdrop
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
@@ -36,7 +39,7 @@ services:
   # Redis holds rate-limit counters, the revoked-session denylist and cleanup locks. The denylist is what makes a
   # password change or "revoke session" effective at once, so it is persisted (AOF) and survives a restart.
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec']
     volumes:
       - redis-data:/data
@@ -150,7 +153,7 @@ services:
   # (set_real_ip_from in deploy/nginx.conf), so the API and nginx's per-client cap see the real client.
   caddy:
     profiles: [tls]
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-}
     ports:

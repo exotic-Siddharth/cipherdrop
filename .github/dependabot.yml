@@ -64,9 +64,22 @@ updates:
         patterns: ['*']
         update-types: ['minor', 'patch']
 
-  # Base images. Dependabot reads only FROM lines that name an image: the Dockerfiles take theirs from ARG defaults
-  # (`ARG NODE_IMAGE=node:22-alpine`, `FROM ${NODE_IMAGE}`), which it does not resolve, so this entry finds nothing to
-  # update until the FROM lines are literal (ideally tag plus digest).
+  # zizmor, the workflow linter (.github/zizmor-requirements.txt: exact version and wheel hashes, both updated).
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+
+  # Base images of both Dockerfiles. Each FROM line names its image literally, as tag plus index digest
+  # (`FROM node:22-alpine@sha256:... AS base`): Dependabot reads only FROM lines that name an image, so an ARG default
+  # would hide it. With a digest pin it proposes the new digest whenever the tag moves (a rebuilt node:22-alpine with
+  # Alpine or npm fixes), and newer tags within the same line. The group makes that one pull request for both
+  # Dockerfiles, so the node digest moves in both at once.
   - package-ecosystem: docker
     directories:
       - /apps/api
@@ -76,3 +89,30 @@ updates:
       day: monday
     commit-message:
       prefix: build
+    ignore:
+      # The Node major follows engines and @types/node (see the npm entry): a deliberate upgrade, not a bump.
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
+    groups:
+      base-images:
+        patterns: ['*']
+
+  # The third-party images of the compose files (postgres, redis, caddy in docker-compose.prod.yml; tag plus digest).
+  # This entry does not touch ci.yml's service images, which must stay equal to the compose ones: the pull request
+  # fails scripts/image-pins.test.mjs (audit.yml) until they are moved by hand in the same branch.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: build
+    ignore:
+      # A Postgres or Redis major changes the on-disk format (pg_upgrade or a dump and restore): a planned migration.
+      - dependency-name: postgres
+        update-types: ['version-update:semver-major']
+      - dependency-name: redis
+        update-types: ['version-update:semver-major']
+    groups:
+      compose-images:
+        patterns: ['*']

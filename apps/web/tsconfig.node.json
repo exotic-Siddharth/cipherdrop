@@ -12,6 +12,7 @@
     "e2e",
     "bench",
     "deploy-checks",
-    "playwright.prod.config.ts"
+    "playwright.prod.config.ts",
+    "playwright.cross.config.ts"
   ]
 }

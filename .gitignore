@@ -16,6 +16,8 @@ coverage/
 playwright-report/
 test-results/
 blob-report/
+# SBOMs and vulnerability reports of node scripts/image-scan.mjs
+image-scan/
 
 # local blob storage (STORAGE_DIR defaults to apps/api/data/blobs)
 apps/api/data/

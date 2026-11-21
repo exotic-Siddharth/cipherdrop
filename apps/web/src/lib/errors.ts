@@ -38,11 +38,15 @@ const FEATURE_DISABLED_MESSAGES: Readonly<Record<SwitchableFeature, string>> = O
   registration: 'This server is not accepting new accounts right now.',
 });
 
+/**
+ * The budget refuses a create that would go over it (it counts declared bytes, deleted drops included), so the
+ * copy says what the limit is and that this drop does not fit, not that the sender has used it all.
+ */
 function uploadBudgetText(err: ApiError): string {
   const budget = UploadBudgetDetailsSchema.safeParse(err.details);
   const sent = budget.success
-    ? `You have sent ${formatBytes(budget.data.limitBytes)} without an account in the last ${pluralize(budget.data.windowHours, 'hour')}, the limit for anonymous senders.`
-    : 'You have sent a lot without an account recently.';
+    ? `Without an account you can send up to ${formatBytes(budget.data.limitBytes)} per ${pluralize(budget.data.windowHours, 'hour')}, and this drop would go over that.`
+    : 'This drop would go over the limit for sending without an account.';
   const wait = err.retryAfter ? `Try again in ${formatWait(err.retryAfter)}` : 'Try again later';
   return `${sent} ${wait}, or sign in to send more.`;
 }
@@ -50,7 +54,7 @@ function uploadBudgetText(err: ApiError): string {
 function quotaText(err: ApiError, fallback: string): string {
   const quota = QuotaExceededDetailsSchema.safeParse(err.details);
   if (quota.success && quota.data.probationEndsAt) {
-    return `Your storage is full. New accounts can store up to ${formatBytes(quota.data.quotaBytes)} until ${formatDate(quota.data.probationEndsAt)}. Delete a drop, or wait until then.`;
+    return `This drop does not fit in your storage. New accounts can store up to ${formatBytes(quota.data.quotaBytes)} until ${formatDate(quota.data.probationEndsAt)}. Delete a drop, or wait until then.`;
   }
   return err.message || fallback;
 }

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # CipherDrop API image (spec section 16). Build context = repository root:
 #   docker build -f apps/api/Dockerfile -t cipherdrop-api .
 # Stages: base (the pinned Node image plus OpenSSL) -> build (full install, prisma generate, tsup bundle) ->
@@ -9,6 +8,9 @@
 # bytes. A literal FROM, not an ARG default, so Dependabot (.github/dependabot.yml) can propose the digest bumps: its
 # Dockerfile parser reads only FROM lines that name an image. To build from a registry mirror, configure the mirror in
 # the Docker daemon (registry-mirrors) or edit this line: the digest still has to match.
+# There is no `syntax` parser directive on purpose: the build uses the Dockerfile frontend built into the builder
+# (BuildKit, versioned with the Docker install), so no frontend image is pulled by a floating tag and run on every
+# build. Nothing in either Dockerfile needs a newer frontend (no RUN --mount, no heredocs, no COPY --link or --chmod).
 FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS base
 # Prisma's engines need OpenSSL (binaryTargets in schema.prisma: linux-musl-openssl-3.0.x): the build's
 # `prisma generate`, the migrate CLI and the runtime's query engine.

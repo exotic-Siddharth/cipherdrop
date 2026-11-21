@@ -1,9 +1,9 @@
-# syntax=docker/dockerfile:1
 # CipherDrop web image (spec section 16): the built SPA served by nginx with the section 12 security headers and an
 # /api reverse proxy (deploy/nginx.conf). Build context = repository root:
 #   docker build -f apps/web/Dockerfile -t cipherdrop-web .
 # Both base images are pinned by their multi-platform index digest, in literal FROM lines so Dependabot can propose
-# the bumps (see apps/api/Dockerfile; keep the node digest the same in both files).
+# the bumps (see apps/api/Dockerfile; keep the node digest the same in both files). No `syntax` parser directive, as
+# in apps/api/Dockerfile: the build uses the builder's own Dockerfile frontend.
 
 FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS build
 WORKDIR /repo

@@ -1,8 +1,11 @@
-/** R10: the prelogin, login, loginIp, loginMfa, register and recovery limiters go through ctx.rateLimit. */
+/**
+ * R10: the prelogin, login, loginIp, loginMfa, register, recovery and reauth limiters go through ctx.rateLimit.
+ */
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { TEST_ACCOUNT, createUserRecord, uniqueEmail } from '../../../test/factories';
+import { bearer, newSession, registerViaApi } from './testkit';
 
 let t: TestApp;
 
@@ -110,5 +113,52 @@ describe('failed logins per client (critic-1)', () => {
     }
     expect((await login('2001:db8:60:ffff::2')).status).toBe(429);
     expect((await login('2001:db8:61::1')).status).toBe(401);
+  });
+});
+
+describe('re-authentication budget per session (review of server-3)', () => {
+  let c: TestApp;
+  beforeAll(async () => {
+    c = await createTestApp({ rateLimits: { reauth: true } });
+  });
+  afterAll(async () => {
+    await c.close();
+  });
+
+  const WRONG_AUTH_KEY = Buffer.alloc(32, 0xa5).toString('base64url');
+
+  it('a stolen session spending its budget cannot stop the owner from signing it out', async () => {
+    const owner = await registerViaApi(c.app);
+    const thief = await newSession(c.app, owner);
+    const revokeOthers = (accessToken: string, authKey: string) =>
+      request(c.app)
+        .post('/api/auth/sessions/revoke-others')
+        .set('Authorization', bearer(accessToken))
+        .send({ authKey });
+
+    // The thief guesses (10 per 15 min), then waits; DELETE /me shares that session's budget.
+    for (let i = 0; i < 10; i++) {
+      expect((await revokeOthers(thief.accessToken, WRONG_AUTH_KEY)).status).toBe(403);
+    }
+    const limited = await revokeOthers(thief.accessToken, WRONG_AUTH_KEY);
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    const deleteMe = await request(c.app)
+      .delete('/api/me')
+      .set('Authorization', bearer(thief.accessToken))
+      .send({ authKey: WRONG_AUTH_KEY });
+    expect(deleteMe.status).toBe(429);
+
+    // The owner's own session still has its budget: the thief's session is signed out at once.
+    const revoke = await request(c.app)
+      .delete(`/api/auth/sessions/${thief.sid}`)
+      .set('Authorization', bearer(owner.accessToken))
+      .send({ authKey: owner.authKey });
+    expect(revoke.status).toBe(204);
+    expect(
+      (await request(c.app).get('/api/auth/vault').set('Authorization', bearer(thief.accessToken)))
+        .status,
+    ).toBe(401);
+    expect((await revokeOthers(owner.accessToken, owner.authKey)).status).toBe(204);
   });
 });

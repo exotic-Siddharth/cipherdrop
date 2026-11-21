@@ -44,10 +44,10 @@ One extra API run against the dev API on port 4100 (rate limits on) is in sectio
 # 1. Crypto in Node (3 invocations)
 npm run bench -w @cipherdrop/crypto
 
-# 2. Own API for the benches (rate limits off, disposable e2e database), port 4102
+# 2. Own API for the benches (rate limits and new-account probation off, disposable e2e database), port 4102
 NODE_ENV=development API_PORT=4102 WEB_ORIGIN=http://localhost:5175 \
   DATABASE_URL='postgresql://cipherdrop:cipherdrop@localhost:55433/cipherdrop_e2e?schema=public' \
-  REDIS_URL='redis://localhost:56380/9' KEY_PREFIX=cd-bench RATE_LIMITS_ENABLED=false \
+  REDIS_URL='redis://localhost:56380/9' KEY_PREFIX=cd-bench RATE_LIMITS_ENABLED=false NEW_ACCOUNT_PROBATION_DAYS=0 \
   STORAGE_DIR=./data/e2e-blobs STORAGE_DRIVER=local LOG_LEVEL=warn CLEANUP_INTERVAL_SEC=3600 \
   node --import tsx apps/web/e2e/support/start-api.ts
 
@@ -64,6 +64,11 @@ BENCH_WEB_URL=http://localhost:5175 npm run bench:browser -w @cipherdrop/web
 # 6. Control: headless Chromium PUTting to a bare Node server (no CipherDrop code)
 npm run bench:ceiling -w @cipherdrop/web
 ```
+
+`NEW_ACCOUNT_PROBATION_DAYS=0` was added to step 2 on 2026-11-21, after these runs: both benches register a
+throw-away account, which is new and so, by default, limited to the 256 MiB probation quota for 7 days. The browser
+bench keeps every run's drop until it deletes the account (8 MiB + 3 x 96 MiB = 296 MiB), so without the setting its
+third run gets 413 `QUOTA_EXCEEDED`; the API bench deletes each run's drops.
 
 **Workload.** 96 MiB (100,663,296 bytes) of random data, 24 chunks of 4 MiB (`CHUNK_SIZE`), signed-in sender,
 `maxDownloads` 100 so a run can download several times. Concurrency: the SPA's upload worker keeps 3 chunks in flight,

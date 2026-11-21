@@ -11,22 +11,32 @@ server stores only ciphertext it has no key for.
 
 - **Send** up to 20 files per drop (100 MiB of ciphertext anonymously, 2 GiB with an account). The browser encrypts them
   with AES-256-GCM in 4 MiB chunks and uploads only ciphertext. The share link carries the key after `#`, which browsers never send to a server.
-  A drop with a file over 256 MiB can only be received in a desktop browser with the File System Access API, such as
-  Chrome or Edge ([Browser support](#browser-support)).
+  Anonymous senders get 1 GiB per 24 hours per IPv4 address or IPv6 /48, and all anonymous drops together at most
+  10 GiB (both configurable). A drop with a file over 256 MiB can only be received in a browser with the File System
+  Access API, such as desktop Chrome or Edge ([Browser support](#browser-support)).
 - **Password links** as an alternative: the link has no key, and the drop key is unwrapped with a key derived
   from the password through Argon2id.
 - **Burn after reading and expiry**: a download limit of 1 (burn after reading) to 10 anonymously or up to 100
   with an account, and expiry from 1 hour to 3 days anonymously or up to 30 days with an account.
 - **Receive**: names, sizes and the sender's note are decrypted in the browser; every chunk is authenticated, and
-  a modified file is blocked before it is saved. Image and text previews.
+  a modified file is blocked before it is saved. "Integrity verified" means the bytes are exactly what was encrypted
+  with the link's key, not who sent them or that they are safe, and the page says so. Image and text previews. The
+  page takes the key out of the address bar once it has read it (a reload of the same tab still works) and offers an
+  explicit **Copy link**. Active file types (HTML, SVG, XML, scripts, PDF and others) are saved as
+  `application/octet-stream`.
 - **Zero-knowledge accounts**: the password never leaves the browser. A dashboard lists your drops with decrypted
   names on any device; recovery key, TOTP two-factor login with backup codes, session list with revocation,
   password change, account deletion, and an activity log ("Your drop was downloaded", with the IP prefix such as
-  203.0.113.0/24 and the browser).
-- **Admin console**: statistics with a 14-day uploads chart, an abuse-report queue (disable or dismiss, and review
-  a drop when the reporter chose to share its key), user role and quota edits.
-- **Operations**: local-disk or S3-compatible storage, Prometheus metrics, health and readiness checks, an
-  OpenAPI document with Swagger UI, and a production Docker Compose stack behind nginx.
+  203.0.113.0/24 and the browser). Sensitive actions ask for the password again (and the 2FA code when it is on), and
+  a session ends 30 days after sign-in (by default) however active it is.
+- **Admin console** (admins need two-step verification): statistics with a 14-day uploads chart, an abuse-report
+  queue (disable or dismiss, and review a drop when the reporter chose to share its key), user role and quota edits.
+- **Limits for a public instance**: new accounts store up to 256 MiB for their first 7 days, then 5 GiB (an admin can
+  change it); operators can switch off anonymous uploads or sign-ups, cap total storage, and keep a free-disk floor;
+  the send and register pages explain a closed door or a full server.
+- **Operations**: local-disk or S3-compatible storage, Prometheus metrics, health and readiness checks, an OpenAPI
+  document (with Swagger UI in development only), `/.well-known/security.txt`, and a production Docker Compose stack
+  behind nginx.
 
 ## Engineering highlights
 
@@ -51,22 +61,28 @@ These are the problems that took the most work, and the parts an interviewer is 
    connection, then a short `FOR SHARE` transaction re-checks the drop and points the chunk row at that version.
    Delete, admin disable and `complete` cannot interleave with a half-finished write (review findings C-04 and
    C-R2-01; `apps/api/src/modules/drops/drops.races.test.ts` has 11 race tests).
-5. **Abuse resistance on the transfer path.** Per-token and per-IP rate limits (an IP limiter runs first so random
-   tokens cannot dodge it), in-flight caps per token, per client and per process with `429` and `Retry-After`, a
-   minimum body rate of 4,096 bytes/s against slow-drip uploads, and an idle timeout on downloads so slow readers
-   cannot exhaust the 256-socket S3 pool. The bundled nginx streams chunk PUTs and GETs instead of buffering them,
-   so these defences act on the real client, and it caps in-flight `/api` requests at 64 per client (16 PUT + 32 GET
-   API shares + 16), keyed like the API's in-flight shares (IPv4 address or IPv6 /48). The production smoke test
-   checks this with raw-socket slow clients. Behind the bundled Caddy, nginx trusts `X-Forwarded-For` only from
+5. **Abuse resistance.** The server cannot scan ciphertext, so hosting abuse is bounded by cost and volume:
+   anonymous creates and sign-ups are limited per IPv4 address or IPv6 /48 (not /64, of which a /48 holds 65,536), a
+   rolling byte budget per anonymous client lives in Redis, new accounts start on a probation quota, and a global
+   storage cap and a free-disk floor refuse new drops before the disk fills ([SECURITY.md](docs/SECURITY.md) section
+   2.7, with the residual risks). Logins are bounded too: at most 2 server-side Argon2id hashes run at once per
+   process, 32 wait, and the rest get `429` with `Retry-After: 1`, which counts as no failed login. On the transfer
+   path: per-token and per-IP rate limits (an IP limiter runs first so random tokens cannot dodge it), in-flight caps
+   per token, per client and per process with `429` and `Retry-After`, a minimum body rate of 4,096 bytes/s against
+   slow-drip uploads, and an idle timeout on downloads so slow readers cannot exhaust the 256-socket S3 pool. The
+   bundled nginx streams chunk PUTs and GETs instead of buffering them, so these defences act on the real client, and
+   it caps in-flight `/api` requests at 64 per client (16 PUT + 32 GET API shares + 16), keyed like the API's
+   in-flight shares (IPv4 address or IPv6 /48). The production smoke test checks this with raw-socket slow clients. Behind the bundled Caddy, nginx trusts `X-Forwarded-For` only from
    Caddy's fixed address, so the cap sees the real client.
 6. **Proving that no plaintext reaches the server.** The Playwright suite runs the production build under the
    production CSP and records every request of every browser context: navigations, assets, worker scripts, the
    upload worker's chunk PUTs and the API calls, with every header the browser sent (Cookie included). A leak guard
    fails the run if a request goes to another origin, or if a test file name (raw, URL-encoded the ways scripts, forms
    and the browser's URL parser do it, JSON-escaped, base64 or base64url), plaintext bytes (raw, base64, base64url or hex) or a key (its link text, or
-   its bytes raw, as base64, base64url or hex) appears in any URL, header or body; 15 self-tests check that it
-   catches each case. On the server side, log tests run whole flows, forced 500s included, and fail if a token, key,
-   manifest or file byte reaches the API's logs. A tamper test flips one byte of a chunk in flight and expects the
+   its bytes raw, as base64, base64url or hex) appears in any URL, header or body, and on any CSP or Trusted Types
+   message in the console; 19 self-tests check that it catches each case. A subset of the suite also runs in
+   Firefox, WebKit and two emulated phones. On the server side, log tests run whole flows, forced 500s included, and
+   fail if a token, key, manifest or file byte reaches the API's logs. A tamper test flips one byte of a chunk in flight and expects the
    UI to block the save.
 7. **Measuring honestly.** In headless Chromium the app uploads at 13.0 MiB/s (median of 9 runs), while the same
    API takes 82.3 MiB/s from Node. A control with no CipherDrop code shows that headless Chromium itself uploads
@@ -106,14 +122,14 @@ hierarchy, the drop lifecycle and the session flow as diagrams, plus the design 
 
 ## Tech stack
 
-| Area                 | Choice                                                                                                                                              |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Language and tooling | TypeScript 5.9 (strict, ESM), npm workspaces, Node 22, ESLint 9, Prettier 3                                                                         |
-| Cryptography         | WebCrypto (AES-256-GCM, HKDF-SHA-256, SHA-256), `hash-wasm` Argon2id in the browser, `@node-rs/argon2` on the server                                |
-| API                  | Express 5, Prisma 6, PostgreSQL 16, Redis 7 (ioredis), zod 3, OpenAPI via `zod-to-openapi`, pino, helmet, `otpauth`, AWS SDK v3 for S3, prom-client |
-| Web                  | React 19, Vite 7, Tailwind CSS 4, React Router 7, TanStack Query 5, Zustand 5                                                                       |
-| Tests                | Vitest 3, Supertest, Testing Library with jsdom, Playwright (Chromium)                                                                              |
-| Infrastructure       | Docker Compose (Postgres, Redis, MinIO), nginx, optional Caddy for TLS, GitHub Actions (CI and a dependency audit gate), Dependabot                 |
+| Area                 | Choice                                                                                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language and tooling | TypeScript 5.9 (strict, ESM), npm workspaces, Node 22, ESLint 9, Prettier 3                                                                                       |
+| Cryptography         | WebCrypto (AES-256-GCM, HKDF-SHA-256, SHA-256), `hash-wasm` Argon2id in the browser, `@node-rs/argon2` on the server                                              |
+| API                  | Express 5, Prisma 6, PostgreSQL 16, Redis 7 (ioredis), zod 3, OpenAPI via `zod-to-openapi`, pino, helmet, `otpauth`, AWS SDK v3 for S3, prom-client               |
+| Web                  | React 19, Vite 7, Tailwind CSS 4, React Router 7, TanStack Query 5, Zustand 5                                                                                     |
+| Tests                | Vitest 3, Supertest, Testing Library with jsdom, Playwright (Chromium for every spec; Firefox, WebKit and two emulated phones for the @cross subset)              |
+| Infrastructure       | Docker Compose (Postgres, Redis, MinIO), nginx, optional Caddy for TLS, GitHub Actions (CI, a dependency audit gate, CodeQL, gitleaks, zizmor, Trivy), Dependabot |
 
 ## Quick start
 
@@ -135,7 +151,8 @@ starting. `npm run dev` needs ports 5174 and 4100 free (Vite runs with `strictPo
 `API_PORT` and `WEB_ORIGIN` in `apps/api/.env`, set `API_PROXY_TARGET` in `apps/web/.env`, and start the two
 servers separately (`npm run dev -w @cipherdrop/api` and `npm run dev -w @cipherdrop/web -- --port <port>`).
 
-The seed creates two accounts (dev data only) and prints the share links of its drops:
+The seed creates two accounts (dev data only) and prints the share links of its drops. The admin has no two-step
+verification, so the console asks it to turn it on in **Settings**, **Security** first:
 
 | Account                  | Password                                                               | Role  |
 | ------------------------ | ---------------------------------------------------------------------- | ----- |
@@ -150,25 +167,36 @@ re-running the seed reprints the links but does not renew the drops. On the logi
 in the form; press **Log in** to sign in.
 
 [docs/DEMO.md](docs/DEMO.md) is a two-minute demo script built on this data. The API's Swagger UI is at
-http://localhost:5174/api/docs.
+http://localhost:5174/api/docs when `API_DOCS_UI=true` is in `apps/api/.env` (`apps/api/.env.example` sets it; an
+`apps/api/.env` copied before it did needs the line added). Production never serves it.
 
 ## Running the tests
 
-| Command                                                     | What it runs                                                                                                                                         | Current result                                                                                                                  |
-| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `npm test`                                                  | unit and integration tests of all four workspaces; the API tests need the Compose Postgres and Redis and create their own `cipherdrop_test` database | 770 passed: crypto 147, shared 15, API 292 (+10 S3 tests skipped without `S3_TEST=1`), web 316 (the nginx config test included) |
-| `npm run test:s3`                                           | the storage contract suite against MinIO (`S3_TEST=1`)                                                                                               | 27 passed (2026-11-12, see below)                                                                                               |
-| `npm run e2e`                                               | Playwright against `vite build` + `vite preview` (production CSP on) and a real API on a separate `cipherdrop_e2e` database                          | 37 passed                                                                                                                       |
-| `npm run test:scripts`, `npm run audit:gate`                | the dependency audit gate's own tests (`node:test`), then the gate: `npm audit --omit=dev` against `scripts/audit-allowlist.json`                    | 27 passed; the gate passes (3 high advisories, all on the allowlist)                                                            |
-| `npm run smoke:prod -w @cipherdrop/web`                     | the production smoke test against a running `docker-compose.prod.yml` stack ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))                               | 10 passed (2026-11-20, API from a stand-in image without the `apk add openssl` step; see the verification record)               |
-| `npm run typecheck`, `npm run lint`, `npm run format:check` | `tsc` for every workspace, ESLint, Prettier                                                                                                          | clean                                                                                                                           |
+| Command                                                     | What it runs                                                                                                                                                                                                                                               | Current result (2026-11-21)                                                                                                                                                      |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm test`                                                  | unit and integration tests of all four workspaces; the API tests need the Compose Postgres and Redis and create their own `cipherdrop_test` database                                                                                                       | 1,050 passed: crypto 147, shared 18, API 435 (+22 S3 tests skipped without `S3_TEST=1`), web 450 (the deploy checks included: 31 nginx and compose tests, 17 security.txt tests) |
+| `npm run test:s3`                                           | the storage contract suite against MinIO (`S3_TEST=1`), versioned and Object Lock buckets included                                                                                                                                                         | 53 passed (on the `b1/ops` branch, against a MinIO stand-in; see below)                                                                                                          |
+| `npm run e2e`                                               | Playwright against `vite build` + `vite preview` (production CSP on) and a real API on a separate `cipherdrop_e2e` database, every spec in desktop Chromium                                                                                                | 49 passed                                                                                                                                                                        |
+| `npm run e2e:cross`                                         | the 12 tests tagged `@cross` in `firefox`, `webkit`, `mobile-chromium` (Pixel 7) and `mobile-webkit` (iPhone 14)                                                                                                                                           | `mobile-chromium` 12 passed; see below for the other three                                                                                                                       |
+| `npm run test:lint`                                         | that each ESLint security ban fires (`eslint.config.test.mjs`)                                                                                                                                                                                             | 12 passed                                                                                                                                                                        |
+| `npm run test:scripts`, `npm run audit:gate`                | the scripts' own tests (`node:test`: the audit gate, the Prisma CLI lockfile, the image scan, and the check that CI's service images equal `docker-compose.prod.yml`'s pins), then the gate: `npm audit --omit=dev` against `scripts/audit-allowlist.json` | 65 passed; the gate passes (3 high advisories, all on the allowlist)                                                                                                             |
+| `npm run db:check -w @cipherdrop/api`                       | the migrations replayed into a scratch database (`SHADOW_DATABASE_URL`, whose name must end in `_shadow`) must build exactly `schema.prisma`                                                                                                               | no drift                                                                                                                                                                         |
+| `npm run smoke:prod -w @cipherdrop/web`                     | the production smoke test against a running `docker-compose.prod.yml` stack ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)); CI runs it in its `prod-stack` job                                                                                                 | 14 passed (images from stand-in Dockerfiles without the `apk add openssl` step, `SMOKE_WEB_CONTAINER` set; see the verification record)                                          |
+| `npm run typecheck`, `npm run lint`, `npm run format:check` | `tsc` for every workspace, ESLint, Prettier                                                                                                                                                                                                                | clean                                                                                                                                                                            |
 
-Run `npm run e2e:install -w @cipherdrop/web` once to install Playwright's Chromium. Counts were taken on
-2026-11-20 in a Linux cloud container (Node 22.23.5). The exception is `test:s3`: the MinIO image could not be
-pulled there, so its count is from 2026-11-12 on the development laptop; no storage code or test has changed since.
-On GitHub (first run 2026-11-20, pull request #1), CI passed every job: lint, typecheck and unit tests; the
-integration tests with Postgres, Redis and MinIO, `test:s3` included; e2e; the production image builds from the
-committed Dockerfiles; actionlint; and the audit gate.
+Run `npm run e2e:install -w @cipherdrop/web` once to install Playwright's Chromium, and
+`npm run e2e:install:cross -w @cipherdrop/web` for Firefox and WebKit (add `-- --with-deps` on a fresh Linux machine).
+Counts were taken on 2026-11-21 in a Linux cloud container (Node 22.23.5) on the branch that merges batch 1. Two
+exceptions, because the container could reach neither cgr.dev nor Playwright's browser downloads: `test:s3` ran on
+the `b1/ops` branch against `bitnamilegacy/minio` from Docker Hub, not the Chainguard image CI uses (no storage code
+or test has changed since), and `e2e:cross` ran in all four projects only on the `b1/ci` branch (48 passed, Firefox
+and WebKit through the official Playwright 1.65 image's `run-server`), before the Trusted Types header was merged
+and before a change to `large-drop.spec` that only removed lines;
+on the merged branch only `mobile-chromium`, which uses the installed Chromium, was run. On GitHub (first run
+2026-11-20, pull request #1), CI passed every job it then had: lint, typecheck and unit tests; the integration tests
+with Postgres, Redis and MinIO, `test:s3` included; e2e; the production image builds from the committed Dockerfiles;
+actionlint; and the audit gate. The jobs added on 2026-11-21 (`e2e-cross`, `prod-stack`, `secrets`, zizmor and
+`codeql.yml`) had not run on GitHub yet.
 
 What the tests cover, in brief: `packages/crypto` tests each security property of the construction, Argon2id
 known-answer vectors from the reference implementation, and a re-implementation of the spec with `node:crypto`
@@ -178,7 +206,9 @@ password drops, burn after reading, tampering, an upload that survives two injec
 reload, accounts with TOTP and recovery, sessions, the dashboard and the admin console, with the leak guard on
 every test. The API's log tests run whole flows and fail if a secret reaches the logs, and
 `apps/web/deploy-checks/nginx-headers.test.ts` keeps `deploy/nginx.conf` in step with the SPA's security headers,
-the API's limits and the compose network.
+the API's limits and the compose file: it also checks the access-log format and its IP-prefix map against the API's,
+`/.well-known/`, the credential-route rate limit, and the compose networks, resource limits, Redis settings and the
+`migrate` ordering. `apps/web/deploy-checks/security-txt.test.ts` covers the generated security.txt.
 
 ## Project layout
 
@@ -194,14 +224,17 @@ apps/
                   crypto (uploader, downloader, sinks, kdfClient), workers, stores, components, lib
     e2e/          Playwright specs and the leak guard
     bench/        browser benchmarks
-    deploy-checks/  nginx header test and production smoke test
+    deploy-checks/  nginx and compose checks, security.txt test, production smoke test
 packages/
   crypto/         the cryptographic construction, isomorphic (browser and Node)
   shared/         zod schemas and constants shared by the API and the SPA
-deploy/           nginx.conf, Caddyfile
+deploy/           nginx.conf, Caddyfile, the API image's entrypoint
+scripts/          audit gate, image scan, Prisma CLI lockfile, image-pin check (with their tests)
 docs/             design, architecture, API, security, deployment, benchmarks, demo, review record, screenshots
+.github/          workflows (ci, codeql, audit), Dependabot, the vulnerability disclosure policy
 docker-compose.yml        dev infrastructure
 docker-compose.prod.yml   production stack
+CHANGELOG.md              changes since v1, with upgrade notes in docs/DEPLOYMENT.md section 6
 ```
 
 ## Security notes and trade-offs
@@ -212,43 +245,62 @@ docker-compose.prod.yml   production stack
   leaks keys. The CSP allows no third-party origins, and nothing is loaded from a CDN, but there is no
   Subresource Integrity or reproducible-build check in v1.
 - **A link with the key is a bearer secret**: anyone holding it can download. Password mode keeps the key out of
-  the link.
+  the link. The receive page removes the key from the address bar, but the browser's history keeps the full link.
+- **A link does not prove who sent it.** Anyone can create a drop; "Integrity verified" means unchanged since it was
+  encrypted with the link's key, not from whom or safe to open. CipherDrop cannot scan what it cannot read.
+- **An open instance is a free encrypted file host.** Per-client limits, a byte budget, a probation quota and storage
+  caps bound how much one client can store, not what; a public instance should set `GLOBAL_STORAGE_CAP_BYTES`.
 - **Burn after reading is enforced by the server**, not by cryptography: an honest server deletes the blobs, a
   compromised one could keep them.
 - **Losing both the password and the recovery key loses the account's data.** Nobody can reset it.
 - **With 2FA on, losing the authenticator and every backup code locks the account**, even with the password and the
   recovery key: recovery asks for a second factor too, and there is no admin reset of 2FA.
 - A stolen database allows offline password guessing at the cost of one Argon2id derivation per guess.
+- **Admins need two-step verification**, because the console can show reporters' decryption keys; the check is per
+  account, and an admin session needs no fresh second factor before it reads them.
 
 [docs/SECURITY.md](docs/SECURITY.md) has the full threat model (server, network attacker, malicious recipient,
-stolen database, XSS), the cryptographic design in brief, the metadata list, account and session security, and
-the accepted open points from the review. The normative specification is [docs/DESIGN.md](docs/DESIGN.md),
-section 7.
+stolen database, XSS, sender identity, hosting abuse), the cryptographic design in brief, the metadata list, account
+and session security, and the accepted open points. The normative specification is [docs/DESIGN.md](docs/DESIGN.md),
+section 7. Report vulnerabilities privately through GitHub private vulnerability reporting
+([.github/SECURITY.md](.github/SECURITY.md)); every instance serves `/.well-known/security.txt` with its operator's
+contact.
 
 ## Browser support
 
-The app needs WebCrypto, module Workers and WebAssembly. What a recipient can save depends on the file size,
-because a file over 256 MiB is streamed to disk through the File System Access API (`showSaveFilePicker`) instead
-of being assembled in memory:
+The app needs a secure context (HTTPS, or `http://localhost`), WebCrypto, module Workers, and WebAssembly allowed by
+the CSP's `'wasm-unsafe-eval'` (Argon2id runs as WebAssembly). What a recipient can save depends on the file size,
+because a file over 256 MiB is streamed to disk through the File System Access API (`showSaveFilePicker`) instead of
+being assembled in memory:
 
-| Recipient's browser                                                                                                    | Files up to 256 MiB | A file over 256 MiB                                                  |
-| ---------------------------------------------------------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------------- |
-| Desktop browsers with the File System Access API (Chrome, Edge)                                                        | saved from memory   | streamed to disk after the recipient picks where to save it          |
-| Others (Firefox, Safari, mobile browsers, and Chromium-based browsers that turn the API off, as Brave does by default) | saved from memory   | not possible: the receive page says so before a download is consumed |
+| Browser                                          | Tested in CI                                                                                                         | Largest file                                               | Notes                                                                                   |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Chrome, Edge and other Chromium desktop browsers | the full e2e suite (desktop Chromium)                                                                                | any size: over 256 MiB streams to disk                     | Brave turns the File System Access API off by default, which gives it the 256 MiB limit |
+| Firefox desktop                                  | the `@cross` subset (Playwright's Firefox build)                                                                     | 256 MiB, saved as an in-memory Blob                        | a drop with a larger file is refused before a download is used (C-03)                   |
+| Safari / WebKit                                  | the `@cross` subset on Playwright's WebKit Linux build, which is not Safari itself                                   | 256 MiB                                                    | as Firefox                                                                              |
+| Phones                                           | emulated only: Pixel 7 on Chromium and iPhone 14 on WebKit (viewport, user agent, touch), plus a 360 px layout check | 256 MiB, unless the browser has the File System Access API | real Android Chrome and iOS Safari are not tested                                       |
 
-The page detects the API rather than the browser. In the second row, a drop that contains such a file is refused as a
-whole, before a download is consumed, so its smaller files cannot be saved there either.
+The page detects the API rather than the browser, and refuses a drop that contains a file over 256 MiB as a whole,
+before a download is consumed, where the API is missing. MDN's compatibility data (`@mdn/browser-compat-data` 8.1.10)
+lists `showSaveFilePicker` in desktop Chrome and Edge from version 86 and in Chrome for Android from 132, and not in
+Firefox or Safari; no phone was tested with it. Minimum versions from the same data, not tested: Chrome and Edge 97,
+Firefox 114 (module Workers), Safari 16 (`'wasm-unsafe-eval'`).
 
-The automated tests run in Chromium only, and none saves a file over 256 MiB in a real browser yet: the file-system
-path is unit-tested with fakes (`apps/web/src/crypto/sinks.test.ts`). Other browsers have not been tested.
+No automated test saves a file over 256 MiB in a real browser: the file-system path is unit-tested with fakes
+(`apps/web/src/crypto/sinks.test.ts`), and the cross-engine C-03 test checks the refusal with a drop whose manifest
+claims 300 MiB. The cross-engine CI job had not run on GitHub as of 2026-11-21 ([Running the tests](#running-the-tests)).
 
 ## Deployment
 
-`docker-compose.prod.yml` runs Postgres, Redis, the API image (runs as a non-root user with a read-only root
-filesystem and applies migrations on start), nginx serving the SPA with the security headers, and optionally
-MinIO and Caddy for automatic HTTPS. The API refuses to start in production without explicit database, Redis,
-origin and proxy settings, secure cookies and real secrets. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers the
-single-host stack, S3-compatible storage, a split deployment and multi-instance limits.
+`docker-compose.prod.yml` runs Postgres, Redis, the API image (a non-root user with a read-only root filesystem),
+nginx serving the SPA with the security headers, and optionally MinIO and Caddy for automatic HTTPS. Migrations run in
+a one-shot `migrate` service as the database owner, and the API connects as a role with rights on rows only.
+Postgres, Redis and MinIO sit on an internal network, Redis needs a password, every service has memory and process
+limits, and nginx logs IP prefixes only. Every third-party image is pinned by digest except MinIO's. The API refuses to start in
+production without explicit database, Redis, origin and proxy settings, secure cookies and real secrets and
+passwords. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers the single-host stack, the hosting-abuse controls,
+S3-compatible storage, a split deployment, multi-instance limits and, in section 6, upgrading an existing install;
+[CHANGELOG.md](CHANGELOG.md) lists the changes.
 
 ## Benchmarks
 

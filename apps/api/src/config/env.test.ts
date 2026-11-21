@@ -65,6 +65,30 @@ describe('parseEnv in production', () => {
     expect(parseEnv({ ...prod(), TRUST_PROXY: '2' }).TRUST_PROXY).toBe(2);
   });
 
+  it('refuses a placeholder password in DATABASE_URL or REDIS_URL, and never prints it', () => {
+    const placeholder = 'change-me-generate-with-openssl-rand-hex-32';
+    for (const [key, url] of [
+      ['DATABASE_URL', `postgresql://app:${placeholder}@db.internal:5432/cipherdrop?schema=public`],
+      ['REDIS_URL', `redis://:${placeholder}@cache.internal:6379/0`],
+      ['REDIS_URL', `redis://default:${encodeURIComponent('Dev-Only pw')}@cache.internal:6379/0`],
+    ] as const) {
+      let message = '';
+      try {
+        parseEnv({ ...prod(), [key]: url });
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toContain(`${key}: its password is a development/test placeholder`);
+      expect(message).not.toContain(placeholder);
+    }
+    // A real password, or none (a Redis on a private socket), is fine.
+    const pw = randomBytes(32).toString('hex');
+    expect(
+      parseEnv({ ...prod(), REDIS_URL: `redis://:${pw}@cache.internal:6379/0` }).REDIS_URL,
+    ).toContain(pw);
+    expect(() => parseEnv({ ...prod(), REDIS_URL: 'redis://cache.internal:6379/0' })).not.toThrow();
+  });
+
   it('reports every problem at once, names only, never values', () => {
     let message = '';
     try {

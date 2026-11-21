@@ -36,12 +36,12 @@ describe('describeError', () => {
       retryAfter: 5 * 3600 - 10,
     });
     expect(describeError(budget)).toBe(
-      'You have sent 1 GB without an account in the last 24 hours, the limit for anonymous senders. Try again in 5 h, or sign in to send more.',
+      'Without an account you can send up to 1 GB per 24 hours, and this drop would go over that. Try again in 5 h, or sign in to send more.',
     );
     expect(
       describeError(new ApiError({ status: 429, code: 'UPLOAD_BUDGET_EXCEEDED', message: 'x' })),
     ).toBe(
-      'You have sent a lot without an account recently. Try again later, or sign in to send more.',
+      'This drop would go over the limit for sending without an account. Try again later, or sign in to send more.',
     );
 
     expect(describeError(new ApiError({ status: 507, code: 'STORAGE_FULL', message: 'x' }))).toBe(
@@ -73,7 +73,7 @@ describe('describeError', () => {
       details: { quotaBytes: 256 * 1024 ** 2, usedBytes: 200 * 1024 ** 2, probationEndsAt: ends },
     });
     expect(describeError(probation)).toBe(
-      `Your storage is full. New accounts can store up to 256 MB until ${formatDate(ends)}. Delete a drop, or wait until then.`,
+      `This drop does not fit in your storage. New accounts can store up to 256 MB until ${formatDate(ends)}. Delete a drop, or wait until then.`,
     );
     const plain = new ApiError({
       status: 413,

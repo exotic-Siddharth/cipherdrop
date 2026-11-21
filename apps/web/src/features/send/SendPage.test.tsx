@@ -1388,7 +1388,7 @@ describe('SendPage hosting-abuse controls (server-1, ops-3)', () => {
     await addFile(new File(['x'], 'a.txt'));
     await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
     expect(await errorText()).toContain(
-      'You have sent 1 GB without an account in the last 24 hours, the limit for anonymous senders. Try again in 2 h, or sign in to send more.',
+      'Without an account you can send up to 1 GB per 24 hours, and this drop would go over that. Try again in 2 h, or sign in to send more.',
     );
   });
 

@@ -56,7 +56,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
       responses: { 200: { description: 'Current user', schema: MeResponseSchema } },
     },
     async (req, res) => {
-      res.json({ user: toMe(await loadUser(ctx, authUser(req).id)) });
+      res.json({ user: toMe(await loadUser(ctx, authUser(req).id), ctx) });
     },
   );
 
@@ -76,7 +76,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
         where: { id: user.id },
         data: { autoLockMinutes: req.body.autoLockMinutes },
       });
-      res.json({ user: toMe(updated) });
+      res.json({ user: toMe(updated, ctx) });
     },
   );
 

@@ -2,7 +2,13 @@
  * AppError and helpers. The error middleware turns them into `{error:{code, message, details?}}` (spec section 10).
  * Messages are user-facing and must never contain secrets, keys, tokens or plaintext metadata.
  */
-import type { ErrorCode, GoneReason } from '@cipherdrop/shared';
+import type {
+  ErrorCode,
+  FeatureDisabledDetails,
+  GoneReason,
+  SwitchableFeature,
+  UploadBudgetDetails,
+} from '@cipherdrop/shared';
 
 export class AppError extends Error {
   readonly status: number;
@@ -42,6 +48,10 @@ export const unauthorized = (message = 'Unauthorized', details?: unknown) =>
 
 export const forbidden = (message = 'Forbidden') => new AppError(403, 'FORBIDDEN', message);
 
+/** 403 FEATURE_DISABLED: an operator switch (ALLOW_ANONYMOUS_UPLOADS, ALLOW_REGISTRATION) is off. */
+export const featureDisabled = (feature: SwitchableFeature, message: string) =>
+  new AppError(403, 'FEATURE_DISABLED', message, { feature } satisfies FeatureDisabledDetails);
+
 export const notFound = (message = 'Not found') => new AppError(404, 'NOT_FOUND', message);
 
 export const conflict = (message = 'Conflict', details?: unknown) =>
@@ -65,10 +75,35 @@ export const payloadTooLarge = (message = 'Payload too large', details?: unknown
 export const quotaExceeded = (message = 'Storage quota exceeded', details?: unknown) =>
   new AppError(413, 'QUOTA_EXCEEDED', message, details);
 
+/**
+ * 429 UPLOAD_BUDGET_EXCEEDED: this drop would take this client (IPv4 address or IPv6 /48) over its rolling
+ * budget of anonymous drop bytes. Retry-After is when enough of it frees up; signed-in senders are not affected.
+ */
+export const uploadBudgetExceeded = (retryAfterSec: number, details: UploadBudgetDetails) =>
+  new AppError(
+    429,
+    'UPLOAD_BUDGET_EXCEEDED',
+    'This drop would go over the limit for sending without an account. Try again later, or sign in to send more.',
+    details,
+    { retryAfterSec },
+  );
+
 export const rateLimited = (retryAfterSec?: number) =>
   new AppError(429, 'RATE_LIMITED', 'Too many requests, please try again later', undefined, {
     retryAfterSec,
   });
+
+/**
+ * 507 STORAGE_FULL: the instance is full (GLOBAL_STORAGE_CAP_BYTES reached, or the blob volume's free space
+ * would fall below STORAGE_MIN_FREE_BYTES). One answer for both, with no numbers: clients learn nothing about
+ * the disk.
+ */
+export const storageFull = () =>
+  new AppError(
+    507,
+    'STORAGE_FULL',
+    'This server is not accepting new uploads right now because its storage is full. Try again later.',
+  );
 
 export const internal = (message = 'Internal server error', cause?: unknown) =>
   new AppError(500, 'INTERNAL', message, undefined, { cause });

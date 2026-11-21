@@ -11,6 +11,7 @@ import {
   resetStores,
 } from '../account/testkit';
 import { useAuth } from '../../stores/auth';
+import { useServerConfig } from '../../stores/serverConfig';
 import { useVault } from '../../stores/vault';
 import { Component as LoginPage } from './LoginPage';
 
@@ -49,6 +50,24 @@ beforeEach(() => {
 afterEach(() => resetStores());
 
 describe('LoginPage', () => {
+  it('links to sign-up', async () => {
+    mockApi(baseHandlers());
+    renderRoutes(routes, '/login');
+    expect(await screen.findByRole('link', { name: 'Create an account' })).toHaveAttribute(
+      'href',
+      '/register',
+    );
+  });
+
+  it('does not link to sign-up when the operator closed registration (ops-3)', async () => {
+    mockApi(baseHandlers());
+    useServerConfig.setState({ config: { anonymousUploads: true, registration: false } });
+    renderRoutes(routes, '/login');
+    expect(await screen.findByRole('link', { name: 'Recover an account' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: 'Create an account' })).toBeNull();
+    expect(screen.queryByText(/New to CipherDrop/)).toBeNull();
+  });
+
   it('mfaRequired switches to code step', async () => {
     mockApi({
       ...baseHandlers(),

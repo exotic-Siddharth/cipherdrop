@@ -336,6 +336,31 @@ describe('POST /api/drops', () => {
       }
     });
 
+    it('anonymous creates from one IPv6 /48 share one bucket, whichever /64 they come from', async () => {
+      const rl = await createTestApp({ rateLimits: { createDropAnon: true } });
+      try {
+        for (let i = 0; i < 10; i++) {
+          const ip = { 'X-Forwarded-For': `2001:db8:77:${i + 1}::1` };
+          expect((await postDrop(rl.app, createBody([testFile(1)]), ip)).status).toBe(201);
+        }
+        const res = await postDrop(rl.app, createBody([testFile(1)]), {
+          'X-Forwarded-For': '2001:db8:77:ff::1',
+        });
+        expect(res.status).toBe(429);
+        expect(res.body.error.code).toBe('RATE_LIMITED');
+        // The neighbouring /48 is unaffected.
+        expect(
+          (
+            await postDrop(rl.app, createBody([testFile(1)]), {
+              'X-Forwarded-For': '2001:db8:78::1',
+            })
+          ).status,
+        ).toBe(201);
+      } finally {
+        await rl.close();
+      }
+    });
+
     it('signed-in creates use the per-user limiter (60/h)', async () => {
       const rl = await createTestApp({ rateLimits: { createDropUser: true } });
       try {

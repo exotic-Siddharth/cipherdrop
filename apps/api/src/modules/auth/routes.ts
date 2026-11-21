@@ -39,9 +39,16 @@ import { Prisma, type User } from '@prisma/client';
 import type { Request, Response } from 'express';
 import type { AppContext } from '../../context';
 import { hashAuthKey } from '../../lib/argon2';
-import { conflict, forbidden, notFound, unauthorized, validationError } from '../../lib/errors';
+import {
+  conflict,
+  featureDisabled,
+  forbidden,
+  notFound,
+  unauthorized,
+  validationError,
+} from '../../lib/errors';
 import { hmacSha256, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
-import { ipKey } from '../../lib/ip';
+import { ipKey, ipShareKey } from '../../lib/ip';
 import { signPurposeToken, verifyPurposeToken } from '../../lib/jwt';
 import { createRouter, type AppRouter } from '../../lib/router';
 import { encryptTotpSecret, generateTotpSecret, totpOtpauthUrl, verifyTotp } from '../../lib/totp';
@@ -98,7 +105,8 @@ export function authRoutes(ctx: AppContext): AppRouter {
   const preloginLimit = ctx.rateLimit({ name: 'prelogin', key: perIpEmail });
   const loginLimit = ctx.rateLimit({ name: 'login', key: perIpEmail });
   const loginMfaLimit = ctx.rateLimit({ name: 'loginMfa', key: (req) => ipKey(req.ip) });
-  const registerLimit = ctx.rateLimit({ name: 'register', key: (req) => ipKey(req.ip) });
+  // Per IPv4 address or IPv6 /48 (not /64): sign-ups are free, so a delegated /48 must not mean 65,536 buckets.
+  const registerLimit = ctx.rateLimit({ name: 'register', key: (req) => ipShareKey(req.ip) });
   const recoveryStartLimit = ctx.rateLimit({
     name: 'recovery',
     key: (req) => `start|${ipKey(req.ip)}`,
@@ -118,7 +126,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
   async function signIn(user: User, req: Request, res: Response) {
     const issued = await createSession(ctx, user, req);
     setRefreshCookie(ctx, res, issued.refreshToken, issued.refreshExpiresAt);
-    return { user: toMe(user), accessToken: issued.accessToken };
+    return { user: toMe(user, ctx), accessToken: issued.accessToken };
   }
 
   /** A failed login proof: count it, lock after MAX_FAILED_LOGINS (spec section 10). */
@@ -181,8 +189,19 @@ export function authRoutes(ctx: AppContext): AppRouter {
       request: { body: RegisterRequestSchema },
       responses: {
         201: { description: 'Registered and signed in', schema: AuthSuccessSchema },
+        403: {
+          description:
+            'Registration is switched off on this server (FEATURE_DISABLED, details.feature registration)',
+        },
         409: { description: 'Email already registered (CONFLICT)' },
       },
+    },
+    // Operator switch (ops-3), checked before the limiter. Existing accounts keep signing in.
+    (_req, _res, next) => {
+      if (!ctx.env.ALLOW_REGISTRATION) {
+        throw featureDisabled('registration', 'This server is not accepting new accounts.');
+      }
+      next();
     },
     registerLimit,
     async (req, res) => {
@@ -210,6 +229,11 @@ export function authRoutes(ctx: AppContext): AppRouter {
             wrappedAccountKeyRecovery: body.wrappedAccountKeyRecovery,
             recoveryAuthHash: body.recoveryAuthHash,
             storageQuotaBytes: BigInt(ctx.env.USER_DEFAULT_QUOTA_BYTES),
+            // Probation (server-1): a free, unverified account starts with a small quota for its first days.
+            quotaProbationEndsAt:
+              ctx.env.NEW_ACCOUNT_PROBATION_DAYS > 0
+                ? new Date(ctx.now().getTime() + ctx.env.NEW_ACCOUNT_PROBATION_DAYS * 86_400_000)
+                : null,
           },
         });
       } catch (err) {
@@ -317,7 +341,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
       try {
         const rotated = await rotateRefresh(ctx, token, req);
         setRefreshCookie(ctx, res, rotated.refreshToken, rotated.refreshExpiresAt);
-        res.json({ user: toMe(rotated.user), accessToken: rotated.accessToken });
+        res.json({ user: toMe(rotated.user, ctx), accessToken: rotated.accessToken });
       } catch (err) {
         clearRefreshCookie(ctx, res);
         throw err;

@@ -4,6 +4,7 @@
  * /api proxy limits, how nginx treats slow clients, and one end-to-end encrypted flow with the CSP enforced by a
  * real browser.
  */
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import net from 'node:net';
@@ -328,6 +329,58 @@ test('operational endpoints are not exposed through nginx', async ({ request }) 
   for (const url of ['/readyz', '/metrics']) {
     expect((await request.get(url)).status(), url).toBe(404);
   }
+});
+
+/* ---- Access log (ops-6). Needs the docker CLI and the web container's name, for example
+   SMOKE_WEB_CONTAINER=cipherdrop-prod-web-1: the log is read with `docker logs`, stdout only (the access log; nginx's
+   error log goes to stderr). ---- */
+const WEB_CONTAINER = process.env.SMOKE_WEB_CONTAINER;
+
+/** The web container's stdout since `since` (RFC 3339). */
+function accessLog(since: string): string {
+  return execFileSync('docker', ['logs', '--since', since, WEB_CONTAINER as string], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+}
+
+test('the access log keeps the client IP prefix only: no full address, query string or user agent', async ({
+  playwright,
+}) => {
+  test.skip(!WEB_CONTAINER, 'set SMOKE_WEB_CONTAINER to the web container name to read its log');
+  const marker = randomBytes(8).toString('hex');
+  const since = new Date(Date.now() - 5_000).toISOString();
+  const client = await playwright.request.newContext({
+    baseURL: BASE.origin,
+    userAgent: `smoke-agent-${marker}`,
+    extraHTTPHeaders: { Referer: `${BASE.origin}/?ref=${marker}` },
+  });
+  const paths = [`/d/${NO_ID}`, `/api/drops/${NO_ID}`];
+  for (const p of paths) await client.get(`${p}?probe=${marker}`);
+  await client.dispose();
+
+  let lines: string[] = [];
+  await expect
+    .poll(
+      () => {
+        lines = accessLog(since)
+          .split('\n')
+          .filter((line) => paths.some((p) => line.includes(`"GET ${p}"`)));
+        return lines.length;
+      },
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThanOrEqual(paths.length);
+  for (const line of lines) {
+    // time, IPv4 /24 or IPv6 /48, "method path", status, bytes, seconds: deploy/nginx.conf `log_format privacy`.
+    expect(line).toMatch(
+      /^\S+ (?:\d{1,3}\.\d{1,3}\.\d{1,3}\.0\/24|[0-9a-f:]*::\/48) "GET \/\S+" \d{3} \d+ [\d.]+$/,
+    );
+  }
+  // Nothing from the query string, the user agent or the referer; no full IPv4 address (only a.b.c.0/24 prefixes).
+  const log = lines.join('\n');
+  expect(log).not.toContain(marker);
+  expect(log).not.toMatch(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b(?!\/24)/);
 });
 
 test('the SPA bundle carries no demo credentials', async ({ request }) => {

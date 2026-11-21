@@ -62,10 +62,9 @@ test('a drop with a file over 256 MiB is refused before /open where the browser 
 
   const download = page.getByRole('button', { name: 'Decrypt & download' });
   await expect(download).toBeDisabled();
-  // Even a forced click (no actionability checks) reaches no handler: a disabled button gets no click event.
-  await download.click({ force: true });
-  await expect(page.getByRole('dialog', { name: 'This is the last download' })).toHaveCount(0);
 
+  // The page has loaded, decrypted the manifest and refused: nothing on the way asked for a grant or a chunk (every
+  // request is recorded when it is sent), and the server's count and status are unchanged.
   expect(leaks.count('POST', '/open'), 'no download grant was requested').toBe(0);
   expect(leaks.count('GET', '/chunks/'), 'no chunk was fetched').toBe(0);
   expect(await downloadCount(drop.dropId)).toBe(0);

@@ -75,7 +75,7 @@ const LIMITATIONS = [
   },
   {
     title: 'Large files in some browsers.',
-    text: 'Uploads are read chunk by chunk, but a download up to 256 MB is held in memory until it is saved. Larger files need a browser that can stream to disk. Otherwise the page tells you before it starts, and no download is used up.',
+    text: 'Uploads are read chunk by chunk, but a download up to 256 MiB is held in memory until it is saved. Larger files need a browser that can stream to disk with the File System Access API, such as Chrome or Edge on a computer. Otherwise the page tells you before it starts, and no download is used up.',
   },
 ];
 

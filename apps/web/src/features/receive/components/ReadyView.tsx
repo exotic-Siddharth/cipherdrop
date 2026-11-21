@@ -1,5 +1,5 @@
 import { type Manifest, type ManifestFile } from '@cipherdrop/crypto';
-import { DropMetaSchema, OpenResponseSchema } from '@cipherdrop/shared';
+import { DropMetaSchema, LIMITS, OpenResponseSchema } from '@cipherdrop/shared';
 import {
   Download,
   Eye,
@@ -66,6 +66,9 @@ const INTEGRITY_MEANING =
 const INTEGRITY_BADGE_HINT =
   "Exactly what was encrypted with this link's key. Not a check of who sent it or whether it is safe.";
 
+/** LIMITS.BLOB_SAVE_MAX_BYTES as the copy below says it ("256 MiB"): the limit is binary, not 256 MB. */
+const BLOB_LIMIT = `${LIMITS.BLOB_SAVE_MAX_BYTES / (1024 * 1024)} MiB`;
+
 type FileStatus =
   | { status: 'idle' }
   | { status: 'downloading'; written: number }
@@ -108,7 +111,7 @@ export function ReadyView({
     () => sanitizeFilenames(manifest.files.map((f) => f.name)),
     [manifest],
   );
-  // C-03: a file over 256 MB cannot be saved without the save picker. Decide that from the manifest up
+  // C-03: a file over 256 MiB cannot be saved without the save picker. Decide that from the manifest up
   // front, so the click never spends a download (a burn-after-read link) on a drop this browser can't save.
   const [files, setFiles] = useState<Record<string, FileStatus>>(() =>
     Object.fromEntries(
@@ -356,7 +359,7 @@ export function ReadyView({
       case 'needs-save':
         detail = (
           <p className="text-xs text-muted">
-            Larger than 256 MB: choose where to save it, then it streams straight to disk.
+            Larger than {BLOB_LIMIT}: choose where to save it, then it streams straight to disk.
           </p>
         );
         trailing = (
@@ -368,8 +371,9 @@ export function ReadyView({
       case 'unsupported':
         detail = (
           <p className="text-sm text-warning-ink">
-            This file is larger than 256 MB, and this browser can't save it straight to disk. Open
-            the link in Chrome or Edge on a computer to download it.
+            This file is larger than {BLOB_LIMIT}, and this browser can't save it straight to disk:
+            that needs the File System Access API. Open the link in Chrome or Edge on a computer to
+            download it.
           </p>
         );
         break;
@@ -441,9 +445,9 @@ export function ReadyView({
           <FileList items={fileItems} label="Files in this drop" />
           {blockedUpfront ? (
             <Alert tone="warning" title="This browser can't save every file in this drop">
-              A file here is larger than 256 MB and this browser can't stream it straight to disk.
-              Nothing was downloaded and the link still has all its downloads. Open the link in
-              Chrome or Edge on a computer.
+              A file here is larger than {BLOB_LIMIT}, and streaming it straight to disk needs the
+              File System Access API, which this browser lacks. Nothing was downloaded and the link
+              still has all its downloads. Open the link in Chrome or Edge on a computer.
             </Alert>
           ) : null}
           {openError ? (

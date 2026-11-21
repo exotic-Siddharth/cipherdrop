@@ -71,6 +71,31 @@ test.describe('nginx', () => {
     expect((await request.get('/assets/does-not-exist.js')).status()).toBe(404);
   });
 
+  test('serves /.well-known/security.txt as UTF-8 plain text with every header; other well-known paths are 404s', async ({
+    request,
+  }) => {
+    const res = await request.get('/.well-known/security.txt');
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type']).toBe('text/plain; charset=utf-8');
+    expect(res.headers()['cache-control']).toBe('no-cache');
+    for (const [name, value] of Object.entries({
+      ...SECURITY_HEADERS,
+      ...PRODUCTION_ONLY_HEADERS,
+    })) {
+      expect(res.headers()[name.toLowerCase()], name).toBe(value);
+    }
+    const text = await res.text();
+    expect(text).toMatch(/^Contact: (?:mailto:|tel:|https:\/\/)\S+$/m);
+    const expires = Date.parse(/^Expires: (\S+)$/m.exec(text)?.[1] ?? '');
+    expect(expires).toBeGreaterThan(Date.now());
+    expect(expires - Date.now()).toBeLessThan(365 * 86_400_000);
+    for (const url of ['/.well-known/', '/.well-known/change-password', '/.well-known/x.txt']) {
+      const other = await request.get(url);
+      expect(other.status(), url).toBe(404);
+      expect(await other.text(), url).not.toContain('<div id="root">');
+    }
+  });
+
   test('proxies /api: JSON 404 from the API for unknown routes, headers from both layers', async ({
     request,
   }) => {

@@ -101,6 +101,11 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      # Written into /.well-known/security.txt at build time (rebuild to change them, and at least every 180 days,
+      # when its Expires passes). Unset: the CipherDrop project's private vulnerability reporting on GitHub.
+      args:
+        SECURITY_TXT_CONTACT: ${SECURITY_TXT_CONTACT:-}
+        SECURITY_TXT_POLICY: ${SECURITY_TXT_POLICY:-}
     image: cipherdrop-web:${IMAGE_TAG:-latest}
     ports:
       # Loopback by default: put TLS in front (Caddy profile, or a host-level proxy). Use WEB_BIND=0.0.0.0 to expose it.

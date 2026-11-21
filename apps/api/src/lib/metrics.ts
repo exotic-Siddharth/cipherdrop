@@ -70,6 +70,22 @@ export const metrics = {
     help: 'Ciphertext bytes currently stored',
     registers: [metricsRegistry],
   }),
+  /** Account authKey Argon2id hashes (lib/argon2Limiter.ts): running, waiting for a slot, refused with 429. */
+  argon2Active: new client.Gauge({
+    name: 'argon2_active',
+    help: 'Server-side Argon2id hashes running',
+    registers: [metricsRegistry],
+  }),
+  argon2Queued: new client.Gauge({
+    name: 'argon2_queued',
+    help: 'Server-side Argon2id hashes waiting for a slot',
+    registers: [metricsRegistry],
+  }),
+  argon2Rejected: new client.Counter({
+    name: 'argon2_rejected_total',
+    help: 'Requests refused with 429 because the Argon2id queue was full',
+    registers: [metricsRegistry],
+  }),
 };
 
 /** Low-cardinality route label: the matched route pattern, never the concrete URL. */

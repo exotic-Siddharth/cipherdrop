@@ -1,17 +1,19 @@
 import { SessionListResponseSchema, type SessionInfo } from '@cipherdrop/shared';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Laptop, LogOut, MonitorX, Smartphone, Tablet } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Card, CardContent, CardHeader } from '../../components/ui/Card';
-import { ConfirmDialog } from '../../components/ui/Dialog';
 import { EmptyState, ErrorState } from '../../components/ui/EmptyState';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { api } from '../../lib/api';
 import { formatDate, formatRelative } from '../../lib/format';
 import { queryKeys } from '../../lib/queryClient';
+import { useAuth } from '../../stores/auth';
+import { useAccountActions } from '../account/useAccountActions';
+import { ReauthDialog } from './ReauthDialog';
 
 function deviceIcon(userAgent: string | null) {
   const ua = userAgent?.toLowerCase() ?? '';
@@ -71,32 +73,20 @@ function SessionRow({ session, onRevoke }: { session: SessionInfo; onRevoke: () 
   );
 }
 
-/** Spec 11.2 Sessions tab: list with the current badge, revoke one, revoke all others. */
+/**
+ * Spec 11.2 Sessions tab: list with the current badge, revoke one, revoke all others. Signing a session out asks
+ * for the password (and the 2FA code when it is on), like every sensitive action: a stolen session alone cannot
+ * sign the owner's devices out.
+ */
 export function SessionsTab() {
-  const qc = useQueryClient();
+  const actions = useAccountActions();
+  const totpEnabled = useAuth((s) => s.user?.totpEnabled ?? false);
   const sessions = useQuery({
     queryKey: queryKeys.sessions(),
     queryFn: () => api.get('/auth/sessions', { schema: SessionListResponseSchema }),
   });
   const [revoking, setRevoking] = useState<SessionInfo | null>(null);
   const [confirmOthers, setConfirmOthers] = useState(false);
-
-  const revokeOne = useMutation({
-    mutationFn: (id: string) => api.delete(`/auth/sessions/${encodeURIComponent(id)}`),
-    onSuccess: () => {
-      toast.success('Session signed out');
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions() });
-      void qc.invalidateQueries({ queryKey: queryKeys.audit() });
-    },
-  });
-  const revokeOthers = useMutation({
-    mutationFn: () => api.post('/auth/sessions/revoke-others'),
-    onSuccess: () => {
-      toast.success('Signed out of all other devices');
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions() });
-      void qc.invalidateQueries({ queryKey: queryKeys.audit() });
-    },
-  });
 
   const list = sessions.data ?? [];
   const others = list.filter((s) => !s.current);
@@ -146,26 +136,35 @@ export function SessionsTab() {
         </CardContent>
       </Card>
 
-      <ConfirmDialog
+      <ReauthDialog
         open={revoking !== null}
         onOpenChange={(open) => !open && setRevoking(null)}
         title="Sign out this session?"
-        description={`${revoking?.userAgent ?? 'That device'} will be signed out right away.`}
+        description={`${revoking?.userAgent ?? 'That device'} will be signed out right away. Enter your password to confirm.`}
         confirmLabel="Sign out"
         tone="danger"
-        onConfirm={async () => {
-          if (revoking) await revokeOne.mutateAsync(revoking.id);
+        password
+        code={totpEnabled ? 'mfa' : false}
+        busyHint="Checking your password locally…"
+        onSubmit={async ({ password, code }) => {
+          if (!revoking) return;
+          await actions.revokeSession(revoking.id, password, totpEnabled ? code : undefined);
+          toast.success('Session signed out');
         }}
       />
-      <ConfirmDialog
+      <ReauthDialog
         open={confirmOthers}
         onOpenChange={setConfirmOthers}
         title="Sign out of all other devices?"
-        description="Every session except this one is ended immediately. You stay signed in here."
+        description="Every session except this one is ended immediately. You stay signed in here. Enter your password to confirm."
         confirmLabel="Sign out all others"
         tone="danger"
-        onConfirm={async () => {
-          await revokeOthers.mutateAsync();
+        password
+        code={totpEnabled ? 'mfa' : false}
+        busyHint="Checking your password locally…"
+        onSubmit={async ({ password, code }) => {
+          await actions.revokeOtherSessions(password, totpEnabled ? code : undefined);
+          toast.success('Signed out of all other devices');
         }}
       />
     </>

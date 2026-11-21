@@ -9,6 +9,8 @@
  * already exist, the seed unwraps each `ownerWrappedKey` with the demo account key, which it derives from the
  * demo password (if the password changed since the first run, run `npm run db:reset && npm run db:seed`).
  * LOCAL DEV DATA ONLY: passwords come from SEED_ADMIN_PASSWORD / SEED_DEMO_PASSWORD in apps/api/.env.
+ * The admin is created without two-step verification, so the admin console stays closed until the admin turns it on
+ * in Settings (the API requires it for every admin route); the seed prints that hint.
  */
 import { createHash } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
@@ -459,6 +461,14 @@ async function main(): Promise<void> {
     console.log(
       `Admin : ${ADMIN_EMAIL} / ${adminPassword}${admin.created ? '' : '  (already existed)'}`,
     );
+    if (!admin.user.totpEnabledAt) {
+      // No seeded TOTP secret on purpose: the console's 2FA gate is part of the demo, and a shared secret would be
+      // one more credential in the repository. Enrolling takes one scan of the QR code.
+      console.log(
+        '        The admin console needs two-step verification: log in as the admin, open Settings > Security,',
+      );
+      console.log('        turn it on, then open Admin.');
+    }
     console.log(
       `Demo  : ${DEMO_EMAIL} / ${demoPassword}${demo.created ? '' : '  (already existed)'}`,
     );

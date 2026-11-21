@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   AUDIT_ACTION_LABELS,
   AuditActionSchema,
+  BackupCodesRegenerateRequestSchema,
+  ForbiddenDetailsSchema,
   B64Url16Schema,
   B64Url32Schema,
   CHUNK_SHA256_HEADER,
@@ -14,8 +16,11 @@ import {
   LoginResponseSchema,
   MeDropsQuerySchema,
   OwnerDropSummarySchema,
+  PasswordChangeRequestSchema,
   RecoveryRotateRequestSchema,
   SHA256_HEX_RE,
+  SessionRevokeRequestSchema,
+  TotpEnableRequestSchema,
   UploadStatusSchema,
   WrappedKeySchema,
   pageSchema,
@@ -189,6 +194,37 @@ describe('R5/R6/R9/R11 contracts', () => {
         files: [{ id: fileId(0), chunkCount: 1, received: [{ index: 0, sha256: 'f'.repeat(64) }] }],
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('re-authentication bodies (step-up on sensitive routes)', () => {
+  it('password change takes an optional second factor next to the current authKey', () => {
+    const body = { currentAuthKey: key32, newAuthKey: key32, kdf, wrappedAccountKey: wrapped };
+    expect(PasswordChangeRequestSchema.safeParse(body).success).toBe(true);
+    expect(PasswordChangeRequestSchema.safeParse({ ...body, code: '123456' }).success).toBe(true);
+    expect(PasswordChangeRequestSchema.safeParse({ ...body, code: 'abcde-fghjk' }).success).toBe(
+      true,
+    );
+    expect(PasswordChangeRequestSchema.safeParse({ ...body, code: '12' }).success).toBe(false);
+  });
+
+  it('TOTP enable, backup codes and session revocation need the authKey', () => {
+    for (const schema of [TotpEnableRequestSchema, BackupCodesRegenerateRequestSchema]) {
+      expect(schema.safeParse({ code: '123456' }).success).toBe(false);
+      expect(schema.safeParse({ authKey: key32, code: '123456' }).success).toBe(true);
+      // TOTP codes only: a backup code cannot enrol an authenticator or mint new backup codes.
+      expect(schema.safeParse({ authKey: key32, code: 'abcde-fghjk' }).success).toBe(false);
+    }
+    expect(SessionRevokeRequestSchema.safeParse({}).success).toBe(false);
+    expect(SessionRevokeRequestSchema.safeParse({ authKey: key32 }).success).toBe(true);
+    expect(
+      SessionRevokeRequestSchema.safeParse({ authKey: key32, code: 'abcde-fghjk' }).success,
+    ).toBe(true);
+  });
+
+  it('a fixable 403 names its reason', () => {
+    expect(ForbiddenDetailsSchema.safeParse({ reason: 'MFA_REQUIRED' }).success).toBe(true);
+    expect(ForbiddenDetailsSchema.safeParse({ reason: 'OTHER' }).success).toBe(false);
   });
 });
 

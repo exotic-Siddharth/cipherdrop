@@ -6,19 +6,28 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { CopyField } from '../../components/ui/CopyField';
 import { Input } from '../../components/ui/Input';
+import { PasswordInput } from '../../components/ui/PasswordInput';
 import { accountErrorMessage } from '../account/accountErrors';
 
 export interface TotpSetupProps {
   /** The pending secret returned by POST /auth/mfa/totp/setup. */
   setup: TotpSetupResponse;
-  /** Verifies the code (POST /auth/mfa/totp/enable) and resolves with the backup codes. */
-  onVerify: (code: string) => Promise<BackupCodesResponse>;
+  /**
+   * Re-authenticates with the password and verifies the code (POST /auth/mfa/totp/enable), then resolves with the
+   * backup codes. The password is only used in the browser, to derive the proof.
+   */
+  onVerify: (password: string, code: string) => Promise<BackupCodesResponse>;
   onEnabled: (backupCodes: string[]) => void;
   onCancel: () => void;
 }
 
-/** Step 2 of enabling 2FA: scan the QR (or type the secret), then prove the app works with a 6-digit code. */
+/**
+ * Step 2 of enabling 2FA: scan the QR (or type the secret), then prove the app works with a 6-digit code. The
+ * password is asked too: with a stolen session alone, enrolling someone else's authenticator would lock the owner
+ * out of sign-in and recovery. The server then signs out every other session, since those never passed the code.
+ */
 export function TotpSetup({ setup, onVerify, onEnabled, onCancel }: TotpSetupProps) {
+  const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -27,6 +36,10 @@ export function TotpSetup({ setup, onVerify, onEnabled, onCancel }: TotpSetupPro
     e.preventDefault();
     if (busy) return;
     const value = code.trim();
+    if (!password) {
+      setError('Enter your password.');
+      return;
+    }
     if (!/^\d{6}$/.test(value)) {
       setError('Enter the 6-digit code shown in your authenticator app.');
       return;
@@ -34,7 +47,8 @@ export function TotpSetup({ setup, onVerify, onEnabled, onCancel }: TotpSetupPro
     setBusy(true);
     setError(null);
     try {
-      const res = await onVerify(value);
+      const res = await onVerify(password, value);
+      setPassword('');
       onEnabled(res.backupCodes);
     } catch (err) {
       setError(accountErrorMessage(err, 'totp'));
@@ -48,7 +62,10 @@ export function TotpSetup({ setup, onVerify, onEnabled, onCancel }: TotpSetupPro
       <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-sm leading-relaxed text-muted">
         <li>Open an authenticator app (1Password, Aegis, Google Authenticator, Authy...).</li>
         <li>Scan the QR code, or type the secret key by hand.</li>
-        <li>Enter the 6-digit code the app shows to turn two-step verification on.</li>
+        <li>
+          Enter your password and the 6-digit code the app shows to turn two-step verification on.
+          Your other devices are then signed out: they sign in again with a code.
+        </li>
       </ol>
 
       <div className="flex flex-col items-start gap-5 sm:flex-row">
@@ -71,6 +88,15 @@ export function TotpSetup({ setup, onVerify, onEnabled, onCancel }: TotpSetupPro
             {error}
           </Alert>
         ) : null}
+        <PasswordInput
+          label="Your password"
+          name="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          containerClassName="max-w-sm"
+          disabled={busy}
+        />
         <Input
           label="6-digit code"
           name="totp-code"

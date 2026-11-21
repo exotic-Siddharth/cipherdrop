@@ -206,7 +206,9 @@ function buildRouteConfig(
     responses['401'] = errorResponse('Missing, invalid or revoked credentials (UNAUTHORIZED)');
   }
   if (auth === 'admin' && !responses['403'])
-    responses['403'] = errorResponse('Not an admin (FORBIDDEN)');
+    responses['403'] = errorResponse(
+      'Not an admin, or an admin without two-step verification (FORBIDDEN; details.reason MFA_REQUIRED)',
+    );
   if (fullPath.startsWith('/api/') && !responses['429']) {
     responses['429'] = errorResponse('Rate limited (RATE_LIMITED, Retry-After)');
   }

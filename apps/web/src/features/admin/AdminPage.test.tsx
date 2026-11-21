@@ -107,6 +107,13 @@ function users(): AdminUser[] {
   return [
     { ...base, id: admin.id, email: admin.email, role: 'ADMIN', totpEnabled: true },
     { ...base, id: 'ckuser000000000000000002', email: 'bob@example.com', role: 'USER' },
+    {
+      ...base,
+      id: 'ckuser000000000000000003',
+      email: 'carol@example.com',
+      role: 'USER',
+      totpEnabled: true,
+    },
   ];
 }
 
@@ -124,13 +131,23 @@ interface Call {
   body?: unknown;
 }
 
-function mockApi(overrides: { reportItems?: AdminReport[]; userItems?: AdminUser[] } = {}) {
+function mockApi(
+  overrides: { reportItems?: AdminReport[]; userItems?: AdminUser[]; mfaRequired?: boolean } = {},
+) {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), 'http://localhost');
     const method = init.method ?? 'GET';
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
     calls.push({ method, path: url.pathname, search: url.searchParams, body });
+    if (overrides.mfaRequired && url.pathname.startsWith('/api/admin/')) {
+      const error = {
+        code: 'FORBIDDEN',
+        message: 'Admin access needs two-step verification.',
+        details: { reason: 'MFA_REQUIRED' },
+      };
+      return json({ error }, 403);
+    }
     if (method === 'GET' && url.pathname === '/api/admin/stats') return json(stats());
     if (method === 'GET' && url.pathname === '/api/admin/reports') {
       const items = overrides.reportItems ?? reports();
@@ -151,6 +168,12 @@ function mockApi(overrides: { reportItems?: AdminReport[]; userItems?: AdminUser
     if (method === 'PATCH' && url.pathname.startsWith('/api/admin/users/')) {
       const id = decodeURIComponent(url.pathname.split('/').pop() ?? '');
       const user = users().find((u) => u.id === id)!;
+      // Like the API: only accounts with two-step verification can become admins.
+      if ((body as { role?: string }).role === 'ADMIN' && !user.totpEnabled) {
+        const message =
+          'This account needs two-step verification before it can be an admin. Ask its owner to turn it on in Settings, Security.';
+        return json({ error: { code: 'CONFLICT', message } }, 409);
+      }
       return json({ user: { ...user, ...(body as object) } });
     }
     return json({ error: { code: 'NOT_FOUND', message: 'no' } }, 404);
@@ -220,6 +243,29 @@ describe('AdminPage stats and chart', () => {
     expect(columns[12]).toHaveFocus();
     await userEvent.keyboard('{Home}');
     expect(columns[0]).toHaveFocus();
+  });
+});
+
+describe('AdminPage without two-step verification', () => {
+  it('shows the 2FA notice when the API answers MFA_REQUIRED (2FA turned off elsewhere)', async () => {
+    mockApi({ mfaRequired: true });
+    renderAdmin();
+    expect(
+      await screen.findByRole('heading', { name: 'Turn on two-step verification' }),
+    ).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open security settings' })).toBeVisible();
+    expect(screen.queryByRole('list', { name: 'Statistics' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Abuse reports' })).toBeNull();
+  });
+
+  it('the route guard shows it before any admin request when the session says 2FA is off', async () => {
+    const calls = mockApi();
+    useAuth.setState({ user: { ...admin, totpEnabled: false } });
+    renderAdmin();
+    expect(
+      await screen.findByRole('heading', { name: 'Turn on two-step verification' }),
+    ).toBeVisible();
+    expect(calls.filter((c) => c.path.startsWith('/api/admin/'))).toEqual([]);
   });
 });
 
@@ -403,22 +449,42 @@ describe('AdminPage users', () => {
   it('saves a valid quota in bytes and a role change', async () => {
     const calls = mockApi();
     renderAdmin();
-    const dialog = await openEdit('bob@example.com');
+    const dialog = await openEdit('carol@example.com');
     const input = within(dialog).getByLabelText('Storage quota');
     await userEvent.clear(input);
     await userEvent.type(input, '2.5');
     await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    // Carol has two-step verification: no warning.
+    expect(within(dialog).queryByText(/cannot be an admin yet/)).toBeNull();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
     await waitFor(() =>
       expect(calls).toContainEqual(
         expect.objectContaining({
           method: 'PATCH',
-          path: '/api/admin/users/ckuser000000000000000002',
+          path: '/api/admin/users/ckuser000000000000000003',
           body: { role: 'ADMIN', storageQuotaBytes: 2.5 * GIB },
         }),
       ),
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('warns that an account without two-step verification cannot be an admin, and shows the refusal', async () => {
+    const calls = mockApi();
+    renderAdmin();
+    const dialog = await openEdit('bob@example.com');
+    expect(within(dialog).queryByText(/cannot be an admin yet/)).toBeNull();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    expect(
+      within(dialog).getByText(/no two-step verification, so it cannot be an admin yet/),
+    ).toBeVisible();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    // The server decides (its view of 2FA may be newer than this list): its refusal keeps the dialog open.
+    expect(
+      await within(dialog).findByText(/needs two-step verification before it can be an admin/),
+    ).toBeVisible();
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Edit user' })).toBeVisible();
   });
 
   it('sends only what changed, warns below usage, and locks your own role', async () => {

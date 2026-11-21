@@ -117,6 +117,23 @@ export async function newSession(
   return { accessToken, cookie: cookieFrom(res), sid: sidOf(accessToken) };
 }
 
+/** A session from a full login with the second factor (`code`: a TOTP or backup code). */
+export async function newMfaSession(
+  app: Express,
+  u: Pick<RegisteredUser, 'email' | 'password'>,
+  code: string,
+): Promise<{ accessToken: string; cookie: string; sid: string }> {
+  const login = await loginViaApi(app, u.email, u.password);
+  expect(login.status, JSON.stringify(login.body)).toBe(200);
+  expect(login.body.mfaRequired).toBe(true);
+  const res = await request(app)
+    .post('/api/auth/login/mfa')
+    .send({ mfaToken: login.body.mfaToken as string, code });
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  const accessToken = res.body.accessToken as string;
+  return { accessToken, cookie: cookieFrom(res), sid: sidOf(accessToken) };
+}
+
 /** The sid claim of an access token (no verification). */
 export function sidOf(accessToken: string): string {
   const payload = JSON.parse(
@@ -145,20 +162,20 @@ export function wrongTotpCode(secretBase32: string): string {
   }
 }
 
-/** setup + enable through the API, using the code of the current step. */
+/** setup + enable through the API (the authKey re-authenticates), using the code of the current step. */
 export async function enableTotpViaApi(
   app: Express,
-  accessToken: string,
+  u: Pick<RegisteredUser, 'accessToken' | 'authKey'>,
 ): Promise<{ secret: string; backupCodes: string[] }> {
   const setup = await request(app)
     .post('/api/auth/mfa/totp/setup')
-    .set('Authorization', bearer(accessToken));
+    .set('Authorization', bearer(u.accessToken));
   expect(setup.status, JSON.stringify(setup.body)).toBe(200);
   const secret = setup.body.secret as string;
   const enable = await request(app)
     .post('/api/auth/mfa/totp/enable')
-    .set('Authorization', bearer(accessToken))
-    .send({ code: totpCode(secret) });
+    .set('Authorization', bearer(u.accessToken))
+    .send({ authKey: u.authKey, code: totpCode(secret) });
   expect(enable.status, JSON.stringify(enable.body)).toBe(200);
   return { secret, backupCodes: enable.body.backupCodes as string[] };
 }

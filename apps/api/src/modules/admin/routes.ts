@@ -103,13 +103,14 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     {
       method: 'patch',
       path: '/users/:id',
-      summary: 'Edit a user role and/or storage quota',
+      summary: 'Edit a user role and/or storage quota (only accounts with 2FA can become admins)',
       tags,
       auth,
       request: { params: UserIdParamsSchema, body: AdminUserPatchRequestSchema },
       responses: {
         200: { description: 'Updated user', schema: AdminUserResponseSchema },
         404: { description: 'Unknown user' },
+        409: { description: 'Promotion of an account without two-step verification (CONFLICT)' },
       },
     },
     async (req, res) => {

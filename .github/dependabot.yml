@@ -98,6 +98,8 @@ updates:
         patterns: ['*']
 
   # The third-party images of the compose files (postgres, redis, caddy in docker-compose.prod.yml; tag plus digest).
+  # This entry does not touch ci.yml's service images, which must stay equal to the compose ones: the pull request
+  # fails scripts/image-pins.test.mjs (audit.yml) until they are moved by hand in the same branch.
   - package-ecosystem: docker-compose
     directory: /
     schedule:

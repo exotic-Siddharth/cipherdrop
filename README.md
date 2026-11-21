@@ -5,7 +5,10 @@
 Zero-knowledge, end-to-end encrypted file sharing: files are encrypted in the browser before upload, and the
 server stores only ciphertext it has no key for.
 
-![The receive page after decrypting a drop: the sender's note, three files with "Integrity verified" badges and an image preview](docs/screenshots/hero.png)
+![The two-minute demo in about 90 seconds: a file is encrypted in the browser and sent with burn after reading, the key sits after the # in the link, a fresh browser decrypts and verifies it, a reload finds the link used up, one flipped ciphertext byte blocks the save, a password link, then the zero-knowledge account: dashboard, locked vault after a reload, activity log](docs/screenshots/demo.gif)
+
+[Screenshots](#screenshots) of every view are further down; [docs/DEMO.md](docs/DEMO.md) is the script, and
+`npm run media -w @cipherdrop/web` records the clip and regenerates the screenshots from the running app.
 
 ## What it does
 
@@ -37,6 +40,40 @@ server stores only ciphertext it has no key for.
 - **Operations**: local-disk or S3-compatible storage, Prometheus metrics, health and readiness checks, an OpenAPI
   document (with Swagger UI in development only), `/.well-known/security.txt`, and a production Docker Compose stack
   behind nginx.
+
+## Screenshots
+
+Click a picture for the full size (2x). All of them come from `npm run media -w @cipherdrop/web` against the real
+build and API ([docs/DEMO.md](docs/DEMO.md#recording-the-demo-and-the-screenshots)); most have a light and a dark
+version in [docs/screenshots](docs/screenshots).
+
+<table>
+  <tr>
+    <td valign="top"><a href="docs/screenshots/send-progress-dark.png"><img src="docs/screenshots/send-progress-dark.png" width="280" alt="Encrypting and uploading: progress per file and a strip of the ciphertext bytes leaving the browser"></a><br>Encrypt and upload: the strip is the real ciphertext</td>
+    <td valign="top"><a href="docs/screenshots/send-success-light.png"><img src="docs/screenshots/send-success-light.png" width="280" alt="The share link with the key after #, and the note that the key never reaches the server"></a><br>The link: the key after <code>#</code> stays in the browser</td>
+    <td valign="top"><a href="docs/screenshots/receive-light.png"><img src="docs/screenshots/receive-light.png" width="280" alt="The receive page: the sender's note, three files marked Integrity verified and an image preview"></a><br>Decrypted in the browser, every file verified</td>
+  </tr>
+  <tr>
+    <td valign="top"><a href="docs/screenshots/receive-tamper-blocked-light.png"><img src="docs/screenshots/receive-tamper-blocked-light.png" width="280" alt="One flipped ciphertext byte: the download is blocked and every file is marked Blocked"></a><br>One byte changed in transit: blocked, nothing saved</td>
+    <td valign="top"><a href="docs/screenshots/receive-password-light.png"><img src="docs/screenshots/receive-password-light.png" width="280" alt="A password-protected drop asks for its password before anything is decrypted"></a><br>A password link carries no key</td>
+    <td valign="top"><a href="docs/screenshots/receive-burned-light.png"><img src="docs/screenshots/receive-burned-light.png" width="280" alt="Burn after reading: all downloads have been used"></a><br>Burn after reading: the link is used up</td>
+  </tr>
+  <tr>
+    <td valign="top"><a href="docs/screenshots/dashboard-light.png"><img src="docs/screenshots/dashboard-light.png" width="280" alt="The dashboard lists the account's drops with names decrypted locally"></a><br>Dashboard: names decrypted with the account key</td>
+    <td valign="top"><a href="docs/screenshots/register-recovery-key-light.png"><img src="docs/screenshots/register-recovery-key-light.png" width="280" alt="After sign-up: the recovery key, shown once"></a><br>The recovery key, shown once at sign-up</td>
+    <td valign="top"><a href="docs/screenshots/totp-setup-light.png"><img src="docs/screenshots/totp-setup-light.png" width="280" alt="Two-step verification setup with a QR code, the secret and a re-authentication with the password"></a><br>Two-step verification setup</td>
+  </tr>
+  <tr>
+    <td valign="top"><a href="docs/screenshots/admin-dark.png"><img src="docs/screenshots/admin-dark.png" width="280" alt="The admin console: statistics, a 14-day uploads chart and the abuse-report queue"></a><br>Admin console (admins need two-step verification)</td>
+    <td valign="top"><a href="docs/screenshots/login-2fa-light.png"><img src="docs/screenshots/login-2fa-light.png" width="280" alt="Sign-in asks for the 6-digit code once two-step verification is on"></a><br>Sign-in with a second factor</td>
+    <td valign="top"><a href="docs/screenshots/how-it-works-dark.png"><img src="docs/screenshots/how-it-works-dark.png" width="280" alt="The How it works page: the key in the fragment, chunked encryption, what the server sees"></a><br>How it works, in the app</td>
+  </tr>
+</table>
+
+Phone layout (390 px): [send](docs/screenshots/send-mobile-light.png), [receive](docs/screenshots/receive-mobile-dark.png),
+[blocked after tampering](docs/screenshots/receive-tamper-blocked-mobile-light.png) and
+[dashboard](docs/screenshots/dashboard-mobile-dark.png). [hero.png](docs/screenshots/hero.png) (1280x640, the size of
+a GitHub social preview) puts the sender and the recipient side by side.
 
 ## Engineering highlights
 

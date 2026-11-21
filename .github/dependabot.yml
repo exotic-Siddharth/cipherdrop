@@ -64,6 +64,17 @@ updates:
         patterns: ['*']
         update-types: ['minor', 'patch']
 
+  # zizmor, the workflow linter (.github/zizmor-requirements.txt: exact version and wheel hashes, both updated).
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+
   # Base images of both Dockerfiles. Each FROM line names its image literally, as tag plus index digest
   # (`FROM node:22-alpine@sha256:... AS base`): Dependabot reads only FROM lines that name an image, so an ARG default
   # would hide it. With a digest pin it proposes the new digest whenever the tag moves (a rebuilt node:22-alpine with

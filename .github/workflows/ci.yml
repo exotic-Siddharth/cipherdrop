@@ -5,6 +5,8 @@
 #
 # The services are published on the SAME host ports as docker-compose.yml (Postgres 55433, Redis 56380, MinIO 59000)
 # so the test and e2e configs run unchanged: their defaults and playwright.config.ts point at those ports.
+# The Postgres and Redis service images carry the same tag and index digest as docker-compose.prod.yml, so the tests
+# run against the bytes production runs: when Dependabot moves the compose digests, move these with them.
 #
 # Supply chain: every action is pinned to a full commit SHA (the comment names its release; Dependabot,
 # .github/dependabot.yml, proposes the bumps), checkout does not leave the token in .git/config, and every
@@ -65,7 +67,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         env:
           POSTGRES_USER: cipherdrop
           POSTGRES_PASSWORD: cipherdrop
@@ -78,7 +80,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 56380:6379
         options: >-
@@ -128,7 +130,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         env:
           POSTGRES_USER: cipherdrop
           POSTGRES_PASSWORD: cipherdrop
@@ -141,7 +143,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 56380:6379
         options: >-
@@ -204,7 +206,7 @@ jobs:
             browser: webkit
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         env:
           POSTGRES_USER: cipherdrop
           POSTGRES_PASSWORD: cipherdrop
@@ -217,7 +219,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 56380:6379
         options: >-
@@ -280,7 +282,7 @@ jobs:
           git --no-banner --redact --verbose --config /repo/.gitleaks.toml /repo
 
   workflows:
-    name: workflow lint (actionlint)
+    name: workflow lint (actionlint, zizmor)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -293,6 +295,16 @@ jobs:
         run: >-
           docker run --rm -v "$PWD:/repo" -w /repo
           rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+      # zizmor: the security audits (template injection, credential persistence, unpinned actions and images,
+      # excessive permissions, ...) with the pedantic persona, over every workflow and dependabot.yml. Installed in a
+      # venv from .github/zizmor-requirements.txt (exact version, wheel hashes). --offline: the audits that need the
+      # GitHub API are skipped, so no token is handed to the tool and the result depends only on the files.
+      - name: zizmor
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install --quiet --require-hashes --only-binary :all: \
+            -r .github/zizmor-requirements.txt
+          "$RUNNER_TEMP/zizmor/bin/zizmor" --offline --persona=pedantic --format=github .
 
   prod-stack:
     # The deployable artefacts as an operator runs them (docs/DEPLOYMENT.md), on every push: both images built by

@@ -421,14 +421,21 @@ describe('ReceivePage', () => {
     );
   });
 
-  it('a file over 256 MB in a browser without the save picker never consumes a download (C-03)', async () => {
+  it('a file over 256 MiB in a browser without the save picker never consumes a download (C-03)', async () => {
     const f = await fixture({ remaining: 1, max: 1, size: 300 * 1024 * 1024 });
     const calls = mockApi(f);
     vi.stubGlobal('showSaveFilePicker', undefined);
     delete (window as unknown as Record<string, unknown>).showSaveFilePicker;
     renderAt(`/d/${f.dropId}#${f.dkB64}`);
     expect(await screen.findByText('report.bin')).toBeVisible();
-    expect(await screen.findByText(/can't save it straight to disk/)).toBeVisible();
+    // The limit is binary (LIMITS.BLOB_SAVE_MAX_BYTES = 256 MiB), and the copy names what the browser lacks.
+    const perFile = await screen.findByText(/can't save it straight to disk/);
+    expect(perFile).toBeVisible();
+    expect(perFile).toHaveTextContent(/larger than 256 MiB.*File System Access API/);
+    expect(
+      screen.getByText(/streaming it straight to disk needs the File System Access API/),
+    ).toHaveTextContent(/larger than 256 MiB/);
+    expect(screen.queryByText(/256 MB\b/)).toBeNull();
     const button = screen.getByRole('button', { name: /decrypt & download/i });
     await userEvent.click(button);
     expect(screen.queryByRole('dialog', { name: 'This is the last download' })).toBeNull();

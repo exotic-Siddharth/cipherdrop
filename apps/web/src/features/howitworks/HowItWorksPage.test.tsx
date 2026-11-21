@@ -101,6 +101,15 @@ describe('HowItWorksPage', () => {
     expect(text).toMatch(/does not mean they come from the person you expect or are safe to open/);
   });
 
+  it('states the in-memory download limit in MiB and what larger files need', () => {
+    renderPage();
+    const heading = screen.getByRole('heading', { name: /large files in some browsers/i });
+    const text = heading.parentElement?.textContent ?? '';
+    expect(text).toMatch(/up to 256 MiB/);
+    expect(text).toMatch(/File System Access API/);
+    expect(text).not.toMatch(/256 MB\b/);
+  });
+
   it('keeps the CTA banner line at AA contrast (C-40)', () => {
     renderPage();
     expect(screen.getByText(/No account needed\. Drops up to 72 hours/)).toHaveClass(

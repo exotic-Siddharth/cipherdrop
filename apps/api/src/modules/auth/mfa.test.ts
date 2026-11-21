@@ -192,6 +192,35 @@ describe('TOTP setup -> enable -> backup codes -> disable', () => {
     expect(event.metadata).toEqual({ revokedSessions: 2 });
   });
 
+  it('an admin cannot turn TOTP off (409), and the refusal spends no code', async () => {
+    const u = await registerViaApi(t.app);
+    const { backupCodes } = await enableTotpViaApi(t.app, u);
+    await t.prisma.user.update({ where: { id: u.user.id }, data: { role: 'ADMIN' } });
+    const disable = () =>
+      request(t.app)
+        .post('/api/auth/mfa/totp/disable')
+        .set('Authorization', bearer(u.accessToken))
+        .send({ authKey: u.authKey, code: backupCodes[0] });
+
+    const refused = await disable();
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.message).toMatch(/Admins cannot turn off two-step verification/);
+    const row = await t.prisma.user.findUniqueOrThrow({ where: { id: u.user.id } });
+    expect(row.totpEnabledAt).not.toBeNull();
+    expect(row.totpSecretEnc).not.toBeNull();
+    expect(await t.prisma.backupCode.count({ where: { userId: u.user.id, usedAt: null } })).toBe(
+      10,
+    );
+    expect(await count(u.user.id, 'MFA_DISABLED')).toBe(0);
+
+    // Demoted, the same (unspent) backup code turns it off.
+    await t.prisma.user.update({ where: { id: u.user.id }, data: { role: 'USER' } });
+    expect((await disable()).status).toBe(204);
+    expect(
+      (await t.prisma.user.findUniqueOrThrow({ where: { id: u.user.id } })).totpEnabledAt,
+    ).toBeNull();
+  });
+
   it('enable without a pending setup is a 409', async () => {
     const u = await registerViaApi(t.app);
     const res = await request(t.app)

@@ -259,6 +259,26 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  secrets:
+    name: secret scan (gitleaks, full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Every commit, not just the tip: a secret that was committed and later deleted is still in the history.
+          fetch-depth: 0
+          persist-credentials: false
+      # gitleaks 8.30.1, the MIT-licensed CLI (gitleaks-action needs a license key for organisations), pinned by its
+      # image index digest; Dependabot does not track an image inside a run: step, so bump tag and digest together.
+      # The default rules plus .gitleaks.toml (exceptions by exact value, each with its reason). --redact keeps a
+      # finding's value out of the log; --verbose prints where it is. The checkout is mounted read-only.
+      - name: gitleaks
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git --no-banner --redact --verbose --config /repo/.gitleaks.toml /repo
+
   workflows:
     name: workflow lint (actionlint)
     runs-on: ubuntu-latest

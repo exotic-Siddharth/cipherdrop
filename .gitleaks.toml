@@ -1,0 +1,28 @@
+# gitleaks (CI job "secrets" in .github/workflows/ci.yml): the default rules over the whole git history, with the
+# exceptions below. Each one names an exact value, never a file or a path pattern, so a real secret added next to
+# them, in the same file, is still found. Add a value only after checking that it is a published test vector, a
+# documented dev-only value or a placeholder the production config guard rejects, and say which in its description.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Dev-only TOTP_ENC_KEY of .env.example and apps/api/.env.example: base64 of the text 'dev-only-totp-enc-key-32-bytes!!', commented as such there and never used outside development."
+regexes = ['''^ZGV2LW9ubHktdG90cC1lbmMta2V5LTMyLWJ5dGVzISE=$''']
+
+[[allowlists]]
+description = "Placeholder TOTP_ENC_KEY of .env.production.example: base64 of the text 'change-me-change-me-change-me-ab'; the production config guard refuses to start with it."
+regexes = ['''^Y2hhbmdlLW1lLWNoYW5nZS1tZS1jaGFuZ2UtbWUtYWI=$''']
+
+[[allowlists]]
+description = "Test vectors: the RFC 6238 appendix B TOTP secret (totp.test.ts), the bytes 0x00..0x1f as base64url (links.test.ts), the recovery-key alphabet in order and its hex (recovery.test.ts)."
+regexes = [
+  '''^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ$''',
+  '''^AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8$''',
+  '''^0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ$''',
+  '''^00443214c74254b635cf84653a56d7c675be77df$''',
+]
+
+[[allowlists]]
+description = "A made-up value that tests feed to the logger and to Prisma's error events to prove it never reaches a log line (apps/api/src/db/prisma.test.ts, and apps/api/src/lib/logger.test.ts in earlier commits)."
+regexes = ['''^NHQLjAoPm44F9kDrwhV7u3CPHHucOoBzVFOBmVwdGmw$''']

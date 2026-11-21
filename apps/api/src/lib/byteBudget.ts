@@ -1,60 +1,94 @@
 /**
  * Rolling per-client byte budget for anonymous drops (server-1): at most `limitBytes` of declared ciphertext
- * per client in any `windowMs`. The client is ipShareKey(req.ip): the IPv4 address or the IPv6 /48.
+ * per client in any `windowHours`. The client is ipShareKey(req.ip): the IPv4 address or the IPv6 /48.
  *
- * One Redis sorted set per client, `${KEY_PREFIX}:anonbytes:<client>`, one member per accepted create:
- * member "<random id>:<bytes>", score = the create time in ms. reserve() runs one Lua script, so parallel
- * creates cannot overshoot: it drops the members older than the window, sums the rest and adds the new member
- * only if it fits. Otherwise it answers how long until enough old bytes leave the window (the Retry-After).
- * The key expires one window after its last member, so an idle client leaves nothing behind.
+ * Coarse on purpose. One Redis hash per client, `${KEY_PREFIX}:anonbytes:<client>`: field = the hour of the
+ * create (floor(ms / 1 h)), value = the MiB that client's creates took in that hour, each create rounded UP to
+ * a whole MiB. reserve() runs one Lua script, so parallel creates cannot overshoot: it deletes the hours that
+ * left the window, sums the rest and adds the new create only if it fits; otherwise it answers how long until
+ * enough old hours leave (the Retry-After). An hour counts for `windowHours` full hours after the one it
+ * names, so a create counts for at least the window and at most one hour more. Rounding up keeps the budget
+ * conservative (a 2 KiB drop takes 1 MiB). The key expires when its newest hour leaves the window, so an idle
+ * client leaves nothing behind.
  *
- * Metadata: Redis holds the client key (as the rate limiters do, but for the budget window) with the time and
- * size of each anonymous create. The member id is random, never the drop id, so Redis does not link a client
- * address to a drop; the database still stores no creator address at all.
+ * Metadata: Redis holds, for the window, the client key with the MiB total of its anonymous creates per hour.
+ * Not the drop id, not the exact create time, not the exact size: a Drop row's createdAt and
+ * totalCiphertextBytes match a bucket only as "a create of about that size in that hour". That does not make
+ * it unlinkable. Whoever reads both Redis and the database (the operator, or anyone who owns the host) can
+ * still tie a client key to an anonymous drop when few anonymous drops were created in that hour, which on a
+ * quiet instance is the usual case. The database itself stores no creator address.
  */
-import { randomBytes } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { redisKey } from './redis';
 
+const HOUR_MS = 3_600_000;
+/** The budget's unit: every create is rounded up to a whole MiB. */
+export const BUDGET_UNIT_BYTES = 1024 * 1024;
+
+/** Whole budget units (MiB) a create of `bytes` takes. */
+export const budgetUnits = (bytes: number) => Math.ceil(bytes / BUDGET_UNIT_BYTES);
+
+/**
+ * KEYS[1] the client's hash. ARGV: hour (the create's hour bucket), nowMs, windowHours, limitUnits, units.
+ * Returns 0 when the create fits (and was added), otherwise the milliseconds until it would fit.
+ */
 const RESERVE_LUA = `
 local key = KEYS[1]
-local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local bytes = tonumber(ARGV[4])
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
-local entries = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
+local hour = tonumber(ARGV[1])
+local nowMs = tonumber(ARGV[2])
+local windowHours = tonumber(ARGV[3])
+local limit = tonumber(ARGV[4])
+local units = tonumber(ARGV[5])
+local hourMs = ${HOUR_MS}
+local oldest = hour - windowHours
+local fields = redis.call('HGETALL', key)
+local buckets = {}
 local used = 0
-for i = 1, #entries, 2 do
-  used = used + tonumber(string.match(entries[i], ':(%d+)$'))
+for i = 1, #fields, 2 do
+  local b = tonumber(fields[i])
+  local u = tonumber(fields[i + 1])
+  if b < oldest then
+    redis.call('HDEL', key, fields[i])
+  else
+    used = used + u
+    buckets[#buckets + 1] = { b, u }
+  end
 end
-if used + bytes <= limit then
-  redis.call('ZADD', key, now, ARGV[5])
-  redis.call('PEXPIRE', key, window)
+if used + units <= limit then
+  redis.call('HINCRBY', key, ARGV[1], units)
+  redis.call('PEXPIRE', key, (hour + windowHours + 1) * hourMs - nowMs)
   return 0
 end
-if bytes > limit then return window end
-local excess = used + bytes - limit
-for i = 1, #entries, 2 do
-  excess = excess - tonumber(string.match(entries[i], ':(%d+)$'))
-  if excess <= 0 then return math.max(1, tonumber(entries[i + 1]) + window - now) end
+if units > limit then return (windowHours + 1) * hourMs end
+table.sort(buckets, function(a, b) return a[1] < b[1] end)
+local excess = used + units - limit
+for _, bucket in ipairs(buckets) do
+  excess = excess - bucket[2]
+  if excess <= 0 then return math.max(1, (bucket[1] + windowHours + 1) * hourMs - nowMs) end
 end
-return window
+return (windowHours + 1) * hourMs
+`;
+
+/** KEYS[1] the client's hash. ARGV: hour, units. Takes `units` back out of that hour. */
+const RELEASE_LUA = `
+local left = redis.call('HINCRBY', KEYS[1], ARGV[1], -tonumber(ARGV[2]))
+if left <= 0 then redis.call('HDEL', KEYS[1], ARGV[1]) end
+return left
 `;
 
 export const anonBytesKey = (client: string) => redisKey('anonbytes', client);
 
 export interface ByteBudget {
   limitBytes: number;
-  windowMs: number;
+  windowHours: number;
 }
 
 export type ReserveResult =
   { ok: true; release: () => Promise<void> } | { ok: false; retryAfterMs: number };
 
 /**
- * Reserve `bytes` in the budget of `client` at time `now`. On success, `release()` gives the bytes back (for a
- * create that fails after the reservation); it never rejects.
+ * Reserve `bytes` (rounded up to whole MiB) in the budget of `client` at time `now`. On success, `release()`
+ * gives them back (for a create that fails after the reservation); it never rejects.
  */
 export async function reserveBytes(
   redis: Redis,
@@ -64,24 +98,25 @@ export async function reserveBytes(
   now: Date,
 ): Promise<ReserveResult> {
   const key = anonBytesKey(client);
-  const member = `${randomBytes(12).toString('base64url')}:${bytes}`;
+  const hour = String(Math.floor(now.getTime() / HOUR_MS));
+  const units = budgetUnits(bytes);
   const waitMs = Number(
     await redis.eval(
       RESERVE_LUA,
       1,
       key,
+      hour,
       String(now.getTime()),
-      String(budget.windowMs),
-      String(budget.limitBytes),
-      String(bytes),
-      member,
+      String(budget.windowHours),
+      String(Math.floor(budget.limitBytes / BUDGET_UNIT_BYTES)),
+      String(units),
     ),
   );
   if (waitMs > 0) return { ok: false, retryAfterMs: waitMs };
   return {
     ok: true,
     release: async () => {
-      await redis.zrem(key, member).catch(() => undefined);
+      await redis.eval(RELEASE_LUA, 1, key, hour, String(units)).catch(() => undefined);
     },
   };
 }

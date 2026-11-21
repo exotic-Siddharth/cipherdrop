@@ -13,6 +13,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { apiRoot } from './paths';
 
+const MiB = 1024 * 1024;
 const TRUE = new Set(['true', '1', 'yes', 'on']);
 const FALSE = new Set(['false', '0', 'no', 'off']);
 
@@ -147,6 +148,8 @@ const EnvSchema = z
      * address or IPv6 /48 in any ANON_BYTES_WINDOW_HOURS (default 1 GiB per 24 h; 0 = off). Beyond it the
      * create gets 429 UPLOAD_BUDGET_EXCEEDED with Retry-After. Kept in Redis, so it holds across API processes,
      * and one client can no longer fill ANON_TOTAL_PENDING_BYTES and lock every other anonymous sender out.
+     * Counted in whole MiB per hour (lib/byteBudget.ts), so it must hold one ANON_MAX_DROP_BYTES drop rounded
+     * up to a MiB.
      */
     ANON_BYTES_PER_CLIENT: int(1_073_741_824, 0),
     ANON_BYTES_WINDOW_HOURS: int(24, 1, 720),
@@ -174,12 +177,18 @@ const EnvSchema = z
     SEED_DEMO_PASSWORD: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
-    // A budget below the largest anonymous drop would refuse every drop of that size for ever.
-    if (env.ANON_BYTES_PER_CLIENT > 0 && env.ANON_BYTES_PER_CLIENT < env.ANON_MAX_DROP_BYTES) {
+    // A budget below the largest anonymous drop would refuse every drop of that size for ever. The budget
+    // counts whole MiB, so the largest drop is rounded up first. Upgrades: raising ANON_MAX_DROP_BYTES above
+    // 1 GiB now needs ANON_BYTES_PER_CLIENT raised too (or set to 0), and the message says so.
+    const largestAnonDrop = Math.ceil(env.ANON_MAX_DROP_BYTES / MiB) * MiB;
+    if (env.ANON_BYTES_PER_CLIENT > 0 && env.ANON_BYTES_PER_CLIENT < largestAnonDrop) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['ANON_BYTES_PER_CLIENT'],
-        message: 'must be 0 (off) or at least ANON_MAX_DROP_BYTES',
+        // Names only, like every message here (values are never printed).
+        message:
+          'must be 0 (off) or at least ANON_MAX_DROP_BYTES rounded up to a whole MiB: raise it ' +
+          'together with ANON_MAX_DROP_BYTES',
       });
     }
     if (env.NODE_ENV !== 'production') return;

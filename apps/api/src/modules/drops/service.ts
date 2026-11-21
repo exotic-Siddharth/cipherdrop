@@ -82,10 +82,11 @@ export function expectedChunkSize(
 /* ---------------------------------------------------------------- create */
 
 /**
- * Take `bytes` from the rolling anonymous budget of the requesting client (IPv4 address or IPv6 /48), or
- * throw 429 UPLOAD_BUDGET_EXCEEDED with the wait. Returns the release for a create that fails afterwards, or
- * null when the budget is off. A drop deleted later does not give its bytes back: the budget meters what a
- * client asked the server to store, so create-and-delete cycles cannot reset it.
+ * Take `bytes` (rounded up to whole MiB, lib/byteBudget.ts) from the rolling anonymous budget of the
+ * requesting client (IPv4 address or IPv6 /48), or throw 429 UPLOAD_BUDGET_EXCEEDED with the wait. Returns
+ * the release for a create that fails afterwards, or null when the budget is off. A drop deleted later does
+ * not give its bytes back: the budget meters what a client asked the server to store, so create-and-delete
+ * cycles cannot reset it.
  */
 async function reserveAnonBudget(
   ctx: AppContext,
@@ -94,10 +95,9 @@ async function reserveAnonBudget(
 ): Promise<(() => Promise<void>) | null> {
   const { ANON_BYTES_PER_CLIENT: limitBytes, ANON_BYTES_WINDOW_HOURS: windowHours } = ctx.env;
   if (limitBytes <= 0) return null;
-  const windowMs = windowHours * HOUR_MS;
   const result = await reserveBytes(
     ctx.redis,
-    { limitBytes, windowMs },
+    { limitBytes, windowHours },
     ipShareKey(req.ip),
     bytes,
     ctx.now(),

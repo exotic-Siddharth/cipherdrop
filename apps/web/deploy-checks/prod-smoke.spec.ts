@@ -336,7 +336,14 @@ test('operational endpoints are not exposed through nginx', async ({ request }) 
 });
 
 test('Swagger UI is not served on the SPA origin; the OpenAPI JSON is', async ({ request }) => {
-  for (const url of ['/api/docs', '/api/docs/', '/api/docs/swagger-ui-bundle.js']) {
+  // Express mounts are case-insensitive, so the mixed-case paths would reach a misconfigured API's Swagger UI.
+  for (const url of [
+    '/api/docs',
+    '/api/docs/',
+    '/api/docs/swagger-ui-bundle.js',
+    '/api/DOCS/',
+    '/api/Docs/swagger-ui-bundle.js',
+  ]) {
     const res = await request.get(url);
     expect(res.status(), url).toBe(404);
     // nginx's own 404 (not the API's JSON one), with the SPA's section 12 headers.

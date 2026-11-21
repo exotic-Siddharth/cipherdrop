@@ -12,13 +12,17 @@ import { requireAuth } from './middleware/auth';
 import { errorHandler } from './middleware/error';
 
 let t: TestApp;
+/** The same app with Swagger UI on (API_DOCS_UI=true, as in the dev .env.example). */
+let withDocs: TestApp;
 
 beforeAll(async () => {
   t = await createTestApp();
+  withDocs = await createTestApp({ env: { API_DOCS_UI: true } });
 });
 
 afterAll(async () => {
   await t.close();
+  await withDocs.close();
 });
 
 /** A tiny app that shares the test context, for exercising S4 middleware in isolation. */
@@ -158,10 +162,36 @@ describe('S4 app skeleton', () => {
     expect(paths['/api/drops/{id}/files/{fileId}/chunks/{index}']?.put).toBeDefined();
     expect(paths['/api/drops/{id}/files/{fileId}/chunks/{index}']?.get).toBeDefined();
     expect(paths['/api/admin/drops/{id}/grant']?.post).toBeDefined();
+  });
 
-    const docs = await request(t.app).get('/api/docs/');
+  it('Swagger UI is off by default: /api/docs is the JSON 404, /api/openapi.json is still served', async () => {
+    expect(t.ctx.env.API_DOCS_UI).toBe(false);
+    for (const path of [
+      '/api/docs',
+      '/api/docs/',
+      '/api/docs/swagger-ui.css',
+      '/api/docs/swagger-ui-init.js',
+      '/api/docs/swagger-ui-bundle.js',
+    ]) {
+      const res = await request(t.app).get(path);
+      expect(res.status, path).toBe(404);
+      expect(res.headers['content-type'], path).toContain('application/json');
+      expect(res.body, path).toEqual({ error: { code: 'NOT_FOUND', message: expect.any(String) } });
+    }
+    expect((await request(t.app).get('/api/openapi.json')).status).toBe(200);
+  });
+
+  it('API_DOCS_UI=true serves Swagger UI and its assets, and adds no route outside the manifest', async () => {
+    const docs = await request(withDocs.app).get('/api/docs/');
     expect(docs.status).toBe(200);
     expect(docs.text).toContain('swagger');
+    const css = await request(withDocs.app).get('/api/docs/swagger-ui.css');
+    expect(css.status).toBe(200);
+    expect(css.headers['content-type']).toContain('text/css');
+    // Swagger UI is middleware (app.use), not a route: the route-table walk sees the same routes either way.
+    const paths = (await request(withDocs.app).get('/api/openapi.json')).body.paths;
+    expect(undocumentedRoutes(withDocs.app, paths)).toEqual(['GET /api/openapi.json']);
+    expect(mountedRoutes(withDocs.app).sort()).toEqual(mountedRoutes(t.app).sort());
   });
 
   it('the route-table walk flags a route mounted outside route()', async () => {
@@ -180,11 +210,16 @@ describe('S4 app skeleton', () => {
       '/api/openapi.json', // 200
       '/api/does-not-exist', // 404
       '/api/auth/vault', // 401 without a token
-      '/api/docs/', // static Swagger UI (HTML)
-      '/api/docs/swagger-ui.css', // static Swagger UI asset
+      '/api/docs/', // 404: Swagger UI is off by default
     ];
     for (const path of paths) {
       const res = await request(t.app).get(path);
+      expect(res.headers['cache-control'], path).toBe('no-store');
+    }
+    // With API_DOCS_UI on, the static Swagger UI files are no-store too.
+    for (const path of ['/api/docs/', '/api/docs/swagger-ui.css']) {
+      const res = await request(withDocs.app).get(path);
+      expect(res.status, path).toBe(200);
       expect(res.headers['cache-control'], path).toBe('no-store');
     }
     const auth = await request(t.app).get('/api/auth/vault');

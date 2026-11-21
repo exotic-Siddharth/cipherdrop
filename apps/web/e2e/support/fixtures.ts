@@ -11,7 +11,9 @@
  *   e2e half of "no plaintext metadata reaches the server" (the reviewers check request payloads in the
  *   traces). The server half, what the API writes to its logs, is apps/api/src/modules/{auth,drops}/
  *   logs.test.ts.
- * - Uncaught page errors and CSP violations (the preview build runs with the production CSP) fail the test.
+ * - Uncaught page errors and CSP violations (the preview build runs with the production CSP) fail the test,
+ *   Trusted Types violations of the report-only policy included (crypto-7), in the wording of each engine. The
+ *   engines' notice that the report-only policy has no report endpoint is not a violation (isCspViolationMessage).
  */
 import {
   test as base,
@@ -20,6 +22,7 @@ import {
   type Page,
   type Request,
 } from '@playwright/test';
+import { TRUSTED_TYPES_REPORT_ONLY } from '../../securityHeaders';
 
 export interface CapturedRequest {
   method: string;
@@ -99,13 +102,65 @@ const firstLine = (err: unknown) =>
 /** How long settle() waits for the full headers before it falls back to the provisional ones. */
 const SETTLE_TIMEOUT_MS = 10_000;
 
+/** Literal text as a regular expression. */
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
- * Whether a console message is a CSP violation report, in the wording of each engine npm run e2e:cross runs:
- * Chromium "... violates the following Content Security Policy directive ...", WebKit "Refused to load ... of the
- * Content Security Policy", Firefox "Content-Security-Policy: The page's settings blocked ..." (hyphenated).
+ * Firefox hands Playwright its console-service messages as nsIScriptError.toString() (dom/bindings/nsScriptError.cpp):
+ * `[JavaScript Warning: "<text>" {file: "<url>" line: <n>}]`, or without the {file...} part. The inner text, else
+ * the message as it is.
+ */
+function unwrapScriptError(text: string): { severity: string | null; text: string } {
+  const m = /^\[JavaScript (Error|Warning): "([\s\S]*)"(?: \{file: "[^"]*" line: \d+\})?\]$/.exec(
+    text,
+  );
+  return m ? { severity: m[1] as string, text: m[2] as string } : { severity: null, text };
+}
+
+/**
+ * Notices, not violations: an engine says once per document that a report-only policy has no reporting endpoint.
+ * The Trusted Types header has none on purpose: a violation report carries a sample of the string that reached the
+ * sink, which could be decrypted plaintext, so the e2e suite (this guard) is the reporter. Each pattern is the whole
+ * message, so a real violation never matches one.
+ * - WebKit, ContentSecurityPolicy::reportMissingReportToTokens (reportMissingReportURI in older builds), console
+ *   level error, for exactly our report-only policy;
+ * - Firefox, nsCSPParser's reportURINorReportToNotInReportOnlyHeader behind the "Content-Security-Policy: "
+ *   prefix, level warning.
+ */
+const REPORT_ONLY_WITHOUT_ENDPOINT = {
+  webkit: new RegExp(
+    `^The Content Security Policy '${escapeRegExp(TRUSTED_TYPES_REPORT_ONLY)}' was delivered in report-only mode, ` +
+      "but does not specify a 'report-(to|uri)'; the policy will have no effect\\. Please either add a " +
+      "'report-\\1' directive, or deliver the policy via the 'Content-Security-Policy' header\\.$",
+  ),
+  firefox:
+    /^Content-Security-Policy: This site \([^\s()]+\) has a Report-Only policy without a report-uri directive nor a report-to directive\. CSP will not block and cannot report violations of this policy\.$/,
+};
+
+/** Whether a console message is one of the notices above (Firefox's only as the warning it is). */
+function isReportOnlyNotice(text: string): boolean {
+  if (REPORT_ONLY_WITHOUT_ENDPOINT.webkit.test(text)) return true;
+  const inner = unwrapScriptError(text);
+  return inner.severity !== 'Error' && REPORT_ONLY_WITHOUT_ENDPOINT.firefox.test(inner.text);
+}
+
+/**
+ * Whether a console message is a CSP violation report, in the wording of each engine: a blocked load or
+ * evaluation (Chromium "... violates the following Content Security Policy directive ...", WebKit "Refused to load
+ * ... of the Content Security Policy", Firefox "Content-Security-Policy: The page's settings blocked ...",
+ * hyphenated), or a Trusted Types violation of the report-only policy (Chromium "This document requires
+ * 'TrustedHTML' assignment...", which names no policy; WebKit "[Report Only] This requires a TrustedHTML value
+ * else it violates the following Content Security Policy directive ..."; Firefox "Content-Security-Policy:
+ * (Report-Only policy) ... would block assigning to an injection sink ..."). So the e2e suite is the reporter for
+ * report-only Trusted Types (crypto-7). The report-only notices above are not violations.
  */
 export function isCspViolationMessage(text: string): boolean {
-  return /Content[- ]Security[- ]Policy|Refused to (load|execute|connect|apply|create)/i.test(text);
+  if (isReportOnlyNotice(text)) return false;
+  return (
+    /Content[- ]Security[- ]Policy|Refused to (load|execute|connect|apply|create|evaluate)/i.test(
+      text,
+    ) || /requires 'Trusted(HTML|Script|ScriptURL)' assignment/i.test(text)
+  );
 }
 
 export class LeakGuard {
@@ -186,9 +241,7 @@ export class LeakGuard {
       page.on('pageerror', (err) => this.problems.push(`pageerror: ${err.message}`));
       page.on('console', (msg) => {
         const text = msg.text();
-        if (isCspViolationMessage(text)) {
-          this.problems.push(`CSP: ${text.slice(0, 240)}`);
-        }
+        if (isCspViolationMessage(text)) this.problems.push(`CSP: ${text.slice(0, 240)}`);
       });
     };
     context.on('page', watchPage);

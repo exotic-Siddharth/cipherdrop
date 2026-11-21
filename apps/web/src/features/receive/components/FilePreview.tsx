@@ -3,23 +3,26 @@ import { previewKind } from '../previewKind';
 
 export interface FilePreviewProps {
   blob: Blob;
-  /** The manifest type (the Blob carries the same sanitised type). */
+  /** The manifest type (the sender's claim). The saved Blob may carry application/octet-stream instead (sinks.ts). */
   type: string;
   name: string;
 }
 
 /** Image or text preview of a decrypted, verified Blob. Text is rendered as text, never as HTML. */
 export function FilePreview({ blob, type, name }: FilePreviewProps) {
-  const kind = previewKind(type, blob.size);
+  const preview = previewKind(type, blob.size);
+  const kind = preview?.kind ?? null;
+  // The image URL gets the allowlisted raster type, whatever type the Blob itself carries.
+  const imageType = preview?.kind === 'image' ? preview.type : null;
   const [url, setUrl] = useState<string | null>(null);
   const [text, setText] = useState<string | null>(null);
 
   useEffect(() => {
-    if (kind !== 'image') return;
-    const u = URL.createObjectURL(blob);
+    if (!imageType) return;
+    const u = URL.createObjectURL(blob.slice(0, blob.size, imageType));
     setUrl(u);
     return () => URL.revokeObjectURL(u);
-  }, [blob, kind]);
+  }, [blob, imageType]);
 
   useEffect(() => {
     if (kind !== 'text') return;

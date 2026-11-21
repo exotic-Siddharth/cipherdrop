@@ -99,3 +99,36 @@ test('missing, truncated and wrong keys; mangled links still open @cross', async
   const saved = await downloadFromReady(last, DOWNLOAD_DIR);
   expect(saved.buffer.equals(file.buffer)).toBe(true);
 });
+
+test('the key leaves the address bar: a reload still opens the drop, the last download forgets it (crypto-4)', async ({
+  page,
+  newContext,
+  leaks,
+}) => {
+  const file = textFile('address-bar.txt', 'STATES-MARKER-4');
+  await page.goto('/');
+  const link = await sendDrop(page, [file], { maxDownloads: 1 });
+  const key = new URL(link).hash.slice(1);
+  leaks.forbidKey('link key', key);
+
+  const recipient = await (await newContext()).newPage();
+  const historyState = () => recipient.evaluate(() => JSON.stringify(window.history.state));
+  await openLink(recipient, link);
+  await expect(recipient.getByText(file.name)).toBeVisible({ timeout: 20_000 });
+  // Same path, no fragment; this tab's history entry keeps the key for a reload.
+  await expect.poll(() => recipient.url()).toBe(link.slice(0, link.indexOf('#')));
+  expect(await historyState()).toContain(key);
+
+  await recipient.reload();
+  await expect(recipient.getByText(file.name)).toBeVisible({ timeout: 20_000 });
+  expect(recipient.url()).not.toContain('#');
+
+  // Burn after read: once the last download is taken, the entry no longer holds the key.
+  const saved = await downloadFromReady(recipient, DOWNLOAD_DIR);
+  expect(saved.buffer.equals(file.buffer)).toBe(true);
+  await expect.poll(historyState).not.toContain(key);
+  await recipient.reload();
+  await expect(recipient.getByText('All downloads have been used')).toBeVisible({
+    timeout: 20_000,
+  });
+});

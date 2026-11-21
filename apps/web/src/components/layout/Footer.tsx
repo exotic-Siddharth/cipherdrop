@@ -29,11 +29,15 @@ export function Footer() {
                 How it works
               </Link>
             </li>
-            <li>
-              <a href="/api/docs" className={linkClass}>
-                API docs
-              </a>
-            </li>
+            {/* Swagger UI is served by a development API only (API_DOCS_UI; refused in production, and
+                deploy/nginx.conf answers 404): production builds do not link to it. */}
+            {import.meta.env.DEV ? (
+              <li>
+                <a href="/api/docs" className={linkClass}>
+                  API docs
+                </a>
+              </li>
+            ) : null}
           </ul>
         </nav>
       </div>

@@ -438,7 +438,10 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
 - **Defence in depth on the host.** The API connects as a role with rights on rows only (`cipherdrop_app`), Redis
   needs a password, and Postgres, Redis and MinIO sit on an internal network that only the API and the one-shot
   `migrate` service join, so a compromised nginx cannot reach them and an injection in the API cannot change the
-  schema. Secrets are still passed only as environment variables (no `*_FILE` or Docker secrets), so they show in
+  schema. The audit log is append-only for that role (server-8): it has no UPDATE or DELETE on `AuditEvent`, and
+  retention runs through the owner's `prune_audit_events()`, which keeps 90 days (a year for admin actions) whatever
+  time it is given, so a compromised API cannot erase recent events (account deletion still removes the account's
+  own events). It is not tamper-evident against the operator, who owns the database. Secrets are still passed only as environment variables (no `*_FILE` or Docker secrets), so they show in
   `docker inspect`; the API container no longer holds the database owner's password, but `migrate` and `postgres`
   do ([DEPLOYMENT.md](DEPLOYMENT.md) section 5).
 - **Hosting abuse (server-1, ops-3).** The residual risks (a) to (d) of [section 2.7](#27-hosting-abuse-the-service-as-a-free-file-host).

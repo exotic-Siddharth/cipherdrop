@@ -196,9 +196,13 @@ model DropChunk {
   /// Storage key suffix of the blob, fresh per PUT attempt (the blob is written before the row points at
   /// it, and never over a verified chunk); null = the legacy key <index>.
   blobVersion String?
-  drop        Drop    @relation(fields: [dropId], references: [id], onDelete: Cascade)
+  /// When the row last pointed at a new blob (each PUT). The free-disk floor counts an upload as active while
+  /// it was created or stored a chunk recently (drops/service.ts).
+  storedAt    DateTime @default(now())
+  drop        Drop     @relation(fields: [dropId], references: [id], onDelete: Cascade)
 
   @@id([dropId, fileId, index])
+  @@index([dropId, storedAt]) // the floor's "stored a chunk recently": one probe per upload in progress
 }
 
 model DownloadGrant {

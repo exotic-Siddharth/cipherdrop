@@ -3,7 +3,8 @@
  * - READY drops past expiresAt -> EXPIRED; their blobs go as soon as no grant is live (R12: a download that
  *   started before expiry may finish; a grant lives at most 24 h, so the delay is bounded);
  * - EXHAUSTED drops with no unexpired grant -> delete blobs (status stays EXHAUSTED);
- * - UPLOADING drops older than 24 h or past their expiresAt -> DELETED, delete blobs;
+ * - UPLOADING drops older than 24 h or past their expiresAt, or with no chunk stored 1 h after their create
+ *   -> DELETED, delete blobs;
  * - DELETED / DISABLED drops, and EXPIRED ones without a live grant, whose blobs are still there -> delete blobs;
  * - release quota (storageUsedBytes), audit DROP_EXPIRED / DROP_EXHAUSTED to the owner, set blobsDeletedAt;
  * - grants expired for more than 24 h are removed; sessions / refresh tokens 7 days past expiry or revocation,
@@ -46,6 +47,13 @@ export interface CleanupScheduler {
 const BATCH = 100;
 const HOUR_MS = 3_600_000;
 const STALE_UPLOAD_MS = 24 * HOUR_MS;
+/**
+ * An upload that has not stored a single chunk this long after its create is a reservation, not an upload:
+ * it holds its owner's quota, the anonymous pool and the global cap for nothing (the free-disk floor already
+ * ignores it after UPLOAD_ACTIVE_MS). An honest client stores its first chunk within seconds, and a chunk PUT
+ * times out after 300 s.
+ */
+const EMPTY_UPLOAD_MS = HOUR_MS;
 const GRANT_RETENTION_MS = 24 * HOUR_MS;
 /** Sessions and refresh tokens are kept this long past expiry/revocation (the sid denylist TTL is at most 24 h). */
 const SESSION_RETENTION_MS = 7 * 24 * HOUR_MS;
@@ -135,12 +143,14 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     }
   }
 
-  // 3. UPLOADING for more than 24 h, or past its expiry (it could never be opened) -> DELETED.
+  // 3. UPLOADING for more than 24 h, past its expiry (it could never be opened), or without a single chunk an
+  //    hour after its create -> DELETED. The conditions are re-checked by the conditional update.
   const staleWhere: Prisma.DropWhereInput = {
     status: 'UPLOADING',
     OR: [
       { createdAt: { lte: new Date(now.getTime() - STALE_UPLOAD_MS) } },
       { expiresAt: { lte: now } },
+      { createdAt: { lte: new Date(now.getTime() - EMPTY_UPLOAD_MS) }, chunks: { none: {} } },
     ],
   };
   for await (const d of candidates(c, staleWhere)) {

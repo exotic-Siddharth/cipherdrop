@@ -161,8 +161,9 @@ const EnvSchema = z
     GLOBAL_STORAGE_CAP_BYTES: int(0, 0),
     /**
      * Local storage only: a new drop gets 507 STORAGE_FULL when the blob volume's free space, minus the
-     * declared bytes of every upload in progress and of this drop, would fall below this (default 1 GiB;
-     * 0 = off). The blobs share the host disk with Postgres, and a full disk takes the database down.
+     * declared bytes of every active upload in progress (created or stored a chunk in the last 10 minutes,
+     * drops/service.ts UPLOAD_ACTIVE_MS) and of this drop, would fall below this (default 1 GiB; 0 = off).
+     * The blobs share the host disk with Postgres, and a full disk takes the database down.
      */
     STORAGE_MIN_FREE_BYTES: int(1_073_741_824, 0),
 

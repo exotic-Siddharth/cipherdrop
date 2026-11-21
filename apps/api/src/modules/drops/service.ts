@@ -44,6 +44,12 @@ import { downloadsRemaining, goneReason, purgeDropBlobs } from './lifecycle';
 
 const HOUR_MS = 3_600_000;
 const MIN_MS = 60_000;
+/**
+ * The free-disk floor counts an upload in progress only while it is active: created, or stored a chunk,
+ * within this long. A reservation that writes nothing stops holding the floor after it (and cleanup deletes
+ * an upload with no chunk at all after an hour, jobs/cleanup.ts).
+ */
+export const UPLOAD_ACTIVE_MS = 10 * MIN_MS;
 /** Advisory lock namespaces (pg_advisory_xact_lock(int, int) first key). */
 const CAPACITY_LOCK = 1;
 const CHUNK_ROW_LOCK = 2;
@@ -258,15 +264,28 @@ async function accountHeldBytes(tx: Tx): Promise<bigint> {
 }
 
 /**
+ * Declared bytes of the uploads in progress that are active: created after `since`, or with a chunk stored
+ * after `since` (a correlated EXISTS: one (dropId, storedAt) index probe per upload in progress).
+ */
+const activeUploadBytes = (tx: Tx, since: Date) =>
+  heldBytes(tx, {
+    status: 'UPLOADING',
+    OR: [{ createdAt: { gt: since } }, { chunks: { some: { storedAt: { gt: since } } } }],
+  });
+
+/**
  * The instance-wide checks, under the capacity advisory lock: the anonymous pool (ANON_TOTAL_PENDING_BYTES,
  * anonymous drops only), the global cap (GLOBAL_STORAGE_CAP_BYTES, every drop) and the free-disk floor
  * (STORAGE_MIN_FREE_BYTES, local storage). An anonymous drop counts until its blobs are purged, whatever its
  * status (EXHAUSTED and EXPIRED drops keep their blobs while a grant lives); account drops count as their
  * owners' quotas count them (accountHeldBytes).
  *
- * The floor: free space on the blob volume, minus the declared bytes of every upload still in progress and of
- * this drop, must stay at or above STORAGE_MIN_FREE_BYTES. In-progress uploads count in full, even the chunks
- * already written (which free space already reflects): conservative, and bounded by the uploads in flight.
+ * The floor: free space on the blob volume, minus the declared bytes of every ACTIVE upload in progress
+ * (activeUploadBytes, UPLOAD_ACTIVE_MS) and of this drop, must stay at or above STORAGE_MIN_FREE_BYTES.
+ * Active uploads count in full, even the chunks already written (which free space already reflects):
+ * conservative. Idle ones do not count at all: otherwise anyone could shut new drops off for the whole
+ * instance without writing a byte, by reserving quota-sized drops and leaving them idle for 24 h. The cost of
+ * that choice: an upload that stalls for UPLOAD_ACTIVE_MS and then resumes can write below the floor.
  * The pending sum is read BEFORE the free space, under the lock: a drop that is no longer UPLOADING then has
  * every chunk on disk, so the free space reflects it, and no new drop can appear in between. Chunk PUTs of
  * drops already accepted are not refused, so an accepted upload can finish.
@@ -301,7 +320,8 @@ async function checkInstanceCapacity(
     }
   }
   if (STORAGE_MIN_FREE_BYTES > 0 && ctx.storage.freeBytes) {
-    const uploading = await heldBytes(tx, { status: 'UPLOADING' });
+    const since = new Date(ctx.now().getTime() - UPLOAD_ACTIVE_MS);
+    const uploading = await activeUploadBytes(tx, since);
     const free = BigInt(Math.floor(await ctx.storage.freeBytes()));
     if (free - uploading - bytes < BigInt(STORAGE_MIN_FREE_BYTES)) {
       metrics.dropsRefused.inc({ reason: 'disk_floor' });
@@ -414,8 +434,16 @@ export async function storeChunk(
       });
       await tx.dropChunk.upsert({
         where: { dropId_fileId_index: { dropId, fileId, index } },
-        create: { dropId, fileId, index, size: body.length, sha256, blobVersion: version },
-        update: { size: body.length, sha256, blobVersion: version },
+        create: {
+          dropId,
+          fileId,
+          index,
+          size: body.length,
+          sha256,
+          blobVersion: version,
+          storedAt: now,
+        },
+        update: { size: body.length, sha256, blobVersion: version, storedAt: now },
       });
       return previous;
     });

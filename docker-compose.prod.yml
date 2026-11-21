@@ -7,7 +7,8 @@
 #                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS; TRUST_PROXY=1, not 2)
 # Nothing but the web port (and Caddy's 80/443 with the tls profile) is published. The dev stack is docker-compose.yml.
 # Third-party images are pinned by tag plus multi-platform index digest (Dependabot's docker-compose entry proposes the
-# bumps), except MinIO's: its registry, cgr.dev, could not be reached to resolve a digest.
+# bumps), except MinIO's: its registry, cgr.dev, could not be reached to resolve a digest. CI's service containers and
+# its MinIO use the same references; scripts/image-pins.test.mjs fails when a bump here leaves them behind.
 name: cipherdrop-prod
 
 x-logging: &logging

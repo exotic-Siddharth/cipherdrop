@@ -5,8 +5,9 @@
 #
 # The services are published on the SAME host ports as docker-compose.yml (Postgres 55433, Redis 56380, MinIO 59000)
 # so the test and e2e configs run unchanged: their defaults and playwright.config.ts point at those ports.
-# The Postgres and Redis service images carry the same tag and index digest as docker-compose.prod.yml, so the tests
-# run against the bytes production runs: when Dependabot moves the compose digests, move these with them.
+# The Postgres and Redis service images (and the MinIO image) carry the same reference as docker-compose.prod.yml, so
+# the tests run against the bytes production runs. Dependabot moves only the compose file: scripts/image-pins.test.mjs
+# (test:scripts in audit.yml) fails until these references are moved with it.
 #
 # Supply chain: every action is pinned to a full commit SHA (the comment names its release; Dependabot,
 # .github/dependabot.yml, proposes the bumps), checkout does not leave the token in .git/config, and every

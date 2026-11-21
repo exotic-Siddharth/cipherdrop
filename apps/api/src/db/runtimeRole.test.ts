@@ -155,6 +155,31 @@ describe('provisionRuntimeRole', () => {
   });
 });
 
+describe('provisionRuntimeRole on a role that already existed with more power', () => {
+  const other = `cd_runtime_${randomBytes(4).toString('hex')}`;
+  const group = `cd_runtime_group_${randomBytes(4).toString('hex')}`;
+  afterAll(async () => {
+    for (const r of [other, group]) {
+      await owner.$executeRawUnsafe(`DROP OWNED BY "${r}"`).catch(() => {});
+      await owner.$executeRawUnsafe(`DROP ROLE IF EXISTS "${r}"`);
+    }
+  });
+
+  it('takes role-level powers away (as a superuser owner) and refuses a role that is a member of another', async () => {
+    await owner.$executeRawUnsafe(`CREATE ROLE "${other}" LOGIN CREATEDB CREATEROLE BYPASSRLS`);
+    await provisionRuntimeRole(owner, { role: other, password: newPassword(), schema });
+    const [row] = await owner.$queryRaw<Record<string, boolean>[]>`
+      SELECT rolcreatedb, rolcreaterole, rolbypassrls FROM pg_roles WHERE rolname = ${other}`;
+    expect(row).toEqual({ rolcreatedb: false, rolcreaterole: false, rolbypassrls: false });
+
+    await owner.$executeRawUnsafe(`CREATE ROLE "${group}"`);
+    await owner.$executeRawUnsafe(`GRANT "${group}" TO "${other}"`);
+    await expect(
+      provisionRuntimeRole(owner, { role: other, password: newPassword(), schema }),
+    ).rejects.toThrow(/member of another role/);
+  });
+});
+
 describe('checkRuntimeRoleOptions', () => {
   const ok = { role: 'cipherdrop_app', password: 'a'.repeat(48), schema: 'public' };
 

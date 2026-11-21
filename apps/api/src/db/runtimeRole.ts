@@ -64,6 +64,43 @@ export function checkRuntimeRoleOptions(opts: RuntimeRoleOptions): void {
   }
 }
 
+type Raw = Pick<PrismaClient, '$queryRaw' | '$executeRawUnsafe'>;
+
+/**
+ * A role created here has no role-level power (the CREATE ROLE defaults). One that already existed may have been
+ * given some: a superuser owner (the bundled stack's) takes them away; any other owner cannot (PostgreSQL lets only
+ * a superuser change SUPERUSER, REPLICATION and BYPASSRLS), so it refuses. A membership in another role would let the
+ * API SET ROLE to it, so that is refused too.
+ */
+async function assertNoRolePowers(tx: Raw, name: string): Promise<void> {
+  const powers = async () => {
+    const [row] = await tx.$queryRaw<Record<string, boolean>[]>`
+      SELECT rolsuper AS "SUPERUSER", rolcreatedb AS "CREATEDB", rolcreaterole AS "CREATEROLE",
+             rolreplication AS "REPLICATION", rolbypassrls AS "BYPASSRLS"
+      FROM pg_roles WHERE rolname = ${name}`;
+    return Object.entries(row ?? {})
+      .filter(([, on]) => on)
+      .map(([power]) => power);
+  };
+  const [{ superuser }] = await tx.$queryRaw<{ superuser: boolean }[]>`
+    SELECT current_setting('is_superuser') = 'on' AS "superuser"`;
+  if (superuser && (await powers()).length > 0) {
+    await tx.$executeRawUnsafe(
+      `ALTER ROLE "${name}" WITH NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`,
+    );
+  }
+  const left = await powers();
+  if (left.length > 0) {
+    throw new Error(`DB_RUNTIME_ROLE has ${left.join(', ')}: take it away, or use a new role`);
+  }
+  const [{ memberships }] = await tx.$queryRaw<{ memberships: number }[]>`
+    SELECT count(*)::int AS "memberships" FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member
+    WHERE r.rolname = ${name}`;
+  if (memberships > 0) {
+    throw new Error('DB_RUNTIME_ROLE is a member of another role: revoke that, or use a new role');
+  }
+}
+
 /**
  * Create or update the runtime role, connected as the owner of the schema's tables (the role that ran the
  * migrations: default privileges apply to objects that role creates). One transaction: all or nothing.
@@ -84,12 +121,11 @@ export async function provisionRuntimeRole(
   await prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe(
       `DO $$ BEGIN
-         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${opts.role}') THEN CREATE ROLE ${role}; END IF;
+         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${opts.role}') THEN CREATE ROLE ${role} NOINHERIT; END IF;
        END $$`,
     );
-    await tx.$executeRawUnsafe(
-      `ALTER ROLE ${role} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${verifier}'`,
-    );
+    await tx.$executeRawUnsafe(`ALTER ROLE ${role} WITH LOGIN PASSWORD '${verifier}'`);
+    await assertNoRolePowers(tx, opts.role);
     await tx.$executeRawUnsafe(
       `GRANT CONNECT ON DATABASE "${database.replace(/"/g, '""')}" TO ${role}`,
     );

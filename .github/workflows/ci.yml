@@ -1,5 +1,6 @@
 # CI (docs/DESIGN.md section 14): lint + typecheck + unit; integration with Postgres and Redis services plus MinIO
-# for the S3 driver; Playwright e2e with the report uploaded on failure; a build-only check of the production images.
+# for the S3 driver; Playwright e2e (every spec in Chromium, the @cross subset in Firefox, WebKit and two emulated
+# phones) with the report uploaded on failure; a build-only check of the production images.
 #
 # The services are published on the SAME host ports as docker-compose.yml (Postgres 55433, Redis 56380, MinIO 59000)
 # so the test and e2e configs run unchanged: their defaults and playwright.config.ts point at those ports.
@@ -174,6 +175,83 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  e2e-cross:
+    # The receive side in the other engines (apps/web/playwright.cross.config.ts): the tests tagged @cross, one
+    # project per runner, each installing only its own browser. WebKit is Playwright's Linux build of the engine,
+    # not Safari, and the mobile projects emulate a phone (viewport, user agent, touch) on a desktop engine.
+    name: e2e cross-engine (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Every engine reports, even when another one fails.
+      fail-fast: false
+      matrix:
+        include:
+          - project: firefox
+            browser: firefox
+          - project: webkit
+            browser: webkit
+          - project: mobile-chromium
+            browser: chromium
+          - project: mobile-webkit
+            browser: webkit
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cipherdrop
+          POSTGRES_PASSWORD: cipherdrop
+          POSTGRES_DB: cipherdrop
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U cipherdrop -d cipherdrop"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run db:generate -w @cipherdrop/api
+      - name: Install the browser and its system dependencies
+        working-directory: apps/web
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npx playwright install --with-deps "$BROWSER"
+      - name: Use the example environment
+        run: |
+          cp apps/api/.env.example apps/api/.env
+          cp apps/web/.env.example apps/web/.env
+      - name: Cross-engine e2e (@cross)
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: npm run e2e:cross -w @cipherdrop/web -- --project="$PROJECT"
+      - name: Upload the Playwright report and traces
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-${{ matrix.project }}
           path: |
             apps/web/playwright-report/
             apps/web/test-results/

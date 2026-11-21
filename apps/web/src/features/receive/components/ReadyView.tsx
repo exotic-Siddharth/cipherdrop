@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Timer,
 } from 'lucide-react';
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   Badge,
@@ -20,6 +20,7 @@ import {
   CardContent,
   CardHeader,
   ConfirmDialog,
+  CopyButton,
   EmptyState,
   ProgressBar,
 } from '../../../components/ui';
@@ -74,9 +75,25 @@ export interface ReadyViewProps {
   authKey: string | null;
   /** Admin review (R13): a non-consuming grant and a way to get a fresh one. */
   review: { grant: DownloadGrant; regrant: () => Promise<DownloadGrant> } | null;
+  /**
+   * The link to forward, offered by an explicit "Copy link" (the address bar no longer holds the key, crypto-4);
+   * a password drop's link has no key. Null in review mode.
+   */
+  shareLink: string | null;
+  /** Called once the drop has no downloads left, so the page can drop its reload copy of the key. */
+  onNoDownloadsLeft?: () => void;
 }
 
-export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: ReadyViewProps) {
+export function ReadyView({
+  dropId,
+  dk,
+  manifest,
+  meta,
+  authKey,
+  review,
+  shareLink,
+  onNoDownloadsLeft,
+}: ReadyViewProps) {
   const savedNames = useMemo(
     () => sanitizeFilenames(manifest.files.map((f) => f.name)),
     [manifest],
@@ -101,6 +118,9 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
   const [reopen, setReopen] = useState<{ remaining: number } | null>(null);
   const [windowExpired, setWindowExpired] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  useEffect(() => {
+    if (remaining === 0) onNoDownloadsLeft?.();
+  }, [remaining, onNoDownloadsLeft]);
 
   const session = useRef<DownloadSession | null>(null);
   session.current ??= new DownloadSession({
@@ -442,7 +462,16 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
       </Card>
 
       {review ? null : (
-        <div className="flex justify-center">
+        <div className="flex flex-wrap justify-center gap-2">
+          {shareLink && remaining !== 0 ? (
+            <CopyButton
+              value={shareLink}
+              label="Copy link"
+              copiedLabel="Link copied"
+              variant="ghost"
+              size="sm"
+            />
+          ) : null}
           <Button variant="ghost" size="sm" icon={Flag} onClick={() => setReportOpen(true)}>
             Report abuse
           </Button>

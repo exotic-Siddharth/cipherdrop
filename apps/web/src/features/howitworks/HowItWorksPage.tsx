@@ -46,6 +46,10 @@ const LIMITATIONS = [
     text: 'The key is part of the link, so share it only through a channel you trust. Add a password for a second factor the link alone cannot give.',
   },
   {
+    title: 'The link stays in your browser history.',
+    text: 'The receive page takes the key out of the address bar once it has read it, so it no longer shows on a shared screen or in a copied address. Your browser saved the full link to its history when you opened it, though, and synced history copies it to your other devices. A drop password never appears in a link.',
+  },
+  {
     title: 'You have to trust the code your browser runs.',
     text: 'CipherDrop serves the app that does the encrypting. A compromised server could in theory serve a modified app, as with any web app. A strict content security policy and no third-party scripts reduce that risk but do not remove it.',
   },

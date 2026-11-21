@@ -10,8 +10,8 @@
  *   comes from the Node sender (e2e/support/senders.ts); the password prompt is the seeded diagram.png drop.
  * - dashboard-*, settings-*, admin-*: the seeded demo and admin accounts (apps/api/prisma/seed.ts); the admin turns
  *   on two-step verification first, as the console requires.
- * - hero.png: the sender's dark upload view and the recipient's light receive view side by side, 1280x640 (the size
- *   GitHub's social preview asks for).
+ * - hero.png: the sender's dark upload view and the recipient's light receive view side by side, 1280x640 CSS pixels
+ *   at deviceScaleFactor 2, so a 2560x1280 file (the 2:1 ratio GitHub recommends for a social preview).
  *
  * The leak guard of every e2e test runs here too: no file name, note, password or link key in any request.
  */

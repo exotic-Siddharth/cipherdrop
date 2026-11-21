@@ -84,8 +84,9 @@ the repository.
   picture, and the e2e leak guard stays on: no file name, note, password or link key may appear in any request.
 - **Screenshots** are 1440x900 (desktop) and 390x844 (phone) CSS pixels at device scale factor 2, in light and dark
   where both exist. `send-progress-*` parks the chunk uploads after the fifth, so its MB/s and time left describe a
-  stalled upload, not a measurement. `hero.png` is the dark upload view and the light receive view side by side, at
-  1280x640.
+  stalled upload, not a measurement. `hero.png` is the dark upload view and the light receive view side by side,
+  2560x1280 (1280x640 CSS pixels at 2x; the 2:1 ratio GitHub recommends for a social preview, 426 KB, under its 1 MB
+  limit).
 - **The GIF** is about 90 seconds at 960 px wide and 8 frames per second, under 6 MB (the run fails above that). The
   captions are added to the page for the recording, and each chunk upload is delayed by 600 ms so the ciphertext strip
   stays on screen, so the speed shown in the clip is not a measurement either.

@@ -125,6 +125,12 @@ const EnvSchema = z
      */
     NEW_ACCOUNT_QUOTA_BYTES: int(268_435_456, 0),
     NEW_ACCOUNT_PROBATION_DAYS: int(7, 0, 365),
+    /**
+     * Evidence hold (server-5): while a report that carries the drop key is OPEN, cleanup does not delete the
+     * blobs of the expired or exhausted drop, so an admin can still review it. At most this many days after the
+     * report (default 14; 0 = no hold). Owner deletes and takedowns are never held.
+     */
+    REPORT_EVIDENCE_HOLD_DAYS: int(14, 0, 90),
     ANON_MAX_EXPIRY_HOURS: int(72, 1, 720),
     USER_MAX_EXPIRY_HOURS: int(720, 1, 720),
     MAX_FILES_PER_DROP: int(20, 1, 20),

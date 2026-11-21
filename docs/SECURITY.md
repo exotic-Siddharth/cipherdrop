@@ -97,7 +97,9 @@ attacker:
   10 characters and a zxcvbn score of 2 or more;
 - **can** decrypt drops that have an OPEN abuse report whose reporter attached the key, if it also has the blob
   storage. The key is deleted when the report is dismissed, when the drop is disabled and when its blobs are
-  purged (review C-14);
+  purged (review C-14). While such a report is open, cleanup keeps the blobs of the drop past its expiry or last
+  download for review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the report (server-5, see
+  [ABUSE.md](ABUSE.md)); an owner's delete is never held;
 - **can** see all metadata in [section 4](#4-metadata-the-server-sees);
 - **cannot** log in with the stored `authKeyHash`: it is a server-side Argon2id hash (m=19456 KiB, t=2, p=1) of
   the client's authKey, so the hash is not the credential;

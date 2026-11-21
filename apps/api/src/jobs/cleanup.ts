@@ -35,7 +35,7 @@ export interface CleanupReport {
   bytesReleased: number;
 }
 
-export type CleanupContext = Pick<AppContext, 'prisma' | 'storage' | 'audit' | 'logger'>;
+export type CleanupContext = Pick<AppContext, 'prisma' | 'storage' | 'audit' | 'logger' | 'env'>;
 export type SchedulerContext = Pick<
   AppContext,
   'prisma' | 'redis' | 'storage' | 'audit' | 'logger' | 'env'
@@ -132,11 +132,28 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
       await c.audit.record({ userId: d.ownerId, dropId: d.id, action: 'DROP_EXPIRED' });
   }
 
+  // Evidence hold (server-5): an open report that carries the key keeps an expired or exhausted drop's blobs
+  // for review, for at most REPORT_EVIDENCE_HOLD_DAYS after the report.
+  const holdDays = c.env.REPORT_EVIDENCE_HOLD_DAYS;
+  const notHeld: Prisma.DropWhereInput =
+    holdDays > 0
+      ? {
+          reports: {
+            none: {
+              status: 'OPEN',
+              providedKey: { not: null },
+              createdAt: { gt: new Date(now.getTime() - holdDays * 24 * HOUR_MS) },
+            },
+          },
+        }
+      : {};
+
   // 2. EXHAUSTED with no live grant -> blobs deleted (R12: kept while any grant lives).
   const exhaustedWhere: Prisma.DropWhereInput = {
     status: 'EXHAUSTED',
     blobsDeletedAt: null,
     grants: { none: { expiresAt: { gt: now } } },
+    ...notHeld,
   };
   for await (const d of candidates(c, exhaustedWhere)) {
     if (!(await purge(d.id))) continue;
@@ -168,7 +185,7 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     blobsDeletedAt: null,
     OR: [
       { status: { in: ['DELETED', 'DISABLED'] } },
-      { status: 'EXPIRED', grants: { none: { expiresAt: { gt: now } } } },
+      { status: 'EXPIRED', grants: { none: { expiresAt: { gt: now } } }, ...notHeld },
     ],
   };
   for await (const d of candidates(c, orphanWhere)) await purge(d.id);

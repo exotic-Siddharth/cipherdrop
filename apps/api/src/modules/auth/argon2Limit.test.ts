@@ -79,3 +79,72 @@ describe('Argon2id limiter on the auth routes', () => {
     await release();
   });
 });
+
+describe('a full Argon2id queue spends no per-client budget', () => {
+  let c: TestApp;
+  beforeAll(async () => {
+    c = await createTestApp({
+      env: { ARGON2_MAX_CONCURRENT: 1, ARGON2_MAX_QUEUE: 0 },
+      rateLimits: { login: true, loginIp: true, register: true, reauth: true },
+    });
+  });
+  afterAll(async () => {
+    await c.close();
+  });
+
+  function holdSlotOf(app: TestApp): () => Promise<void> {
+    let release!: () => void;
+    const held = app.ctx.argon2.run(() => new Promise<void>((resolve) => (release = resolve)));
+    return async () => {
+      release();
+      await held;
+    };
+  }
+
+  it('an honest user who retries during a login flood can sign in once it is over', async () => {
+    const user = await createUserRecord(c.prisma);
+    const login = () =>
+      request(c.app)
+        .post('/api/auth/login')
+        .set('X-Forwarded-For', '192.0.2.80')
+        .send({ email: user.email, authKey: TEST_ACCOUNT.authKey });
+    const release = holdSlotOf(c);
+    // More than both budgets (10 per IP+email, 30 failures per client): every one is the queue's own 429.
+    for (let i = 0; i < 35; i++) expectBusy(await login());
+    await release();
+    const ok = await login();
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  });
+
+  it('register and re-authentication budgets are refunded too, but their own limits still hold', async () => {
+    const user = await createUserRecord(c.prisma);
+    const register = () =>
+      request(c.app)
+        .post('/api/auth/register')
+        .set('X-Forwarded-For', '192.0.2.81')
+        .send({
+          email: uniqueEmail('busy'),
+          authKey: TEST_ACCOUNT.authKey,
+          kdf: TEST_ACCOUNT.kdf,
+          wrappedAccountKey: TEST_ACCOUNT.wrappedAccountKey,
+          wrappedAccountKeyRecovery: TEST_ACCOUNT.wrappedAccountKeyRecovery,
+          recoveryAuthHash: TEST_ACCOUNT.recoveryAuthHash,
+        });
+    const session = authHeader(user); // one session: the reauth budget is per session
+    const wrongProof = () =>
+      request(c.app)
+        .delete('/api/me')
+        .set('Authorization', session)
+        .send({ authKey: Buffer.alloc(32, 0xa5).toString('base64url') });
+    const release = holdSlotOf(c);
+    for (let i = 0; i < 6; i++) expectBusy(await register()); // limit 5 per hour
+    for (let i = 0; i < 11; i++) expectBusy(await wrongProof()); // limit 10 per 15 min
+    await release();
+    // The budgets are whole again, and still enforced.
+    for (let i = 0; i < 10; i++) expect((await wrongProof()).status).toBe(403);
+    const limited = await wrongProof();
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(ARGON2_RETRY_AFTER_SEC);
+    expect((await register()).status).toBe(201);
+  });
+});

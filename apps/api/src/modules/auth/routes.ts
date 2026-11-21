@@ -102,14 +102,20 @@ export function authRoutes(ctx: AppContext): AppRouter {
 
   const perIpEmail = (req: Request) => `${ipKey(req.ip)}|${sha256B64url(emailOf(req))}`;
   const preloginLimit = ctx.rateLimit({ name: 'prelogin', key: perIpEmail });
-  const loginLimit = ctx.rateLimit({ name: 'login', key: perIpEmail });
+  // refundServerBusy: a 429 from a full Argon2id queue is no attempt (lib/rateLimit.ts).
+  const loginLimit = ctx.rateLimit({ name: 'login', key: perIpEmail, refundServerBusy: true });
   const loginClientLimit = ctx.rateLimit({
     name: 'loginIp',
     key: (req) => ipShareKey(req.ip),
     skipSuccessfulRequests: true,
+    refundServerBusy: true,
   });
   const loginMfaLimit = ctx.rateLimit({ name: 'loginMfa', key: (req) => ipKey(req.ip) });
-  const registerLimit = ctx.rateLimit({ name: 'register', key: (req) => ipKey(req.ip) });
+  const registerLimit = ctx.rateLimit({
+    name: 'register',
+    key: (req) => ipKey(req.ip),
+    refundServerBusy: true,
+  });
   const recoveryStartLimit = ctx.rateLimit({
     name: 'recovery',
     key: (req) => `start|${ipKey(req.ip)}`,
@@ -117,6 +123,7 @@ export function authRoutes(ctx: AppContext): AppRouter {
   const recoveryCompleteLimit = ctx.rateLimit({
     name: 'recovery',
     key: (req) => `complete|${ipKey(req.ip)}`,
+    refundServerBusy: true,
   });
   const reauth = reauthLimit(ctx);
 

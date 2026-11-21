@@ -24,7 +24,7 @@
  * One limiter per app, so per process in production (one app per process), like the in-flight chunk caps
  * (docs/DEPLOYMENT.md section 4): N instances run N times the work.
  */
-import { rateLimited } from './errors';
+import { serverBusy } from './errors';
 import { metrics } from './metrics';
 
 export interface Argon2Limits {
@@ -35,7 +35,10 @@ export interface Argon2Limits {
 }
 
 export interface Argon2Limiter {
-  /** Run one Argon2 task in a slot (waiting in line if needed); throws 429 RATE_LIMITED when the queue is full. */
+  /**
+   * Run one Argon2 task in a slot (waiting in line if needed); throws 429 RATE_LIMITED (serverBusy) when the queue
+   * is full.
+   */
   run<T>(task: () => Promise<T>): Promise<T>;
   readonly active: number;
   readonly queued: number;
@@ -70,7 +73,7 @@ export function createArgon2Limiter(limits: Argon2Limits): Argon2Limiter {
         await new Promise<void>((resolve) => waiting.push(resolve));
       } else {
         metrics.argon2Rejected.inc();
-        throw rateLimited(ARGON2_RETRY_AFTER_SEC);
+        throw serverBusy(ARGON2_RETRY_AFTER_SEC);
       }
       try {
         return await task();

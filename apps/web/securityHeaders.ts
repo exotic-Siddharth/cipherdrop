@@ -25,9 +25,23 @@ export const CONTENT_SECURITY_POLICY = [
   "form-action 'self'",
 ].join('; ');
 
+/**
+ * Trusted Types, reported but not enforced yet (crypto-7). With require-trusted-types-for 'script', every DOM
+ * sink that turns a string into script (innerHTML, script.src, the Worker constructor, eval) must get a trusted
+ * value or go through the 'default' policy in /trusted-types.js, which index.html loads first. In report-only
+ * mode a violation is only logged to the console, and there is no report endpoint: the e2e leak guard fails on
+ * any such message, so the suite is the reporter. Enforcing it means moving these two directives into
+ * CONTENT_SECURITY_POLICY once the report-only run has stayed clean in every supported browser.
+ */
+export const TRUSTED_TYPES_REPORT_ONLY = [
+  "require-trusted-types-for 'script'",
+  'trusted-types default',
+].join('; ');
+
 /** Every section 12 header that applies over plain HTTP (vite preview, e2e). */
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+  'Content-Security-Policy-Report-Only': TRUSTED_TYPES_REPORT_ONLY,
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
@@ -44,11 +58,15 @@ export const PRODUCTION_ONLY_HEADERS: Readonly<Record<string, string>> = Object.
 });
 
 /**
- * The dev server cannot send the CSP (Vite injects an inline React Refresh preamble), but it sends every
+ * The dev server cannot send the CSP (Vite injects an inline React Refresh preamble), nor the Trusted Types
+ * report-only policy (Vite's error overlay sets innerHTML and dev workers load from /src/), but it sends every
  * other header so dev behaves like production (no-referrer, nosniff, COOP/CORP).
  */
 export const DEV_SERVER_HEADERS: Readonly<Record<string, string>> = Object.freeze(
   Object.fromEntries(
-    Object.entries(SECURITY_HEADERS).filter(([name]) => name !== 'Content-Security-Policy'),
+    Object.entries(SECURITY_HEADERS).filter(
+      ([name]) =>
+        name !== 'Content-Security-Policy' && name !== 'Content-Security-Policy-Report-Only',
+    ),
   ),
 );

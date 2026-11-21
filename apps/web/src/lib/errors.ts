@@ -35,6 +35,15 @@ export function isMfaRequired(err: unknown): boolean {
   );
 }
 
+/** The API wants a recent sign-in or step-up of this admin session first (403, STEP_UP_REQUIRED). */
+export function isStepUpRequired(err: unknown): boolean {
+  return (
+    isApiError(err) &&
+    err.status === 403 &&
+    (err.details as { reason?: unknown } | null | undefined)?.reason === 'STEP_UP_REQUIRED'
+  );
+}
+
 export function isAbortError(err: unknown): boolean {
   return (
     (err instanceof DOMException || err instanceof Error) &&

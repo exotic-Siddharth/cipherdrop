@@ -68,8 +68,8 @@ export const mfaRequired = (
 ) => new AppError(403, 'FORBIDDEN', message, { reason: 'MFA_REQUIRED' satisfies ForbiddenReason });
 
 /**
- * 403 FORBIDDEN with `details.reason` STEP_UP_REQUIRED: an admin action (reporters' keys, review grants) that needs
- * a recent authentication of this session (server-3). POST /auth/step-up, then retry.
+ * 403 FORBIDDEN with `details.reason` STEP_UP_REQUIRED: an admin action (reporters' keys, review grants, promotions)
+ * that needs a recent authentication of this session (server-3). POST /auth/step-up, then retry.
  */
 export const stepUpRequired = (
   message = 'Confirm your password and a two-factor code to continue.',

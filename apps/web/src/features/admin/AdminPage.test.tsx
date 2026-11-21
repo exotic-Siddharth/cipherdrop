@@ -132,7 +132,12 @@ interface Call {
 }
 
 function mockApi(
-  overrides: { reportItems?: AdminReport[]; userItems?: AdminUser[]; mfaRequired?: boolean } = {},
+  overrides: {
+    reportItems?: AdminReport[];
+    userItems?: AdminUser[];
+    mfaRequired?: boolean;
+    stepUpRequired?: boolean;
+  } = {},
 ) {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -173,6 +178,15 @@ function mockApi(
     if (method === 'PATCH' && url.pathname.startsWith('/api/admin/users/')) {
       const id = decodeURIComponent(url.pathname.split('/').pop() ?? '');
       const user = users().find((u) => u.id === id)!;
+      // Like the API: a promotion needs a recent sign-in or step-up of the admin's session.
+      if (overrides.stepUpRequired && (body as { role?: string }).role === 'ADMIN') {
+        const error = {
+          code: 'FORBIDDEN',
+          message: 'Confirm your password and a two-factor code to continue.',
+          details: { reason: 'STEP_UP_REQUIRED' },
+        };
+        return json({ error }, 403);
+      }
       // Like the API: only accounts with two-step verification can become admins.
       if ((body as { role?: string }).role === 'ADMIN' && !user.totpEnabled) {
         const message =
@@ -508,6 +522,25 @@ describe('AdminPage users', () => {
       ),
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('asks for a step-up when a promotion answers STEP_UP_REQUIRED, keeping the edit open (server-3)', async () => {
+    const calls = mockApi({ stepUpRequired: true });
+    renderAdmin();
+    const dialog = await openEdit('carol@example.com');
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    const confirm = await screen.findByRole('dialog', { name: "Confirm it's you" });
+    expect(within(confirm).getByLabelText('Your password')).toBeVisible();
+    expect(within(confirm).getByLabelText('Two-factor or backup code')).toBeVisible();
+    // The refusal is not shown as a failure, and the edit waits behind the prompt.
+    expect(within(dialog).queryByText(/Confirm your password and a two-factor code/)).toBeNull();
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: "Confirm it's you" })).toBeNull(),
+    );
+    expect(screen.getByRole('dialog', { name: 'Edit user' })).toBeVisible();
   });
 
   it('warns that an account without two-step verification cannot be an admin, and shows the refusal', async () => {

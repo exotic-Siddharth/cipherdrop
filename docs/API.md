@@ -72,7 +72,7 @@ Every error has the same shape:
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | body, query or path fails its schema; malformed JSON |
 | 401 | `UNAUTHORIZED` | missing or expired token; wrong authKey (always generic for login and recovery) |
-| 403 | `FORBIDDEN` | not the owner, not an admin, or an admin without two-step verification (`details.reason` `MFA_REQUIRED`); a review grant without a recent sign-in or step-up (`details.reason` `STEP_UP_REQUIRED`); a wrong password or code on a re-authenticating route |
+| 403 | `FORBIDDEN` | not the owner, not an admin, or an admin without two-step verification (`details.reason` `MFA_REQUIRED`); a review grant or a promotion to admin without a recent sign-in or step-up (`details.reason` `STEP_UP_REQUIRED`); a wrong password or code on a re-authenticating route |
 | 403 | `FEATURE_DISABLED` | the operator switched anonymous uploads or registration off; `details.feature` is `anonymousUploads` or `registration` |
 | 404 | `NOT_FOUND` | unknown id; a drop still uploading is also reported as unknown to recipients |
 | 409 | `CONFLICT` | email already registered; `complete` with missing chunks (`details.missing`); promoting an account without two-step verification; an admin turning two-step verification off |
@@ -196,7 +196,7 @@ A send is `create`, then one PUT per chunk, then `complete`. A receive is `GET /
 | `GET /admin/reports?status` | abuse reports; the reporter's key is returned only for OPEN reports |
 | `POST /admin/reports/:id/resolve` | `DISABLE_DROP` (blobs deleted) or `DISMISS` |
 | `POST /admin/drops/:id/grant` | review grant that consumes no download; audited as `ADMIN_REVIEW_GRANT`. Needs a sign-in or step-up within `ADMIN_STEP_UP_MINUTES` (403 `STEP_UP_REQUIRED`; `GET /admin/reports` withholds the keys then) |
-| `GET /admin/users?search`, `PATCH /admin/users/:id` | list users; change role or storage quota. `storageQuotaBytes` is the stored quota and `effectiveQuotaBytes` the one that applies now; a PATCH with `storageQuotaBytes` ends the probation, a role-only PATCH does not; promoting an account without 2FA answers 409 |
+| `GET /admin/users?search`, `PATCH /admin/users/:id` | list users; change role or storage quota. `storageQuotaBytes` is the stored quota and `effectiveQuotaBytes` the one that applies now; a PATCH with `storageQuotaBytes` ends the probation, a role-only PATCH does not; promoting an account without 2FA answers 409, and a promotion without a sign-in or step-up within `ADMIN_STEP_UP_MINUTES` answers 403 `STEP_UP_REQUIRED` |
 | `POST /admin/users/:id/clear-lock` | clear the sign-in lockout (failed-login counter and `lockedUntil`); audited as `ACCOUNT_LOCK_CLEARED` on the account (`{byAdmin: true}`, with no admin id, IP prefix or User-Agent) and on the admin |
 
 ### Operations (no `/api` prefix)

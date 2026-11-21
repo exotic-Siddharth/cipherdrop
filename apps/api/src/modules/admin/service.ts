@@ -81,7 +81,7 @@ export async function getStats(ctx: AppContext): Promise<AdminStats> {
 
 /* ---------------------------------------------------------------- reports */
 
-/** Reporters' keys and review grants need a recent authentication of the admin's session (server-3). */
+/** Reporters' keys, review grants and promotions need a recent authentication of the admin's session (server-3). */
 export function hasAdminStepUp(ctx: AppContext, admin: AuthUser): Promise<boolean> {
   return isRecentlyAuthenticated(ctx, admin, ctx.env.ADMIN_STEP_UP_MINUTES);
 }
@@ -284,6 +284,9 @@ const ADMIN_NEEDS_MFA =
  * admin routes need it anyway (requireRole), and an admin account without it is open to anyone who knows its
  * password, who could enrol their own authenticator and then open the console. The write is conditional, so a TOTP
  * disable racing the promotion cannot leave an admin without it either (TOTP disable refuses admins in turn).
+ *
+ * A promotion needs the same recent step-up as the reporters' keys: otherwise a stale admin session could promote
+ * an account of its own and sign in to it, which opens a fresh session that reaches the keys.
  */
 export async function patchUser(
   ctx: AppContext,
@@ -296,13 +299,21 @@ export async function patchUser(
   }
   const target = await ctx.prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, totpEnabledAt: true },
+    select: { id: true, role: true, totpEnabledAt: true },
   });
   if (!target) throw notFound('Unknown user');
   const promoting = patch.role === 'ADMIN';
+  // `role: 'ADMIN'` sent for an admin (with a quota edit) needs no step-up; the write then requires the role to be
+  // unchanged, so a demotion racing it cannot turn it into a promotion without one.
+  const keepsAdmin = promoting && target.role === 'ADMIN';
+  if (promoting && !keepsAdmin && !(await hasAdminStepUp(ctx, admin))) throw stepUpRequired();
   if (promoting && target.totpEnabledAt === null) throw conflict(ADMIN_NEEDS_MFA);
   const updated = await ctx.prisma.user.updateMany({
-    where: { id: userId, ...(promoting ? { totpEnabledAt: { not: null } } : {}) },
+    where: {
+      id: userId,
+      ...(promoting ? { totpEnabledAt: { not: null } } : {}),
+      ...(keepsAdmin ? { role: 'ADMIN' as const } : {}),
+    },
     data: {
       ...(patch.role !== undefined ? { role: patch.role } : {}),
       // An admin's quota edit overrides the new-account probation: their value applies at once.
@@ -311,7 +322,11 @@ export async function patchUser(
         : {}),
     },
   });
-  if (updated.count !== 1) throw promoting ? conflict(ADMIN_NEEDS_MFA) : notFound('Unknown user');
+  if (updated.count !== 1) {
+    if (keepsAdmin)
+      throw conflict('This account changed meanwhile. Reload the list and try again.');
+    throw promoting ? conflict(ADMIN_NEEDS_MFA) : notFound('Unknown user');
+  }
   const user = await ctx.prisma.user.findUniqueOrThrow({
     where: { id: userId },
     include: { _count: { select: { drops: true } } },

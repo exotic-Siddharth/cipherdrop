@@ -22,11 +22,13 @@ import { Select } from '../../components/ui/Select';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { api } from '../../lib/api';
 import { cn } from '../../lib/cn';
-import { describeError } from '../../lib/errors';
+import { describeError, isStepUpRequired } from '../../lib/errors';
 import { formatBytes, formatDate, pluralize } from '../../lib/format';
 import { useDebouncedValue } from '../../lib/hooks';
 import { queryKeys } from '../../lib/queryClient';
 import { useAuth } from '../../stores/auth';
+import { useAccountActions } from '../account/useAccountActions';
+import { ReauthDialog } from '../settings/ReauthDialog';
 import { MAX_QUOTA_GB, parseQuotaGb, quotaToGbText } from './quota';
 
 const PAGE_SIZE = 10;
@@ -83,6 +85,10 @@ function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => voi
   const [quota, setQuota] = useState(initialQuota);
   const [touched, setTouched] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  // A promotion needs a recent sign-in (ADMIN_STEP_UP_MINUTES, server-3): the patch waits here while the admin
+  // confirms, then it is sent again.
+  const [stepUpFor, setStepUpFor] = useState<AdminUserPatchRequest | null>(null);
+  const actions = useAccountActions();
 
   const save = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: AdminUserPatchRequest }) =>
@@ -95,7 +101,10 @@ function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => voi
       void qc.invalidateQueries({ queryKey: queryKeys.adminStats() });
       onClose();
     },
-    onError: (err) => setFailure(describeError(err)),
+    onError: (err, { patch }) => {
+      if (isStepUpRequired(err)) setStepUpFor(patch);
+      else setFailure(describeError(err));
+    },
   });
 
   const parsed = parseQuotaGb(quota);
@@ -121,91 +130,110 @@ function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => voi
     save.mutate({ id: user.id, patch });
   };
 
+  // The step-up dialog is a sibling, not a child: the edit dialog's focus trap must not see its key events.
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open && !save.isPending) onClose();
-      }}
-      title="Edit user"
-      description={user.email}
-      dismissible={!save.isPending}
-      footer={
-        <>
-          <Button variant="outline" onClick={onClose} disabled={save.isPending}>
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            form={formId}
-            loading={save.isPending}
-            disabled={!roleChanged && !quotaChanged}
-          >
-            Save changes
-          </Button>
-        </>
-      }
-    >
-      <form id={formId} onSubmit={submit} noValidate className="flex flex-col gap-4">
-        <Select
-          label="Role"
-          value={role}
-          onChange={(e) => {
-            if (isRole(e.target.value)) setRole(e.target.value);
-          }}
-          options={ROLE_OPTIONS}
-          disabled={isSelf}
-          hint={
-            isSelf
-              ? 'You cannot change your own role.'
-              : role === 'ADMIN'
-                ? 'Admins can disable drops and edit every account.'
-                : undefined
-          }
-        />
-        {roleChanged && role === 'ADMIN' && !user.totpEnabled ? (
-          <Alert tone="warning" live="off">
-            This account has no two-step verification, so it cannot be an admin yet. Ask its owner
-            to turn it on in Settings, Security, then try again.
-          </Alert>
-        ) : null}
-        <Input
-          label="Storage quota"
-          inputMode="decimal"
-          autoComplete="off"
-          value={quota}
-          onChange={(e) => {
-            setQuota(e.target.value);
-            setTouched(true);
-          }}
-          error={quotaError}
-          trailing={<span className="text-sm text-muted-strong">GB</span>}
-          hint={
-            quotaError
-              ? undefined
-              : `Using ${formatBytes(user.storageUsedBytes)} now. Allowed: up to ${MAX_QUOTA_GB.toLocaleString('en')} GB.`
-          }
-        />
-        {user.quotaProbationEndsAt ? (
-          <Alert tone="info" live="off">
-            New account: limited to {formatBytes(user.effectiveQuotaBytes)} until{' '}
-            {formatDate(user.quotaProbationEndsAt)}, then this quota applies. Saving a new quota
-            ends the limit at once.
-          </Alert>
-        ) : null}
-        {belowUsage && !quotaError ? (
-          <Alert tone="warning" live="off">
-            This is below the current usage: the user keeps their drops but cannot upload until they
-            free space.
-          </Alert>
-        ) : null}
-        {failure ? (
-          <Alert tone="danger" live="assertive">
-            {failure}
-          </Alert>
-        ) : null}
-      </form>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(open) => {
+          if (!open && !save.isPending) onClose();
+        }}
+        title="Edit user"
+        description={user.email}
+        dismissible={!save.isPending}
+        footer={
+          <>
+            <Button variant="outline" onClick={onClose} disabled={save.isPending}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form={formId}
+              loading={save.isPending}
+              disabled={!roleChanged && !quotaChanged}
+            >
+              Save changes
+            </Button>
+          </>
+        }
+      >
+        <form id={formId} onSubmit={submit} noValidate className="flex flex-col gap-4">
+          <Select
+            label="Role"
+            value={role}
+            onChange={(e) => {
+              if (isRole(e.target.value)) setRole(e.target.value);
+            }}
+            options={ROLE_OPTIONS}
+            disabled={isSelf}
+            hint={
+              isSelf
+                ? 'You cannot change your own role.'
+                : role === 'ADMIN'
+                  ? 'Admins can disable drops and edit every account.'
+                  : undefined
+            }
+          />
+          {roleChanged && role === 'ADMIN' && !user.totpEnabled ? (
+            <Alert tone="warning" live="off">
+              This account has no two-step verification, so it cannot be an admin yet. Ask its owner
+              to turn it on in Settings, Security, then try again.
+            </Alert>
+          ) : null}
+          <Input
+            label="Storage quota"
+            inputMode="decimal"
+            autoComplete="off"
+            value={quota}
+            onChange={(e) => {
+              setQuota(e.target.value);
+              setTouched(true);
+            }}
+            error={quotaError}
+            trailing={<span className="text-sm text-muted-strong">GB</span>}
+            hint={
+              quotaError
+                ? undefined
+                : `Using ${formatBytes(user.storageUsedBytes)} now. Allowed: up to ${MAX_QUOTA_GB.toLocaleString('en')} GB.`
+            }
+          />
+          {user.quotaProbationEndsAt ? (
+            <Alert tone="info" live="off">
+              New account: limited to {formatBytes(user.effectiveQuotaBytes)} until{' '}
+              {formatDate(user.quotaProbationEndsAt)}, then this quota applies. Saving a new quota
+              ends the limit at once.
+            </Alert>
+          ) : null}
+          {belowUsage && !quotaError ? (
+            <Alert tone="warning" live="off">
+              This is below the current usage: the user keeps their drops but cannot upload until
+              they free space.
+            </Alert>
+          ) : null}
+          {failure ? (
+            <Alert tone="danger" live="assertive">
+              {failure}
+            </Alert>
+          ) : null}
+        </form>
+      </Dialog>
+      <ReauthDialog
+        open={stepUpFor !== null}
+        onOpenChange={(open) => {
+          if (!open) setStepUpFor(null);
+        }}
+        title="Confirm it's you"
+        description="Making an account an admin needs a recent sign-in. Enter your password and a two-factor code to continue."
+        confirmLabel="Confirm"
+        password
+        code="mfa"
+        busyHint="Checking your password locally…"
+        onSubmit={async ({ password, code }) => {
+          await actions.stepUp(password, code);
+          if (stepUpFor) save.mutate({ id: user.id, patch: stepUpFor });
+        }}
+      />
+    </>
   );
 }
 

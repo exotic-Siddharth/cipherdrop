@@ -115,12 +115,17 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     {
       method: 'patch',
       path: '/users/:id',
-      summary: 'Edit a user role and/or storage quota (only accounts with 2FA can become admins)',
+      summary:
+        'Edit a user role and/or storage quota (only accounts with 2FA can become admins; a promotion needs a recent sign-in or step-up)',
       tags,
       auth,
       request: { params: UserIdParamsSchema, body: AdminUserPatchRequestSchema },
       responses: {
         200: { description: 'Updated user', schema: AdminUserResponseSchema },
+        403: {
+          description:
+            'Promotion without a recent step-up (FORBIDDEN; details.reason STEP_UP_REQUIRED)',
+        },
         404: { description: 'Unknown user' },
         409: { description: 'Promotion of an account without two-step verification (CONFLICT)' },
       },

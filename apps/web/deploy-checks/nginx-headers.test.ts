@@ -538,3 +538,77 @@ describe('deploy/nginx.conf /.well-known/ (docs-9)', () => {
     expect(directive(own, 'add_header')).toEqual([]);
   });
 });
+
+describe('docker-compose.prod.yml isolation and limits (ops-7)', () => {
+  // The top-level keys of `services:` (the block before `networks:`).
+  const servicesBlock = compose.slice(
+    compose.indexOf('\nservices:\n'),
+    compose.indexOf('\nnetworks:\n'),
+  );
+  const services = [...servicesBlock.matchAll(/^ {2}([a-z][a-z0-9-]*):\n/gm)].map(
+    (m) => m[1] as string,
+  );
+  const networksOf = (name: string) =>
+    /\n {4}networks: \[([^\]]*)\]\n/.exec(`\n${service(name)}`)?.[1]?.split(/,\s*/) ?? [];
+
+  it('lists the services it checks', () => {
+    expect(services.sort()).toEqual(
+      ['api', 'caddy', 'migrate', 'minio', 'postgres', 'redis', 'web'].sort(),
+    );
+  });
+
+  it('keeps Postgres, Redis and MinIO on the internal backend network, which only the API and migrate join', () => {
+    expect(compose).toMatch(/\nnetworks:\n(?: {2}#.*\n)* {2}backend:\n {4}internal: true\n/);
+    for (const name of ['postgres', 'redis', 'minio', 'migrate']) {
+      expect(networksOf(name), name).toEqual(['backend']);
+    }
+    expect(networksOf('api')).toEqual(['default', 'backend']);
+    expect(networksOf('web')).toEqual(['default', 'edge']);
+    // Caddy has its own network block (a fixed address on edge, checked above), and nothing on backend.
+    expect(service('caddy')).not.toMatch(/backend/);
+    const onBackend = services.filter((name) => networksOf(name).includes('backend'));
+    expect(onBackend.sort()).toEqual(['api', 'migrate', 'minio', 'postgres', 'redis'].sort());
+  });
+
+  it('gives every service a memory and a pids limit', () => {
+    for (const name of services) {
+      const own = service(name);
+      expect(own, name).toMatch(/\n {4}mem_limit: \d+[mg]\n/);
+      expect(own, name).toMatch(/\n {4}pids_limit: \d+\n/);
+    }
+  });
+
+  it('protects Redis with a password that the API and the healthcheck use, and never evicts keys', () => {
+    const redis = service('redis');
+    expect(redis).toMatch(/REDISCLI_AUTH: \$\{REDIS_PASSWORD:\?[^}]+\}/);
+    expect(redis).toMatch(/--requirepass "\$\$REDISCLI_AUTH"/);
+    // A redis-server command, so that the image's entrypoint still drops root.
+    expect(redis).toMatch(/exec docker-entrypoint\.sh redis-server /);
+    expect(redis).toMatch(/--maxmemory-policy noeviction/);
+    expect(redis).toMatch(/test: \['CMD-SHELL', 'redis-cli ping \| grep -qx PONG'\]/);
+    expect(service('api')).toMatch(
+      /REDIS_URL: redis:\/\/:\$\{REDIS_PASSWORD:\?[^}]+\}@redis:6379\/0/,
+    );
+  });
+
+  it('runs migrations in a one-shot service as the owner, and the API as the runtime role after it', () => {
+    const migrate = service('migrate');
+    const api = service('api');
+    expect(migrate).toMatch(/command: \['migrate'\]/);
+    expect(migrate).toMatch(/dockerfile: apps\/api\/Dockerfile/);
+    expect(migrate).toMatch(/DATABASE_URL: postgresql:\/\/cipherdrop:\$\{POSTGRES_PASSWORD\}@/);
+    expect(migrate).toMatch(/DB_RUNTIME_ROLE: cipherdrop_app\n/);
+    expect(migrate).toMatch(/restart: 'no'/);
+    expect(api).toMatch(/DATABASE_URL: postgresql:\/\/cipherdrop_app:\$\{POSTGRES_APP_PASSWORD:\?/);
+    expect(api).toMatch(/MIGRATE_ON_START: 'false'/);
+    expect(api).toMatch(/POSTGRES_PASSWORD: ''/);
+    expect(api).toMatch(
+      /depends_on:\n {6}migrate:\n {8}condition: service_completed_successfully\n/,
+    );
+    const entrypoint = read('deploy', 'api-entrypoint.sh');
+    expect(entrypoint).toMatch(/\n {2}migrate\)\n {4}migrate\n/);
+    expect(entrypoint).toMatch(
+      /if \[ "\$\{MIGRATE_ON_START:-true\}" != false \]; then migrate; fi/,
+    );
+  });
+});

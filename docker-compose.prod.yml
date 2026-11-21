@@ -6,6 +6,15 @@
 # Optional profiles:   --profile minio   S3-compatible storage in this stack (STORAGE_DRIVER=s3, S3_ENDPOINT=http://minio:9000)
 #                      --profile tls     Caddy terminates HTTPS on 80/443 (also set SITE_ADDRESS; TRUST_PROXY=1, not 2)
 # Nothing but the web port (and Caddy's 80/443 with the tls profile) is published. The dev stack is docker-compose.yml.
+#
+# Networks: `backend` is internal (no route out, and only the API and the one-shot `migrate` reach Postgres, Redis and
+# MinIO on it); `default` joins nginx to the API (and gives the API its way out, to an external S3); `edge` joins
+# Caddy to nginx. A compromised nginx or Caddy cannot open a connection to the database or Redis.
+#
+# Resource limits: every service has mem_limit and pids_limit, sized from the worst case it can be driven to by design
+# (the comments), well above what it used under the production smoke test on a 4-CPU host (in brackets). A process
+# past mem_limit is killed by the kernel and restarted by Docker, instead of pushing the whole host into swap or its
+# OOM killer; a pids limit stops a runaway fork or thread loop. Node sizes its heap from the limit (about half).
 name: cipherdrop-prod
 
 # Container logs (nginx's access log with IP prefixes only, the API's request log): Docker's json-file driver keeps at
@@ -35,22 +44,78 @@ services:
       retries: 10
       start_period: 15s
     restart: unless-stopped
+    networks: [backend]
+    # shared_buffers is 128 MB by default, plus a few MB per connection (the API's Prisma pool: 2 per CPU + 1). One
+    # process per connection: max_connections (100) plus the background workers (about 15) fit in 200. [43 MiB, 8]
+    mem_limit: 512m
+    pids_limit: 200
     security_opt: ['no-new-privileges:true']
     logging: *logging
 
   # Redis holds rate-limit counters, the revoked-session denylist and cleanup locks. The denylist is what makes a
   # password change or "revoke session" effective at once, so it is persisted (AOF) and survives a restart.
+  # Password-protected (requirepass): without it, anything that reached this network could empty the denylist, reset
+  # the rate limits or take the cleanup lock. The password is passed in the environment, not as a literal argument,
+  # so the container's command (docker inspect) does not show it; REDISCLI_AUTH also authenticates the healthcheck's
+  # redis-cli. The image's entrypoint still drops to the redis user (it does so for a `redis-server` command).
+  # maxmemory with noeviction: when full, writes fail (the API answers 5xx) instead of Redis evicting keys, which
+  # could drop a session from the denylist; 128 MB is about a million keys, and mem_limit leaves room for the copy-on-
+  # write of the AOF rewrite's fork.
   redis:
     image: redis:7-alpine
-    command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec']
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env.production}
+    command:
+      - sh
+      - -c
+      - >-
+        exec docker-entrypoint.sh redis-server --appendonly yes --appendfsync everysec
+        --maxmemory 128mb --maxmemory-policy noeviction --requirepass "$$REDISCLI_AUTH"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      # PONG only with the password: NOAUTH (a wrong or missing password) makes it unhealthy.
+      test: ['CMD-SHELL', 'redis-cli ping | grep -qx PONG']
       interval: 10s
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    networks: [backend]
+    mem_limit: 256m
+    # The server's threads (main, I/O, background), the AOF rewrite's fork and the healthcheck's shell. [5 MiB, 6]
+    pids_limit: 32
+    security_opt: ['no-new-privileges:true']
+    logging: *logging
+
+  # One-shot, before the API (ops-7): pending migrations as the database owner (POSTGRES_USER, which the postgres image
+  # creates as a superuser), then the API's runtime role cipherdrop_app with rights on rows only
+  # (deploy/api-entrypoint.sh migrate, apps/api/src/db/runtimeRole.ts). The API connects as that role, so it holds
+  # neither the owner's password nor any right to change the schema. Same build as `api`, so `up --build` builds it
+  # and nothing is pulled under that name.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: cipherdrop-api:${IMAGE_TAG:-latest}
+    command: ['migrate']
+    environment:
+      DATABASE_URL: postgresql://cipherdrop:${POSTGRES_PASSWORD}@postgres:5432/cipherdrop?schema=public
+      DB_RUNTIME_ROLE: cipherdrop_app
+      DB_RUNTIME_PASSWORD: ${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env.production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: 'no'
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    networks: [backend]
+    # Node and the Prisma CLI, then its schema engine (a separate process). [52 MiB, 8]
+    mem_limit: 512m
+    pids_limit: 64
+    cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
     logging: *logging
 
@@ -65,13 +130,19 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: '4100'
-      DATABASE_URL: postgresql://cipherdrop:${POSTGRES_PASSWORD}@postgres:5432/cipherdrop?schema=public
-      REDIS_URL: redis://redis:6379/0
+      # The runtime role that `migrate` keeps up to date: rows only. Migrations ran there, not here.
+      DATABASE_URL: postgresql://cipherdrop_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env.production}@postgres:5432/cipherdrop?schema=public
+      MIGRATE_ON_START: 'false'
+      # env_file hands the API the whole file: the database owner's password must not be in its environment.
+      POSTGRES_PASSWORD: ''
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env.production}@redis:6379/0
       TRUST_PROXY: ${TRUST_PROXY:-1}
       STORAGE_DIR: /data/blobs
     volumes:
       - blobs:/data/blobs
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -92,7 +163,15 @@ services:
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=16m
+    networks: [default, backend]
+    # By design it holds up to 64 chunk bodies of 4 MiB in flight (MAX_CONCURRENT_CHUNK_UPLOADS, 256 MiB outside the
+    # heap), an Argon2id hash of 19 MiB per libuv thread, the Prisma query engine and the heap (which Node caps at
+    # about half of this limit).
+    mem_limit: 1g
+    # Node's threads (main, libuv pool, V8 workers), the query engine's runtime (one thread per CPU) and the
+    # healthcheck's node process every 15 s. [44 MiB, 17]
+    pids_limit: 128
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
     logging: *logging
@@ -131,6 +210,12 @@ services:
       - /var/run:size=1m
       - /tmp:size=1m
     networks: [default, edge]
+    # The tmpfs above counts against it (66 MiB), plus up to 400 /api connections with their 128 KiB body and proxy
+    # buffers (about 80 MiB) and one worker per CPU. [7 MiB, 6]
+    mem_limit: 256m
+    # A master, one worker per CPU (worker_processes auto in the image's nginx.conf) and the healthcheck's wget. On a
+    # host with more than about 60 CPUs nginx starts fewer workers than CPUs (it logs the failed fork) unless raised.
+    pids_limit: 64
     security_opt: ['no-new-privileges:true']
     logging: *logging
 
@@ -152,6 +237,11 @@ services:
       retries: 10
       start_period: 10s
     restart: unless-stopped
+    networks: [backend]
+    # A single-drive server for one API: about 250 MiB and 60 threads after the S3 test suite (a MinIO build from Docker
+    # Hub, 4 CPUs; the Chainguard image could not be pulled here). Its Go runtime adds threads per CPU.
+    mem_limit: 1g
+    pids_limit: 256
     security_opt: ['no-new-privileges:true']
     logging: *logging
 
@@ -177,10 +267,18 @@ services:
       web:
         condition: service_healthy
     restart: unless-stopped
+    # A Go process: certificates, TLS state and a goroutine per connection, streamed through (it buffers no bodies).
+    mem_limit: 256m
+    pids_limit: 64
     security_opt: ['no-new-privileges:true']
     logging: *logging
 
 networks:
+  # Postgres, Redis, MinIO, the API and `migrate`. internal: no route to or from anything outside it.
+  backend:
+    internal: true
+  # nginx and the API. Not internal: it is the API's way out (an external S3 endpoint).
+  default: {}
   # Caddy and nginx. A fixed subnet, so that Caddy's address is known in advance; containers without a fixed address
   # (web) get theirs from ip_range, which leaves 172.16.94.2 free for Caddy. The subnet must not overlap another
   # Docker network on the host: to move it, change it here and in set_real_ip_from (the unit test checks both).

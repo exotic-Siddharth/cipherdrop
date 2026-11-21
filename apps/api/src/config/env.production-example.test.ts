@@ -1,7 +1,8 @@
 /**
  * The shipped .env.production.example against the production guard (C-11): the template as it stands must be
  * REFUSED (its secrets are placeholders), and once the placeholders are replaced with real values the API must
- * accept it. docker-compose.prod.yml adds the topology values (DATABASE_URL, REDIS_URL, NODE_ENV, STORAGE_DIR).
+ * accept it. docker-compose.prod.yml adds the topology values (DATABASE_URL, REDIS_URL, NODE_ENV, STORAGE_DIR): the
+ * api service's `environment:` is read from the compose file and interpolated from the env file, as compose does.
  */
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -30,30 +31,69 @@ function parseDotenv(text: string): Record<string, string> {
 }
 
 const template = parseDotenv(readFileSync(file, 'utf8'));
+const compose = readFileSync(path.join(path.dirname(file), 'docker-compose.prod.yml'), 'utf8');
 
-/** What docker-compose.prod.yml layers over the env file for the api container. */
-const composeLayer = {
-  NODE_ENV: 'production',
-  API_PORT: '4100',
-  DATABASE_URL: `postgresql://cipherdrop:${randomBytes(12).toString('hex')}@postgres:5432/cipherdrop?schema=public`,
-  REDIS_URL: 'redis://redis:6379/0',
-  STORAGE_DIR: '/data/blobs',
-};
+/**
+ * The api container's environment as docker-compose.prod.yml builds it from the env file `values`: env_file passes
+ * them all, and its `environment:` (interpolated: ${X}, ${X:-default}, ${X:?message}) takes precedence.
+ */
+function apiEnvironment(values: Record<string, string>): Record<string, string> {
+  const api = /^ {2}api:\n((?:(?: {4}.*)?\n)*)/m.exec(compose)?.[1] ?? '';
+  const block = /^ {4}environment:\n((?: {6}.*\n)*)/m.exec(api)?.[1] ?? '';
+  const layer: Record<string, string> = {};
+  for (const [, key, raw] of block.matchAll(/^ {6}([A-Z][A-Z0-9_]*): (.*)$/gm)) {
+    const unquoted = (raw as string).trim().replace(/^'(.*)'$/, '$1');
+    layer[key as string] = unquoted.replace(
+      /\$\{([A-Z][A-Z0-9_]*)(?::([?-])([^}]*))?\}/g,
+      (_, name: string, op?: string, arg?: string) => {
+        const v = values[name];
+        if (v !== undefined && v !== '') return v;
+        if (op === '?') throw new Error(`compose refuses to start: ${arg}`);
+        return op === '-' ? (arg ?? '') : '';
+      },
+    );
+  }
+  expect(Object.keys(layer)).toEqual(expect.arrayContaining(['DATABASE_URL', 'REDIS_URL']));
+  return { ...values, ...layer };
+}
 
-const filled = (): Record<string, string> => ({
+/** Every REQUIRED placeholder replaced with a generated value, as the file tells the operator to. */
+const filledValues = (): Record<string, string> => ({
   ...template,
-  ...composeLayer,
+  POSTGRES_PASSWORD: randomBytes(24).toString('hex'),
+  POSTGRES_APP_PASSWORD: randomBytes(24).toString('hex'),
+  REDIS_PASSWORD: randomBytes(32).toString('hex'),
   JWT_ACCESS_SECRET: randomBytes(32).toString('hex'),
   PRELOGIN_SECRET: randomBytes(32).toString('hex'),
   TOTP_ENC_KEY: randomBytes(32).toString('base64'),
 });
+const filled = () => apiEnvironment(filledValues());
 
 describe('.env.production.example', () => {
-  it('is refused as shipped: every secret is still a placeholder', () => {
-    const attempt = () => parseEnv({ ...template, ...composeLayer });
+  it('is refused as shipped: every secret and connection password is still a placeholder', () => {
+    const attempt = () => parseEnv(apiEnvironment(template));
     expect(attempt).toThrow(/JWT_ACCESS_SECRET/);
     expect(attempt).toThrow(/PRELOGIN_SECRET/);
     expect(attempt).toThrow(/TOTP_ENC_KEY/);
+    expect(attempt).toThrow(/DATABASE_URL: its password is a development\/test placeholder/);
+    expect(attempt).toThrow(/REDIS_URL: its password is a development\/test placeholder/);
+  });
+
+  it('gives the API the runtime role and the Redis password, never the database owner password (ops-7)', () => {
+    const values = filledValues();
+    const env = parseEnv(apiEnvironment(values));
+    const db = new URL(env.DATABASE_URL);
+    expect(db.username).toBe('cipherdrop_app');
+    expect(db.password).toBe(values.POSTGRES_APP_PASSWORD);
+    expect(new URL(env.REDIS_URL).password).toBe(values.REDIS_PASSWORD);
+    const container = apiEnvironment(values);
+    expect(container.POSTGRES_PASSWORD).toBe('');
+    expect(Object.values(container)).not.toContain(values.POSTGRES_PASSWORD);
+    expect(container.MIGRATE_ON_START).toBe('false');
+    // Compose refuses to start without the two passwords instead of using an empty one.
+    for (const key of ['POSTGRES_APP_PASSWORD', 'REDIS_PASSWORD']) {
+      expect(() => apiEnvironment({ ...values, [key]: '' })).toThrow(new RegExp(key));
+    }
   });
 
   it('is accepted by the production guard once the placeholders are filled in', () => {
@@ -76,7 +116,14 @@ describe('.env.production.example', () => {
   });
 
   it('every variable it sets is one the API reads or the compose file consumes', () => {
-    const consumedByCompose = ['POSTGRES_PASSWORD', 'WEB_BIND', 'WEB_PORT', 'SITE_ADDRESS'];
+    const consumedByCompose = [
+      'POSTGRES_PASSWORD',
+      'POSTGRES_APP_PASSWORD',
+      'REDIS_PASSWORD',
+      'WEB_BIND',
+      'WEB_PORT',
+      'SITE_ADDRESS',
+    ];
     const envSource = readFileSync(
       path.join(path.dirname(file), 'apps/api/src/config/env.ts'),
       'utf8',

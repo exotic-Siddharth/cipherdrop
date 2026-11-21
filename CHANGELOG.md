@@ -6,7 +6,8 @@ Unreleased. The reasons behind each change are in the Decisions log of [docs/DES
 
 ## [Unreleased]
 
-Pull request #1: its first round (2026-11-14 to 2026-11-20) and batch 1 (merged 2026-11-21).
+Since the v1 build: two changes already on `main` (2026-11-13 and 2026-11-14), the first round of pull request #1
+(2026-11-20) and batch 1 (merged 2026-11-21).
 
 ### Upgrade notes
 
@@ -23,7 +24,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   2FA on signs out every other session of the account.
 - One re-authentication rule for every sensitive action: password change, recovery-key rotation, turning 2FA on or
   off, backup-code regeneration, signing one or all other sessions out, and account deletion need the current
-  password, plus a TOTP or backup code when 2FA is on, with a budget of 10 attempts per 15 minutes per session.
+  password, plus a TOTP or backup code when 2FA is on (backup-code regeneration takes a TOTP code only; turning 2FA
+  on takes a code from the new authenticator), with a budget of 10 attempts per 15 minutes per session.
 - Sessions have an absolute lifetime (`SESSION_MAX_LIFETIME_DAYS`, 30 days from sign-in) besides the idle one.
 - Server-side Argon2id is bounded per API process (2 running, 32 waiting, then 429 with `Retry-After: 1`, which the
   login, registration, recovery and re-authentication limits do not count), and the API image sets `UV_THREADPOOL_SIZE=8` so a login flood cannot take the
@@ -53,7 +55,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 - nginx's access log records only the client's IP prefix and the path cut at the first `?`, `#` or `%23`, so a share
   link's key never reaches a log even when a client requests the link verbatim; the API's request log cuts its path
   the same way.
-- Supply chain: every third-party image is pinned by tag and digest (MinIO's excepted), the Dockerfiles have no
+- Supply chain: every third-party image of the production stack, the Dockerfiles and CI is pinned by tag and digest
+  (MinIO's excepted; the dev compose file, `docker-compose.yml`, stays on tags), the Dockerfiles have no
   floating `# syntax=` frontend, the image's Prisma CLI is installed from a lockfile cut out of `package-lock.json`,
   and CI's service images are checked equal to the production pins.
 - First round: nginx streams chunk transfers and caps in-flight `/api` requests per client (64) and in total (400),
@@ -61,14 +64,17 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   `X-Forwarded-For` only from Caddy's fixed address, and `TRUST_PROXY` is `1` with or without Caddy.
 - First round: Prisma error text is kept out of every log path (a validation error had rendered a reporter's drop
   key into the API's log); the leak guard checks every request of every browser context with all its headers; the
-  audit gate's output cannot act as a GitHub Actions workflow command; a refresh-token successor replaced inside the
-  grace window is retired, not deleted, so presenting it later is detected as reuse.
+  audit gate's output cannot act as a GitHub Actions workflow command.
+- On `main` (2026-11-14): a refresh whose response was lost no longer signs the user out. A used refresh token
+  presented within 30 seconds of its rotation, while its successor is unused, gets a new successor in the same
+  session; the replaced successor is retired, not deleted, so presenting it later is detected as reuse.
 
 ### Added
 
 - `/.well-known/security.txt` (RFC 9116), generated at build time from `SECURITY_TXT_CONTACT` and
   `SECURITY_TXT_POLICY`, and a vulnerability disclosure policy in `.github/SECURITY.md` (GitHub private
-  vulnerability reporting); every other `/.well-known/` path is a 404.
+  vulnerability reporting, which works only once the repository setting is on; it was off on 2026-11-21, see
+  docs/SECURITY.md section 7); every other `/.well-known/` path is a 404.
 - `GET /api/config` (the two operator switches), the error codes `FEATURE_DISABLED` (403), `UPLOAD_BUDGET_EXCEEDED`
   (429) and `STORAGE_FULL` (507), and the fields `Me.quotaProbationEndsAt`, `AdminUser.effectiveQuotaBytes` and
   `AdminUser.quotaProbationEndsAt`.
@@ -78,7 +84,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   `GLOBAL_STORAGE_CAP_BYTES`, `STORAGE_MIN_FREE_BYTES`; for the compose stack `POSTGRES_APP_PASSWORD` and
   `REDIS_PASSWORD` (required), and for the API image `MIGRATE_ON_START`, `DB_RUNTIME_ROLE` and `DB_RUNTIME_PASSWORD`.
 - Metrics: `drops_refused_total{reason}`, `argon2_active`, `argon2_queued` and `argon2_rejected_total`.
-- Migrations `20261120000000_new_account_probation` and `20261120120000_chunk_stored_at`.
+- Migrations `20261120000000_new_account_probation` and `20261120120000_chunk_stored_at`, and on `main` since
+  2026-11-14 `20261114000000_refresh_token_rotated_from` (`RefreshToken.rotatedFromId`).
 - Resource limits (`mem_limit`, `pids_limit`) on every service of the production stack.
 - CI: a cross-engine e2e job (Firefox, WebKit and two emulated phones for the `@cross` subset), a `prod-stack` job
   that builds the images from the Dockerfiles, boots the stack, runs the smoke test and scans both images with Trivy
@@ -89,6 +96,12 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   all).
 - Documentation: the sender-identity and hosting-abuse sections of the threat model, a post-quantum statement, the
   key-commitment limit in `packages/crypto/README.md`, an Upgrading section in `docs/DEPLOYMENT.md`, and this file.
+- `npm run media -w @cipherdrop/web` (`apps/web/playwright.media.config.ts`; opt-in, never run by `npm run e2e` or
+  CI) regenerates `docs/screenshots` at device scale factor 2 and records `docs/screenshots/demo.gif`, the DEMO.md
+  flow. Six new screenshots (password prompt, used-up drop, recovery-key step, TOTP setup, second-factor sign-in, the
+  blocked download on a phone), `hero.png` as a real composite instead of a copy of `receive-light.png`, and a README
+  gallery.
+- On `main` (2026-11-13): the MIT `LICENSE`.
 - First round: Dependabot, every action pinned to a commit SHA, `npm ci --ignore-scripts` everywhere, actionlint,
   and a dependency audit gate (`npm run audit:gate`, `audit.yml`) with a reviewed allowlist.
 
@@ -102,11 +115,17 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   `ANON_MAX_DROP_BYTES` (rounded up to a MiB), or 0.
 - The API image no longer has to migrate on start in the compose stack (`MIGRATE_ON_START=false` there); its default
   `serve` command still migrates first, so other deployments keep working.
-- The Dockerfiles use literal, digest-pinned `FROM` lines; the `NODE_IMAGE` and `NGINX_IMAGE` build arguments are
-  gone (use the Docker daemon's `registry-mirrors` for a mirror).
-- CI's build-only images job is replaced by `prod-stack`; a branch protection rule that requires `production images
-build` must require `production stack (build, boot, smoke, scan)` instead.
+- The Dockerfiles use literal, digest-pinned `FROM` lines.
 - The receive page's copy: "Integrity verified" is explained, the note is titled "Note from the sender (not
   verified)", and the in-memory limit is stated as 256 MiB.
 - First round: `TRUST_PROXY` is `1` for the `tls` profile (it used to be told 2), and the production stack has a
   compose network `edge` on `172.16.94.0/28` between Caddy and nginx.
+
+### Removed
+
+- The `NODE_IMAGE` and `NGINX_IMAGE` build arguments of the Dockerfiles (use the Docker daemon's `registry-mirrors`
+  for a mirror).
+- CI's build-only images job, replaced by `prod-stack`; a branch protection rule that requires
+  `production images build` must require `production stack (build, boot, smoke, scan)` instead.
+
+[Unreleased]: https://github.com/exotic-Siddharth/cipherdrop/compare/main...ccr-5c0c9ee9-ysizz2

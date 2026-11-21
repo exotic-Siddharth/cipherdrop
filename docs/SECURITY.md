@@ -400,7 +400,8 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
   the npm CLI bundled with Node) are covered by the image scan below.
 
 - **Supply chain.** Actions are pinned to commit SHAs, each checked against its version tag with `git ls-remote`.
-  Images are pinned to index digests, MinIO's excepted ([DEPLOYMENT.md](DEPLOYMENT.md) section 5). The Dockerfiles
+  The images of the production stack, the Dockerfiles and CI are pinned to index digests, MinIO's excepted; the dev
+  compose file, `docker-compose.yml`, stays on tags ([DEPLOYMENT.md](DEPLOYMENT.md) section 5). The Dockerfiles
   have no `# syntax=` directive, so no BuildKit frontend image is fetched. `scripts/image-pins.test.mjs` checks that
   CI's service images equal the production compose pins. Installs use `--ignore-scripts`; Dependabot proposes bumps,
   with a 7-day cooldown on new npm releases. CI scans each production image with Trivy: a CRITICAL finding with a
@@ -460,6 +461,12 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
   without it one client could make the server hash for every email it invents.
 - **nginx's credential-route 429** is its own HTML page without `Retry-After`, like the connection caps. The limit
   stays above the API's own budgets, so honest clients meet the API's JSON 429 first.
+- **The disclosure channel needs a repository setting.** GitHub private vulnerability reporting, the channel of
+  [section 8](#8-reporting-a-vulnerability), `.github/SECURITY.md` and the default security.txt, exists only while
+  the repository's Private vulnerability reporting setting is on. As of 2026-11-21 it was off
+  (`gh api repos/exotic-Siddharth/cipherdrop/private-vulnerability-reporting` returned `{"enabled":false}`), so the
+  reporting form was not available. The owner turns it on in the repository's security settings (or with
+  `gh api -X PUT` on the same path) and checks that the call above returns `{"enabled":true}`.
 
 Further limitations, also shown on `/how-it-works`:
 
@@ -478,7 +485,8 @@ Further limitations, also shown on `/how-it-works`:
 
 This is a portfolio project without a bug bounty. Report a vulnerability privately through GitHub private
 vulnerability reporting (<https://github.com/exotic-Siddharth/cipherdrop/security/advisories/new>), not in a public
-issue, with steps to reproduce. The policy is [.github/SECURITY.md](../.github/SECURITY.md): its scope, the
+issue, with steps to reproduce. The form exists only while the repository's setting for it is on, and as of
+2026-11-21 it was off ([section 7](#7-accepted-open-points)). The policy is [.github/SECURITY.md](../.github/SECURITY.md): its scope, the
 supported version (the latest commit on main), the aims (an acknowledgement within 7 days and a first assessment
 within 14), publication after the fix or after 90 days, credit unless declined, and a safe-harbour statement for
 good-faith research. Test only against an instance you run yourself.

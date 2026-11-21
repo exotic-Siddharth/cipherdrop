@@ -16,6 +16,9 @@ Report it privately through GitHub's private vulnerability reporting:
 **[Report a vulnerability](https://github.com/exotic-Siddharth/cipherdrop/security/advisories/new)** (the
 Security tab of this repository). Please do not open a public issue, pull request or discussion about it.
 
+The form exists only while the repository's private vulnerability reporting setting is on. As of 2026-11-21 it was
+not yet on (docs/SECURITY.md section 7, accepted open points).
+
 A useful report names:
 
 - the commit you tested, and the component (web app, API, `packages/crypto`, deployment files);

@@ -715,7 +715,9 @@ able to choose its address, or break `up`, a build or a sidecar.
 
 - Set `SECURITY_TXT_CONTACT` (and `SECURITY_TXT_POLICY`) to your own contact, then `up -d --build web`; without it,
   `/.well-known/security.txt` points at this repository. Rebuild the web image with `--no-cache` at least every 180
-  days.
+  days. If the contact is a fork's GitHub reporting form (`https://github.com/OWNER/REPO/security/advisories/new`),
+  turn on private vulnerability reporting in that repository's settings first: the form exists only while the
+  setting is on ([SECURITY.md](SECURITY.md) section 7).
 - On a public instance, set `GLOBAL_STORAGE_CAP_BYTES`, and alert on `drops_refused_total` and `storage_free_bytes`.
 - For local development: the bench API needs `NEW_ACCOUNT_PROBATION_DAYS=0` ([BENCHMARKS.md](BENCHMARKS.md)), and
   the seeded admin must enrol 2FA before it can open the console.

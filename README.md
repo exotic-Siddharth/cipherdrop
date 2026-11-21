@@ -72,8 +72,9 @@ version in [docs/screenshots](docs/screenshots).
 
 Phone layout (390 px): [send](docs/screenshots/send-mobile-light.png), [receive](docs/screenshots/receive-mobile-dark.png),
 [blocked after tampering](docs/screenshots/receive-tamper-blocked-mobile-light.png) and
-[dashboard](docs/screenshots/dashboard-mobile-dark.png). [hero.png](docs/screenshots/hero.png) (1280x640, the size of
-a GitHub social preview) puts the sender and the recipient side by side.
+[dashboard](docs/screenshots/dashboard-mobile-dark.png). [hero.png](docs/screenshots/hero.png) puts the sender and
+the recipient side by side: 2560x1280 (1280x640 CSS pixels at 2x; the 2:1 ratio GitHub recommends for a social
+preview, 426 KB, under its 1 MB limit).
 
 ## Engineering highlights
 
@@ -300,8 +301,9 @@ CHANGELOG.md              changes since v1, with upgrade notes in docs/DEPLOYMEN
 stolen database, XSS, sender identity, hosting abuse), the cryptographic design in brief, the metadata list, account
 and session security, and the accepted open points. The normative specification is [docs/DESIGN.md](docs/DESIGN.md),
 section 7. Report vulnerabilities privately through GitHub private vulnerability reporting
-([.github/SECURITY.md](.github/SECURITY.md)); every instance serves `/.well-known/security.txt` with its operator's
-contact.
+([.github/SECURITY.md](.github/SECURITY.md)) once the repository's setting for it is on: as of 2026-11-21 it was
+off ([docs/SECURITY.md](docs/SECURITY.md) section 7). Every instance serves `/.well-known/security.txt` with its
+operator's contact.
 
 ## Browser support
 

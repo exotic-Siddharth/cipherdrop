@@ -247,7 +247,8 @@ API on the `cipherdrop_e2e` database, at 1440x900 and, for send, receive, the bl
   Playwright route, and the UI blocks the save.
 - `send-progress-*` lets the first five chunk PUTs through and parks the rest with a Playwright route, so the MB/s and
   the time left in those two images describe a stalled upload and are not a measurement.
-- `hero.png` is a composite: `send-progress-dark.png` and `receive-light.png` side by side, 1280x640.
+- `hero.png` is a composite: `send-progress-dark.png` and `receive-light.png` side by side, 2560x1280 (1280x640 CSS
+  pixels at 2x; the 2:1 ratio GitHub recommends for a social preview, 426 KB, under its 1 MB limit).
 - `demo.gif` is the DEMO.md flow recorded with Playwright's video recorder and converted with ffmpeg; each chunk PUT
   is delayed by 600 ms in the clip, so its upload speed is not a measurement either.
 - The committed PNGs were then recompressed losslessly with oxipng (same pixels).

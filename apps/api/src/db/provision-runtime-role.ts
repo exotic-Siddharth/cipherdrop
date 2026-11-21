@@ -10,13 +10,14 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { pino } from 'pino';
-import { provisionRuntimeRole } from './runtimeRole';
+import { checkOwnerUrl, provisionRuntimeRole } from './runtimeRole';
 
 const log = pino({ base: { service: 'migrate' } });
 
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL ?? '';
-  if (!URL.canParse(url)) throw new Error('DATABASE_URL must be set to the owner role URL');
+  // Refuses the template's placeholder owner password too: nothing else checks it (see checkOwnerUrl).
+  checkOwnerUrl(url);
   const role = process.env.DB_RUNTIME_ROLE ?? '';
   const schema = new URL(url).searchParams.get('schema') ?? 'public';
   const prisma = new PrismaClient({ datasourceUrl: url, errorFormat: 'minimal' });

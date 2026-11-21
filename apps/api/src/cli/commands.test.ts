@@ -36,7 +36,7 @@ describe('operator CLI', () => {
     expect(res.code).toBe(0);
     expect(res.out).toBe(CLI_HELP);
     expect(res.out).toContain(
-      'docker compose -f docker-compose.prod.yml exec api node dist/cli.js',
+      'docker compose --env-file .env.production -f docker-compose.prod.yml exec api node apps/api/dist/cli.js',
     );
     expect((await cli()).code).toBe(2);
     expect((await cli('nope')).code).toBe(2);

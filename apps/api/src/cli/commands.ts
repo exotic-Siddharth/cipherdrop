@@ -1,7 +1,7 @@
 /**
  * Operator commands (ops-9): day-one and incident-day moderation without hand-written SQL. Run with
  * `npm run cli -w @cipherdrop/api -- <command>` in development, or in the production stack with
- * `docker compose -f docker-compose.prod.yml exec api node dist/cli.js <command>`.
+ * `docker compose --env-file .env.production -f docker-compose.prod.yml exec api node apps/api/dist/cli.js <command>`.
  *
  * Every command goes through the same service code as the admin console and is audited with metadata.operator
  * (there is no acting account), so the admin Audit tab shows it as "Operator".
@@ -12,7 +12,7 @@ import { disableDrop, listAudit, patchUser, revokeSessions } from '../modules/ad
 
 export const CLI_HELP = `CipherDrop operator commands
 
-Usage (production):  docker compose -f docker-compose.prod.yml exec api node dist/cli.js <command>
+Usage (production):  docker compose --env-file .env.production -f docker-compose.prod.yml exec api node apps/api/dist/cli.js <command>
 Usage (development): npm run cli -w @cipherdrop/api -- <command>
 
 Commands:

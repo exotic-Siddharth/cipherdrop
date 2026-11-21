@@ -47,7 +47,9 @@ Out of scope:
 - missing hardening without a demonstrated impact;
 - vulnerabilities in dependencies with no exploitable path in CipherDrop (report those upstream);
 - instances run by other people. Report a problem with an instance to its operator: its contact is in
-  `/.well-known/security.txt` on that instance.
+  `/.well-known/security.txt` on that instance. If that file points back to this repository, its operator has not
+  named a contact of their own: report problems in the code here, and problems specific to that deployment to its
+  operator through the site itself.
 
 ## Testing and safe harbour
 

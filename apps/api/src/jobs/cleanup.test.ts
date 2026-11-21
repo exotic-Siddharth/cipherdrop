@@ -312,6 +312,25 @@ describe('cleanup job', () => {
       await runCleanup(at(14 * DAY + HOUR), t.ctx);
       expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
     });
+
+    it('is measured from expiry: a new keyed report on day 13 does not extend it', async () => {
+      const { drop } = await ownedReadyDrop({ expiresInHours: 1 });
+      await report(drop.dropId, 'k'.repeat(43));
+      await report(drop.dropId, 'k'.repeat(43), at(13 * DAY));
+      await runCleanup(at(14 * DAY), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(true);
+      await runCleanup(at(14 * DAY + 2 * HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
+    });
+
+    it('is measured from the open that exhausted the drop', async () => {
+      const { drop } = await ownedReadyDrop({ maxDownloads: 1, expiresInHours: 24 });
+      expect((await openDrop(t.app, drop.dropId)).status).toBe(200);
+      await report(drop.dropId, 'k'.repeat(43), at(HOUR));
+      await report(drop.dropId, 'k'.repeat(43), at(13 * DAY));
+      expect((await runCleanup(at(14 * DAY - HOUR), t.ctx)).exhaustedBlobsDeleted).toBe(0);
+      expect((await runCleanup(at(14 * DAY + HOUR), t.ctx)).exhaustedBlobsDeleted).toBe(1);
+    });
   });
 
   describe('retention (C-13)', () => {

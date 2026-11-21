@@ -80,7 +80,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   promote an existing account with 2FA to admin or demote it, suspend and unsuspend, take a drop down, sign out one
   account or every account, and print the audit tail. Audited as the operator.
 - Evidence hold: while a report that carries the key is open, cleanup keeps an expired or used-up drop's blobs for
-  review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the report. [docs/ABUSE.md](docs/ABUSE.md) describes the
+  review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the drop expired or was used up; later reports do not
+  extend it. [docs/ABUSE.md](docs/ABUSE.md) describes the
   abuse process.
 - The receive page says what a sender with an account sees of an open (time, network prefix, browser).
 

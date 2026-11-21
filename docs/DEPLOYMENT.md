@@ -720,8 +720,8 @@ able to choose its address, or break `up`, a build or a sidecar.
   the next start; `migrate` then takes UPDATE and DELETE on `AuditEvent` away from `cipherdrop_app`, whose
   retention runs through `prune_audit_events()`. The first adds `AuditEvent.actorId`,
   `User.suspendedAt` and `suspendedReason` and new audit actions; no action is needed. Admin-action audit events are
-  kept a year (other events 90 days), and a drop with an open keyed report keeps its blobs past expiry for at most
-  `REPORT_EVIDENCE_HOLD_DAYS` (default 14; set 0 for the old behaviour). A suspended account gets 403 on sign-in.
+  kept a year (other events 90 days), and a drop with an open keyed report keeps its blobs past expiry (or its last
+  download) for at most `REPORT_EVIDENCE_HOLD_DAYS` (default 14; set 0 for the old behaviour). A suspended account gets 403 on sign-in.
 
 ### Recommended
 

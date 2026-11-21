@@ -98,8 +98,8 @@ attacker:
 - **can** decrypt drops that have an OPEN abuse report whose reporter attached the key, if it also has the blob
   storage. The key is deleted when the report is dismissed, when the drop is disabled and when its blobs are
   purged (review C-14). While such a report is open, cleanup keeps the blobs of the drop past its expiry or last
-  download for review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the report (server-5, see
-  [ABUSE.md](ABUSE.md)); an owner's delete is never held;
+  download for review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the drop expired or was used up, however
+  many reports are filed (server-5, see [ABUSE.md](ABUSE.md)); an owner's delete is never held;
 - **can** see all metadata in [section 4](#4-metadata-the-server-sees);
 - **cannot** log in with the stored `authKeyHash`: it is a server-side Argon2id hash (m=19456 KiB, t=2, p=1) of
   the client's authKey, so the hash is not the credential;
@@ -181,7 +181,9 @@ cost and volume, not on content:
 
 The arithmetic: before, one IPv4 address could keep about 10 x 100 MiB x 72 h, about 70 GiB, of anonymous drops
 alive; now at most about 3 GiB (1 GiB per 24 hours, and links live up to 72 hours), and 10 GiB for all anonymous
-senders together.
+senders together. A sender who also files keyed reports on their own drops can keep them, and their pool bytes,
+for up to `REPORT_EVIDENCE_HOLD_DAYS` (14) more days after expiry (the evidence hold, server-5), so about 17 GiB
+per IPv4 address at worst; an admin dismissing the reports ends that.
 
 Residual risk, stated plainly:
 
@@ -342,15 +344,18 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
 - **Per-drop unlock budget (C-01).** An attacker who uses up the per-drop failure budget also blocks recipients
   until the window ends.
 - **Delayed deletion of expired drops (C-06).** Blobs of an expired drop are deleted once no download grant is
-  live, at most about 24 hours after expiry.
+  live, at most about 24 hours after expiry. The exception is the evidence hold: a drop with an open report that
+  carries the key keeps its blobs (and its quota or anonymous pool bytes) until the report is resolved, at most
+  `REPORT_EVIDENCE_HOLD_DAYS` (14) after expiry or the last download.
 - **Per-process caps (C-15, C-09).** The API's in-flight upload and download caps count per API process; several
   instances need connection limits in the reverse proxy. The bundled nginx has two: 64 in-flight `/api` requests
   per client (`limit_conn api_ip`, keyed by IPv4 address or IPv6 /48 like the API's per-IP shares) and 400 in total
   (`api_total`), answered with 429. With N API instances behind one nginx use 48 x N + 16 and about 400 x N
   ([DEPLOYMENT.md](DEPLOYMENT.md) section 4). Per-IP caps rely on `TRUST_PROXY`, which is `1` for the bundled stack
   with or without Caddy.
-- **Admin review of expired drops (C-R2-05).** Reports are accepted for expired drops until their blobs are purged,
-  but the admin review grant refuses expired drops.
+- **Admin review of expired drops (C-R2-05).** Reports are accepted for expired and used-up drops until their
+  blobs are purged, and the admin review grant works on them until then; the evidence hold is what keeps those
+  blobs for a keyed report.
 - **Orphaned blob versions (C-R2-01, C-R4-01).** A crash between a chunk write and its commit, or a storage error
   that outlasts all retries, can leave an unreferenced blob until the drop is purged; there is no storage sweep.
 - **Slowest supported uplink (C-R3-01).** About 0.34 Mbit/s for the three-lane web uploader, set by Node's 300 s

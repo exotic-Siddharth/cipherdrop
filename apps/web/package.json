@@ -16,6 +16,7 @@
     "e2e:cross": "playwright test -c playwright.cross.config.ts",
     "e2e:install:cross": "playwright install chromium firefox webkit",
     "smoke:prod": "playwright test -c playwright.prod.config.ts",
+    "media": "playwright test -c playwright.media.config.ts",
     "bench:browser": "tsx bench/bench-browser.ts",
     "bench:ceiling": "tsx bench/chromium-upload-ceiling.ts"
   },

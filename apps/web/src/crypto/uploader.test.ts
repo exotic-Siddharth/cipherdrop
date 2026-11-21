@@ -383,12 +383,35 @@ describe('verifyResume (R11)', () => {
     };
   }
 
+  // `received` is a set of chunk indexes: the caller only skips its members (uploadDropFiles builds a Set from
+  // `skip`) and counts their bytes, so its iteration order is not part of the contract. statusFor() lists the
+  // chunks in the order the parallel PUTs happened to go out, which varies under load.
   it('accepts the same file and reports the received chunks', async () => {
     const file = bytesFile('v.bin', CHUNK_SIZE * 2 + 1, (i) => (i * 7) % 256);
     const { prepared, status } = await statusFor(file, 1);
     const result = await verifyResume(prepared.dk, prepared.files, status);
     expect(result.ok).toBe(true);
-    if (result.ok) expect([...result.received.get(prepared.files[0]!.id)!]).toEqual([0, 1]);
+    if (result.ok) expect(result.received.get(prepared.files[0]!.id)).toEqual(new Set([0, 1]));
+  });
+
+  it('checks the highest received index whatever order upload-status lists the chunks in', async () => {
+    const file = bytesFile('v.bin', CHUNK_SIZE * 2 + 1, (i) => (i * 7) % 256);
+    const { prepared, status } = await statusFor(file, 1);
+    const entry = status.files[0]!;
+    const descending: UploadStatus = {
+      files: [{ ...entry, received: [...entry.received].sort((a, b) => b.index - a.index) }],
+    };
+    const same = await verifyResume(prepared.dk, prepared.files, descending);
+    expect(same.ok && same.received.get(entry.id)).toEqual(new Set([0, 1]));
+    // Chunk 1 differs: the check must re-encrypt chunk 1 even when it is listed first.
+    const impostor = bytesFile('v.bin', CHUNK_SIZE * 2 + 1, (i) =>
+      i === CHUNK_SIZE + 10 ? 0xff : (i * 7) % 256,
+    );
+    for (const order of [status, descending]) {
+      expect(
+        await verifyResume(prepared.dk, [{ ...prepared.files[0]!, file: impostor }], order),
+      ).toEqual({ ok: false, reason: 'mismatch' });
+    }
   });
 
   it('rejects a different file of the same size (re-encrypted last chunk hash mismatch)', async () => {

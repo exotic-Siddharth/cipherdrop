@@ -306,3 +306,43 @@ export async function patchUser(
   });
   return toAdminUser(ctx, user);
 }
+
+/**
+ * Clear the sign-in lockout of an account (server-2): the failed-login counter and `lockedUntil`. The lock is
+ * account-wide, so anyone who knows an email can keep its owner out by re-locking it every 15 minutes; this is
+ * the owner's way back in, through an admin, until the lock itself is scoped per device. Audited on both
+ * accounts: the owner sees it in Activity (no admin id in the metadata), the admin's row names the target.
+ */
+export async function clearUserLock(
+  ctx: AppContext,
+  userId: string,
+  admin: AuthUser,
+  req: Req,
+): Promise<AdminUser> {
+  const before = await ctx.prisma.user.findUnique({
+    where: { id: userId },
+    select: { lockedUntil: true, failedLoginCount: true },
+  });
+  if (!before) throw notFound('Unknown user');
+  const user = await ctx.prisma.user.update({
+    where: { id: userId },
+    data: { failedLoginCount: 0, lockedUntil: null },
+    include: { _count: { select: { drops: true } } },
+  });
+  const wasLocked = before.lockedUntil !== null && before.lockedUntil > ctx.now();
+  await recordAfterCommit(ctx, {
+    userId,
+    action: 'ACCOUNT_LOCK_CLEARED',
+    req,
+    metadata: { byAdmin: true, wasLocked, failedLogins: before.failedLoginCount },
+  });
+  if (admin.id !== userId) {
+    await recordAfterCommit(ctx, {
+      userId: admin.id,
+      action: 'ACCOUNT_LOCK_CLEARED',
+      req,
+      metadata: { targetUserId: userId, wasLocked },
+    });
+  }
+  return toAdminUser(ctx, user);
+}

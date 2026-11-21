@@ -6,7 +6,7 @@ import {
   type Role,
 } from '@cipherdrop/shared';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Lock, Pencil, Search, ShieldCheck, Smartphone, Users } from 'lucide-react';
+import { Lock, LockOpen, Pencil, Search, ShieldCheck, Smartphone, Users } from 'lucide-react';
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { Alert } from '../../components/ui/Alert';
@@ -38,6 +38,39 @@ const ROLE_OPTIONS = [
 
 function isRole(value: string): value is Role {
   return value === 'USER' || value === 'ADMIN';
+}
+
+/**
+ * Clear a sign-in lockout (server-2). The lock is account-wide, so someone who knows the email can keep the
+ * owner out; this lets an admin let them back in. Audited on the account and on the admin.
+ */
+function ClearLockButton({ user }: { user: AdminUser }) {
+  const qc = useQueryClient();
+  const clear = useMutation({
+    mutationFn: (id: string) =>
+      api.post(`/admin/users/${encodeURIComponent(id)}/clear-lock`, undefined, {
+        schema: AdminUserResponseSchema,
+      }),
+    onSuccess: () => {
+      toast.success('Lock cleared', {
+        description: `${user.email} can sign in again. The account's Activity shows it.`,
+      });
+      void qc.invalidateQueries({ queryKey: queryKeys.adminUsers() });
+    },
+    onError: (err) => toast.error("Couldn't clear the lock", { description: describeError(err) }),
+  });
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      icon={LockOpen}
+      loading={clear.isPending}
+      onClick={() => clear.mutate(user.id)}
+      aria-label={`Clear sign-in lock of ${user.email}`}
+    >
+      Clear lock
+    </Button>
+  );
 }
 
 function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => void }) {
@@ -303,7 +336,8 @@ export function UsersCard() {
                       </p>
                     ) : null}
                   </div>
-                  <div className="lg:text-right">
+                  <div className="flex flex-wrap gap-2 lg:justify-end">
+                    {locked ? <ClearLockButton user={u} /> : null}
                     <Button
                       variant="outline"
                       size="sm"

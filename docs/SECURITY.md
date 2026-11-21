@@ -290,7 +290,7 @@ log shipper that expires entries ([DEPLOYMENT.md](DEPLOYMENT.md), Operations).
 | Control | Implementation |
 |---|---|
 | Password | Never sent; Argon2id in a Web Worker, so the UI stays responsive. Minimum 10 characters and zxcvbn score 2 or more for account and drop passwords |
-| Account lockout | 10 consecutive failed logins (wrong authKey or wrong TOTP or backup code) lock the account for 15 minutes; the error stays generic |
+| Account lockout | 10 consecutive failed logins (wrong authKey or wrong TOTP or backup code) lock the account for 15 minutes; the error stays generic. An admin can clear the lock in the console (`POST /api/admin/users/:id/clear-lock`, audited on the account and on the admin); see [section 7](#7-accepted-open-points) for the trade-off |
 | Login cost | Each login, register, password change, recovery and re-authentication runs one server-side Argon2id. At most 2 run at once per API process and 32 wait (`ARGON2_MAX_CONCURRENT` / `ARGON2_MAX_QUEUE`). Beyond that the API answers 429 with `Retry-After: 1`, the same for known and unknown emails. Such a refusal counts as no attempt: no failed login and no per-client rate-limit hit, so an honest user who retries during a flood is not locked out afterwards. The API image sets `UV_THREADPOOL_SIZE=8`, so a login flood never takes the libuv threads that file I/O uses. Failed logins are also limited to 30 per 15 minutes per client (IPv4 address or IPv6 /48), and the bundled nginx allows 2 requests per second per client (burst 40) on the credential routes |
 | Re-authentication | Every sensitive signed-in action needs the current password (as the derived authKey), plus a TOTP or backup code when 2FA is on: password change, recovery-key rotation, turning 2FA on or off, regenerating backup codes (TOTP code only), signing one session or all other sessions out, and account deletion. A stolen access token alone can do none of them. The budget is 10 attempts per 15 minutes per session, so a stolen session cannot use up the owner's budget and stop the owner from signing it out. Wrong proofs answer 403; the SPA checks the password locally first |
 | Two-factor | TOTP (SHA-1, 6 digits, 30 s, plus or minus one step) with replay protection (the last used step is stored), secrets AES-256-GCM-encrypted at rest; 10 single-use backup codes stored as SHA-256 hashes. Turning TOTP on needs the password plus a code from the new authenticator, and it signs out every other session, because those were opened with the password alone. Admins cannot turn it off |
@@ -339,6 +339,11 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
   refuses an ambiguous resume.
 - **Per-drop unlock budget (C-01).** An attacker who uses up the per-drop failure budget also blocks recipients
   until the window ends.
+- **Account lockout as a denial of service (server-2).** The lock is account-wide, so anyone who knows an email
+  address can keep its owner from signing in on a new device by failing 10 logins every 15 minutes (the login
+  limiter allows exactly that from one client). Sessions already signed in keep working: refresh and vault unlock do
+  not check the lock. This trades availability for brute-force resistance; the owner's way back in is an admin, who
+  can clear the lock in the console (audited). Per-device lock state (OWASP device cookies) is not built yet.
 - **Delayed deletion of expired drops (C-06).** Blobs of an expired drop are deleted once no download grant is
   live, at most about 24 hours after expiry.
 - **Per-process caps (C-15, C-09).** The API's in-flight upload and download caps count per API process; several

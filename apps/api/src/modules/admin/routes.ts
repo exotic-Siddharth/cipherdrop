@@ -19,7 +19,15 @@ import {
 import type { AppContext } from '../../context';
 import { authUser } from '../../middleware/auth';
 import { createRouter, type AppRouter } from '../../lib/router';
-import { getStats, listReports, listUsers, patchUser, resolveReport, reviewGrant } from './service';
+import {
+  clearUserLock,
+  getStats,
+  listReports,
+  listUsers,
+  patchUser,
+  resolveReport,
+  reviewGrant,
+} from './service';
 
 export function adminRoutes(ctx: AppContext): AppRouter {
   const r = createRouter('/api/admin');
@@ -115,6 +123,25 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     },
     async (req, res) => {
       res.json({ user: await patchUser(ctx, req.validatedParams.id, req.body, authUser(req)) });
+    },
+  );
+  r.route(
+    {
+      method: 'post',
+      path: '/users/:id/clear-lock',
+      summary: 'Clear the sign-in lockout of an account (audited on the account and on the admin)',
+      tags,
+      auth,
+      request: { params: UserIdParamsSchema },
+      responses: {
+        200: { description: 'Updated user', schema: AdminUserResponseSchema },
+        404: { description: 'Unknown user' },
+      },
+    },
+    async (req, res) => {
+      res.json({
+        user: await clearUserLock(ctx, req.validatedParams.id, authUser(req), req),
+      });
     },
   );
 

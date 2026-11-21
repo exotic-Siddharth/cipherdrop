@@ -165,6 +165,11 @@ function mockApi(
     if (method === 'POST' && url.pathname.startsWith('/api/admin/reports/')) {
       return new Response(null, { status: 204 });
     }
+    if (method === 'POST' && url.pathname.endsWith('/clear-lock')) {
+      const id = decodeURIComponent(url.pathname.split('/').at(-2) ?? '');
+      const user = (overrides.userItems ?? users()).find((u) => u.id === id)!;
+      return json({ user: { ...user, lockedUntil: null } });
+    }
     if (method === 'PATCH' && url.pathname.startsWith('/api/admin/users/')) {
       const id = decodeURIComponent(url.pathname.split('/').pop() ?? '');
       const user = users().find((u) => u.id === id)!;
@@ -444,6 +449,28 @@ describe('AdminPage users', () => {
     expect(await within(dialog).findByText(message)).toBeVisible();
     expect(input).toHaveAttribute('aria-invalid', 'true');
     expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+  });
+
+  it('clears the sign-in lock of a locked-out account (server-2)', async () => {
+    const userItems = users().map((u) =>
+      u.email === 'bob@example.com' ? { ...u, lockedUntil: iso(10 * 60_000) } : u,
+    );
+    const calls = mockApi({ userItems });
+    renderAdmin();
+    expect(await screen.findByText('Locked out')).toBeVisible();
+    // Only the locked account offers it.
+    expect(screen.getAllByRole('button', { name: /^Clear sign-in lock of / })).toHaveLength(1);
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Clear sign-in lock of bob@example.com' }),
+    );
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/admin/users/ckuser000000000000000002/clear-lock',
+        }),
+      ),
+    );
   });
 
   it('saves a valid quota in bytes and a role change', async () => {

@@ -616,8 +616,8 @@ setup. The bundled compose file runs one API instance.
   `persist-credentials: false`; installs run `npm ci --ignore-scripts`, then `npm run db:generate -w @cipherdrop/api`,
   which generates the Prisma client and fetches the Prisma engines that the skipped install scripts would have fetched.
   CI ran on GitHub for the first time on 2026-11-20 (pull request #1) and passed every job it then had. The jobs added
-  on 2026-11-21 (`e2e-cross`, `prod-stack`, `secrets`, zizmor in `workflows`, and `codeql.yml`) had not run on GitHub
-  as of 2026-11-21. If branch protection requires the old `production images build` check, replace it with
+  on 2026-11-21 (`e2e-cross`, `prod-stack`, `secrets`, zizmor in `workflows`, and `codeql.yml`) passed on their first
+  GitHub run the same day (commit ee40e84). If branch protection requires the old `production images build` check, replace it with
   `production stack (build, boot, smoke, scan)`.
 - Not covered by CI: the `minio` (S3) and `tls` profiles of the production stack, any memory or load ceiling (the
   `mem_limit` values above are sized by reasoning and smoke-test peaks, not by a load test), and image publication:

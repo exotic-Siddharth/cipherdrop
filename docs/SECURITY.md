@@ -421,7 +421,8 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
   GitHub.
 - **Trusted Types are report-only.** The browser console is the only reporter: violations in production reach no
   endpoint, by design ([section 2.5](#25-cross-site-scripting)). The leak guard's handling of Firefox and WebKit
-  was written from those engines' source and has not run in them here; the CI job that runs them had not yet run.
+  was written from those engines' source; the cross-engine CI job runs it in Firefox, WebKit and mobile WebKit and
+  passed on GitHub on 2026-11-21.
 - **In-app browsers that ignore `<a download>`** were not tested; the `application/octet-stream` rule is covered by
   unit tests and a Chromium e2e test that records the type of every object-URL Blob.
 - **nginx's error log.** It keeps nginx's fixed format, with the full client address and request line of the

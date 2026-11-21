@@ -91,7 +91,7 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   that builds the images from the Dockerfiles, boots the stack, runs the smoke test and scans both images with Trivy
   (CycloneDX SBOMs as artifacts), a gitleaks scan of the full history, zizmor, CodeQL (`codeql.yml`), a migration
   drift check (`npm run db:check`), ESLint security bans with their own test (`npm run test:lint`), and a check that
-  CI's images equal the production pins. As of 2026-11-21 these jobs had not run on GitHub.
+  CI's images equal the production pins. All of them passed on their first GitHub run (2026-11-21, commit ee40e84).
 - Production smoke tests for security.txt, Swagger UI, the access log and the credential-route rate limit (14 in
   all).
 - Documentation: the sender-identity and hosting-abuse sections of the threat model, a post-quantum statement, the

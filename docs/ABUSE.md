@@ -11,7 +11,7 @@ the operator commands.
   the reporter ticks the box. It lands in the admin console's report queue.
 - **Notices from outside** (an email to the abuse contact, a takedown notice). They need no report: an admin takes
   the drop down by link or id in the console's "Take a drop down" card, or the operator runs
-  `node dist/cli.js drop:disable <dropId> --reason "<notice reference>"`. Only the part of a link before `#` is
+  `node apps/api/dist/cli.js drop:disable <dropId> --reason "<notice reference>"`. Only the part of a link before `#` is
   used; the key after it is cut off before anything is sent.
 
 ## Triage
@@ -47,4 +47,4 @@ attached to a still-open report.
 
 Every admin and operator action (role and quota edits, suspensions, takedowns, dismissals, review grants, session
 revocations) is one audit event naming the acting admin, or "operator" for the command line. The console's Audit
-card and `node dist/cli.js audit:tail` show them. They are kept for a year, other audit events for 90 days.
+card and `node apps/api/dist/cli.js audit:tail` show them. They are kept for a year, other audit events for 90 days.

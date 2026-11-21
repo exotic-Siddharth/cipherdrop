@@ -5,7 +5,12 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
-import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
+import {
+  authHeader,
+  createAdminRecord,
+  createUserRecord,
+  TEST_ACCOUNT,
+} from '../../../test/factories';
 import { bearer, loginViaApi, newSession, registerViaApi } from '../auth/testkit';
 import { chunkBlobFiles, createReadyDrop, testClock } from '../drops/test-utils';
 
@@ -126,12 +131,30 @@ describe('moderation', () => {
         .set(as(admin))
         .send({ storageQuotaBytes: 1 });
       await t.prisma.user.delete({ where: { id: user.id } });
-      await t.prisma.user.delete({ where: { id: admin.id } });
+      // The admin deletes their own account through the API (2FA off here only so the proof is the authKey).
+      await t.prisma.user.update({ where: { id: admin.id }, data: { totpEnabledAt: null } });
+      const del = await request(t.app)
+        .delete('/api/me')
+        .set(as(admin))
+        .send({ authKey: TEST_ACCOUNT.authKey });
+      expect(del.status).toBe(204);
+      expect(await t.prisma.user.count({ where: { id: admin.id } })).toBe(0);
       const ev = await t.prisma.auditEvent.findFirstOrThrow({
         where: { action: 'ADMIN_USER_UPDATED' },
       });
       expect(ev.actorId).toBeNull();
       expect(ev.metadata).toMatchObject({ targetUserId: user.id });
+
+      // Who acted survives: another admin still sees it in the audit log.
+      const other = await createAdminRecord(t.prisma);
+      const res = await request(t.app).get('/api/admin/audit').set(as(other));
+      const listed = res.body.items.find(
+        (e: { action: string }) => e.action === 'ADMIN_USER_UPDATED',
+      );
+      expect(listed).toMatchObject({
+        actor: { id: admin.id, email: admin.email },
+        subject: { id: user.id, email: null },
+      });
     });
 
     it('is admin only', async () => {

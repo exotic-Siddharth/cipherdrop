@@ -128,7 +128,9 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   without blobs or key, instead of cascading its reports away.
 - Opens and failed unlocks of a drop without an owner no longer store the IP prefix or the browser.
 - The audit log is append-only for the runtime role `cipherdrop_app` (no UPDATE or DELETE on `AuditEvent`);
-  retention runs through the owner's `prune_audit_events()` (migration `20261122100100_audit_append_only`).
+  retention runs through the owner's `prune_audit_events()` (migration `20261122100100_audit_append_only`). Its
+  foreign keys are `ON UPDATE RESTRICT` (migration `20261122100200_audit_fk_restrict`), and an admin action keeps the
+  acting admin's id and email in its metadata, so an admin who deletes their account is still named.
 - `ADMIN_REVIEW_GRANT` is recorded with the admin as the actor and no longer appears in the admin's own Activity.
 - `AdminUser` gains `suspendedAt` and `suspendedReason`; `PATCH /admin/users/:id` takes `suspended` and
   `suspendedReason`.

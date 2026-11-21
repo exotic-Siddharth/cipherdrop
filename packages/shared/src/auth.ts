@@ -99,6 +99,12 @@ export const VaultSchema = z.object({
   kdf: KdfParamsSchema,
 });
 export type Vault = z.infer<typeof VaultSchema>;
+/**
+ * GET /auth/vault/recovery (critic-5): the account key wrapped by the recovery key, so "Test recovery key" can check a
+ * typed key locally (an unwrap that succeeds proves it), changing nothing. /recovery/start returns the same value.
+ */
+export const RecoveryVaultSchema = z.object({ wrappedAccountKeyRecovery: WrappedKeySchema });
+export type RecoveryVault = z.infer<typeof RecoveryVaultSchema>;
 
 /**
  * Re-authentication for sensitive signed-in actions (review server-3): the current authKey, plus a TOTP or backup

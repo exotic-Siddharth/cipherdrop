@@ -142,6 +142,7 @@ Paths are relative to `/api`. Request and response fields are in the OpenAPI doc
 | `POST /auth/refresh` | cookie | rotate the refresh cookie, new access token; a reused token revokes the session, except a replay within 30 s of its rotation while the successor is unused (lost response), which replaces the successor |
 | `POST /auth/logout` | cookie | revoke the current session |
 | `GET /auth/vault` | bearer | wrapped account key and KDF params, for unlocking the vault in the browser |
+| `GET /auth/vault/recovery` | bearer | `{wrappedAccountKeyRecovery}`, for the local "Test recovery key" check; changes nothing |
 | `POST /auth/password` | bearer | change password: the current authKey, a `code` when 2FA is on, the new authKey and the re-wrapped account key; other sessions are revoked |
 | `POST /auth/recovery/start`, `/complete` | none | recovery with the recovery key; complete rotates the recovery key and revokes every session |
 | `POST /auth/recovery/rotate` | bearer | replace the recovery key while signed in (`{authKey, code?}` plus the new recovery wrap and hash) |

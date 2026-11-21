@@ -364,6 +364,21 @@ describe('GET /auth/vault', () => {
   });
 });
 
+describe('GET /auth/vault/recovery (critic-5)', () => {
+  it('returns the recovery-wrapped account key for a local check, and changes nothing', async () => {
+    const u = await registerViaApi(t.app);
+    const before = await t.prisma.user.findUniqueOrThrow({ where: { id: u.user.id } });
+    const res = await request(t.app)
+      .get('/api/auth/vault/recovery')
+      .set('Authorization', bearer(u.accessToken));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ wrappedAccountKeyRecovery: u.bundle.wrappedAccountKeyRecovery });
+    const after = await t.prisma.user.findUniqueOrThrow({ where: { id: u.user.id } });
+    expect(after).toEqual(before);
+    expect((await request(t.app).get('/api/auth/vault/recovery')).status).toBe(401);
+  });
+});
+
 describe('POST /auth/password', () => {
   it('succeeds with the correct currentAuthKey; revokes other sessions and denylists their sid', async () => {
     const u = await registerViaApi(t.app);

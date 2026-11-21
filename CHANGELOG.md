@@ -78,6 +78,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 
 ### Added
 
+- **Settings**, **Security**, **Test recovery key**: checks a typed recovery key in the browser and changes
+  nothing (`GET /auth/vault/recovery` returns only the recovery-wrapped account key).
 - Admin console: Clear lock for a locked-out account (`POST /api/admin/users/:id/clear-lock`), audited as
   `ACCOUNT_LOCK_CLEARED` on the account and on the admin. SECURITY.md section 7 records the lockout trade-off.
 - `/.well-known/security.txt` (RFC 9116), generated at build time from `SECURITY_TXT_CONTACT` and

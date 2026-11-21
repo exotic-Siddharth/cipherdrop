@@ -5,6 +5,7 @@
 import type {
   ErrorCode,
   FeatureDisabledDetails,
+  ForbiddenReason,
   GoneReason,
   SwitchableFeature,
   UploadBudgetDetails,
@@ -16,13 +17,18 @@ export class AppError extends Error {
   readonly details?: unknown;
   /** Sets the Retry-After header (seconds) on 429/503 responses. */
   readonly retryAfterSec?: number;
+  /**
+   * A 429 because the server is at capacity, not because this client went over a limit: the request was refused
+   * before anything was checked, so limiters created with `refundServerBusy` do not count it (lib/rateLimit.ts).
+   */
+  readonly serverBusy: boolean;
 
   constructor(
     status: number,
     code: ErrorCode,
     message: string,
     details?: unknown,
-    options: { retryAfterSec?: number; cause?: unknown } = {},
+    options: { retryAfterSec?: number; cause?: unknown; serverBusy?: boolean } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'AppError';
@@ -30,6 +36,7 @@ export class AppError extends Error {
     this.code = code;
     this.details = details;
     this.retryAfterSec = options.retryAfterSec;
+    this.serverBusy = options.serverBusy ?? false;
   }
 }
 
@@ -51,6 +58,14 @@ export const forbidden = (message = 'Forbidden') => new AppError(403, 'FORBIDDEN
 /** 403 FEATURE_DISABLED: an operator switch (ALLOW_ANONYMOUS_UPLOADS, ALLOW_REGISTRATION) is off. */
 export const featureDisabled = (feature: SwitchableFeature, message: string) =>
   new AppError(403, 'FEATURE_DISABLED', message, { feature } satisfies FeatureDisabledDetails);
+
+/**
+ * 403 FORBIDDEN with `details.reason` MFA_REQUIRED: an admin without two-step verification on an admin route.
+ * Admin routes can reveal reporter-supplied decryption keys, so the role alone is not enough (review server-3).
+ */
+export const mfaRequired = (
+  message = 'Admin access needs two-step verification. Turn it on in Settings, Security, then try again.',
+) => new AppError(403, 'FORBIDDEN', message, { reason: 'MFA_REQUIRED' satisfies ForbiddenReason });
 
 export const notFound = (message = 'Not found') => new AppError(404, 'NOT_FOUND', message);
 
@@ -104,6 +119,16 @@ export const storageFull = () =>
     'STORAGE_FULL',
     'This server is not accepting new uploads right now because its storage is full. Try again later.',
   );
+
+/**
+ * 429 RATE_LIMITED for a full server-side queue (ctx.argon2): the same answer as rateLimited for the client, but
+ * marked serverBusy so that per-client limiters with `refundServerBusy` take the request back.
+ */
+export const serverBusy = (retryAfterSec: number) =>
+  new AppError(429, 'RATE_LIMITED', 'Too many requests, please try again later', undefined, {
+    retryAfterSec,
+    serverBusy: true,
+  });
 
 export const internal = (message = 'Internal server error', cause?: unknown) =>
   new AppError(500, 'INTERNAL', message, undefined, { cause });

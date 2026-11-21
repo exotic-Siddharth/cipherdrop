@@ -472,3 +472,24 @@ test('the SPA bundle carries no demo credentials', async ({ request }) => {
   const js = await (await request.get(asset)).text();
   expect(js).not.toMatch(/demo@cipherdrop\.local|demo-cipherdrop/);
 });
+
+// Last on purpose: it spends this client's nginx budget for the credential routes (it refills at 2 per second).
+test('nginx rate-limits the credential routes per client; other API routes are not affected', async ({
+  request,
+}) => {
+  const prelogins = await Promise.all(
+    Array.from({ length: 60 }, () =>
+      request.post('/api/auth/prelogin', { data: { email: uniqueEmail('rate') } }),
+    ),
+  );
+  const passed = prelogins.filter((r) => r.status() === 200);
+  const refused = prelogins.filter((r) => r.status() === 429);
+  expect(passed.length + refused.length).toBe(60);
+  // burst=40 answered at once, plus what the rate refills while the requests arrive.
+  expect(passed.length).toBeGreaterThanOrEqual(40);
+  expect(refused.length).toBeGreaterThan(0);
+  // nginx's own page: the requests never reached the API (whose 429 is JSON).
+  expect(refused[0]!.headers()['content-type']).toMatch(/text\/html/);
+  // The same client is not limited elsewhere in /api.
+  expect((await request.get('/api/does-not-exist')).status()).toBe(404);
+});

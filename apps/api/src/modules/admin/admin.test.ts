@@ -1,11 +1,14 @@
 /**
  * /api/admin (spec section 10 "Admin", R13): stats, reports, resolve, review grant, users, RBAC.
  */
+import type { Prisma } from '@prisma/client';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
 import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
+import type { AppContext } from '../../context';
+import { bearer, enableTotpViaApi, newSession, registerViaApi } from '../auth/testkit';
 import {
   chunkBlobFiles,
   createBody,
@@ -18,6 +21,7 @@ import {
   testFile,
   token32,
 } from '../drops/test-utils';
+import { patchUser } from './service';
 
 const T0 = new Date('2026-11-08T15:30:00.000Z');
 const DAY = 24 * HOUR;
@@ -76,12 +80,51 @@ describe('admin API', () => {
         const res = await request(t.app)[method](path(ids)).set(as(user)).send(body);
         expect(res.status, `${method} ${path(ids)}`).toBe(403);
         expect(res.body.error.code).toBe('FORBIDDEN');
+        // A regular user learns nothing about what admins need.
+        expect(res.body.error.details).toBeUndefined();
       }
       // Nothing changed.
       expect((await t.prisma.report.findUniqueOrThrow({ where: { id: ids.report } })).status).toBe(
         'OPEN',
       );
       expect(await t.prisma.downloadGrant.count()).toBe(0);
+    });
+
+    it('refuses an admin without two-step verification on every admin route (403 MFA_REQUIRED)', async () => {
+      const admin = await createAdminRecord(t.prisma, { totpEnabledAt: null });
+      const user = await createUserRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      const ids = { drop: drop.dropId, report: await report(drop.dropId), user: user.id };
+      for (const [method, path, body] of routes) {
+        const res = await request(t.app)[method](path(ids)).set(as(admin)).send(body);
+        expect(res.status, `${method} ${path(ids)}`).toBe(403);
+        expect(res.body.error).toEqual({
+          code: 'FORBIDDEN',
+          message: expect.stringMatching(/two-step verification/),
+          details: { reason: 'MFA_REQUIRED' },
+        });
+      }
+      // Nothing changed: no review grant, the report is still open, the user keeps their quota.
+      expect(await t.prisma.downloadGrant.count()).toBe(0);
+      expect((await t.prisma.report.findUniqueOrThrow({ where: { id: ids.report } })).status).toBe(
+        'OPEN',
+      );
+      expect(
+        (await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).storageQuotaBytes,
+      ).toBe(user.storageQuotaBytes);
+      expect(await t.prisma.auditEvent.count({ where: { action: 'ADMIN_REVIEW_GRANT' } })).toBe(0);
+    });
+
+    it('checks two-step verification in the database on every request (turning it off closes the console)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const header = as(admin);
+      expect((await request(t.app).get('/api/admin/stats').set(header)).status).toBe(200);
+      await t.prisma.user.update({ where: { id: admin.id }, data: { totpEnabledAt: null } });
+      const refused = await request(t.app).get('/api/admin/stats').set(header);
+      expect(refused.status).toBe(403);
+      expect(refused.body.error.details).toEqual({ reason: 'MFA_REQUIRED' });
+      await t.prisma.user.update({ where: { id: admin.id }, data: { totpEnabledAt: T0 } });
+      expect((await request(t.app).get('/api/admin/stats').set(header)).status).toBe(200);
     });
 
     it('re-checks the role in the database (a demoted admin is refused)', async () => {
@@ -470,7 +513,7 @@ describe('admin API', () => {
 
     it('edits the quota and the role', async () => {
       const admin = await createAdminRecord(t.prisma);
-      const user = await createUserRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, { totpEnabledAt: T0 });
       const res = await request(t.app)
         .patch(`/api/admin/users/${user.id}`)
         .set(as(admin))
@@ -481,13 +524,8 @@ describe('admin API', () => {
       expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe(
         'ADMIN',
       );
-      expect(
-        (
-          await request(t.app)
-            .get('/api/admin/stats')
-            .set(as({ id: user.id, role: 'ADMIN' }))
-        ).status,
-      ).toBe(200);
+      const promoted = as({ id: user.id, role: 'ADMIN' });
+      expect((await request(t.app).get('/api/admin/stats').set(promoted)).status).toBe(200);
       // And the quota is enforced on create.
       const over = await request(t.app)
         .post('/api/drops')
@@ -495,6 +533,58 @@ describe('admin API', () => {
         .send(createBody([testFile(2000)], { ownerWrappedKey: fakeWrappedKey() }));
       expect(over.status).toBe(413);
       expect(over.body.error.code).toBe('QUOTA_EXCEEDED');
+    });
+
+    it('promotes only accounts with two-step verification (409 otherwise, nothing changed)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma);
+      const refused = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(as(admin))
+        .send({ storageQuotaBytes: 1000, role: 'ADMIN' });
+      expect(refused.status).toBe(409);
+      expect(refused.body.error).toEqual({
+        code: 'CONFLICT',
+        message: expect.stringMatching(/needs two-step verification before it can be an admin/),
+      });
+      // Not even the quota half of the patch was applied.
+      const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(row.role).toBe('USER');
+      expect(row.storageQuotaBytes).toBe(user.storageQuotaBytes);
+      // Other edits of an account without 2FA still work, and so does a demotion to USER.
+      const quota = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(as(admin))
+        .send({ storageQuotaBytes: 2000, role: 'USER' });
+      expect(quota.status).toBe(200);
+      expect(quota.body.user).toMatchObject({ role: 'USER', storageQuotaBytes: 2000 });
+      // Once its owner turns 2FA on, the same promotion goes through.
+      await t.prisma.user.update({ where: { id: user.id }, data: { totpEnabledAt: T0 } });
+      const promoted = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(as(admin))
+        .send({ role: 'ADMIN' });
+      expect(promoted.status).toBe(200);
+      expect(promoted.body.user).toMatchObject({ role: 'ADMIN', totpEnabled: true });
+    });
+
+    it('the promotion write is conditional: 2FA turned off after the check still refuses it', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma);
+      // The read sees 2FA on (it was turned off right after): only the conditional update stands in the way.
+      const prisma = {
+        user: {
+          findUnique: async () => ({ id: user.id, totpEnabledAt: T0 }),
+          updateMany: (args: Prisma.UserUpdateManyArgs) => t.prisma.user.updateMany(args),
+          findUniqueOrThrow: (args: Prisma.UserFindUniqueOrThrowArgs) =>
+            t.prisma.user.findUniqueOrThrow(args),
+        },
+      };
+      const racing = { ...t.ctx, prisma } as unknown as AppContext;
+      await expect(
+        patchUser(racing, user.id, { role: 'ADMIN' }, { id: admin.id, role: 'ADMIN', sid: 's' }),
+      ).rejects.toMatchObject({ status: 409, code: 'CONFLICT' });
+      expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe('USER');
     });
 
     it('validates the patch, answers 404 for unknown users and refuses self-demotion', async () => {
@@ -528,5 +618,45 @@ describe('admin API', () => {
         'ADMIN',
       );
     });
+  });
+});
+
+/**
+ * The admin 2FA gate is per account, so it must not let through sessions opened before the second factor existed
+ * (review of server-3). Real clock here: TOTP codes are checked against ctx.now().
+ */
+describe('admin sessions opened before two-step verification was turned on', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('a password-only session from before enrolment cannot reach the admin routes afterwards', async () => {
+    const admin = await registerViaApi(t.app);
+    // An admin without TOTP (the seeded dev admin, or one promoted before admins needed it).
+    await t.prisma.user.update({ where: { id: admin.user.id }, data: { role: 'ADMIN' } });
+    const attacker = await newSession(t.app, admin); // the password alone, while no second factor existed
+    const owner = await newSession(t.app, admin);
+    await enableTotpViaApi(t.app, { accessToken: owner.accessToken, authKey: admin.authKey });
+
+    const reports = await request(t.app)
+      .get('/api/admin/reports?status=OPEN')
+      .set('Authorization', bearer(attacker.accessToken));
+    expect(reports.status).toBe(401);
+    expect(
+      (await request(t.app).post('/api/auth/refresh').set('Cookie', attacker.cookie)).status,
+    ).toBe(401);
+    // The owner, who passed the second factor on this session, opens the console.
+    expect(
+      (
+        await request(t.app)
+          .get('/api/admin/reports?status=OPEN')
+          .set('Authorization', bearer(owner.accessToken))
+      ).status,
+    ).toBe(200);
   });
 });

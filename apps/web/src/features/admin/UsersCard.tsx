@@ -130,6 +130,12 @@ function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => voi
                 : undefined
           }
         />
+        {roleChanged && role === 'ADMIN' && !user.totpEnabled ? (
+          <Alert tone="warning" live="off">
+            This account has no two-step verification, so it cannot be an admin yet. Ask its owner
+            to turn it on in Settings, Security, then try again.
+          </Alert>
+        ) : null}
         <Input
           label="Storage quota"
           inputMode="decimal"

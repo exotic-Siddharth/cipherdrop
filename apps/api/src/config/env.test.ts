@@ -3,8 +3,11 @@
  * instead of starting with it silently. Development and test keep their defaults.
  */
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseEnv } from './env';
+import { apiRoot } from './paths';
 
 const MiB = 1024 * 1024;
 
@@ -222,5 +225,60 @@ describe('parseEnv outside production', () => {
     expect(() => parseEnv({ ...dev, NODE_ENV: 'development', API_DOCS_UI: 'maybe' })).toThrow(
       /API_DOCS_UI/,
     );
+  });
+});
+
+describe('Argon2id limiter settings (critic-1)', () => {
+  const dev = {
+    JWT_ACCESS_SECRET: 'dev-only-jwt-access-secret-0123456789abcdef',
+    PRELOGIN_SECRET: 'dev-only-prelogin-hmac-secret-0123456789abcdef',
+    TOTP_ENC_KEY: Buffer.alloc(32, 7).toString('base64'),
+  };
+
+  it('defaults: 2 concurrent hashes, 32 waiting, below the libuv default pool of 4', () => {
+    expect(parseEnv(dev)).toMatchObject({
+      ARGON2_MAX_CONCURRENT: 2,
+      ARGON2_MAX_QUEUE: 32,
+      UV_THREADPOOL_SIZE: 4,
+    });
+    expect(parseEnv(prod())).toMatchObject({ ARGON2_MAX_CONCURRENT: 2, UV_THREADPOOL_SIZE: 4 });
+  });
+
+  it('refuses a cap that could take every libuv thread from file I/O, in every environment', () => {
+    expect(() => parseEnv({ ...dev, ARGON2_MAX_CONCURRENT: '4' })).toThrow(/ARGON2_MAX_CONCURRENT/);
+    expect(() =>
+      parseEnv({ ...prod(), ARGON2_MAX_CONCURRENT: '8', UV_THREADPOOL_SIZE: '8' }),
+    ).toThrow(/ARGON2_MAX_CONCURRENT/);
+    expect(
+      parseEnv({ ...prod(), ARGON2_MAX_CONCURRENT: '4', UV_THREADPOOL_SIZE: '8' }),
+    ).toMatchObject({ ARGON2_MAX_CONCURRENT: 4, UV_THREADPOOL_SIZE: 8 });
+  });
+
+  it('accepts the API image setting (UV_THREADPOOL_SIZE=8 in apps/api/Dockerfile)', () => {
+    const dockerfile = readFileSync(path.join(apiRoot, 'Dockerfile'), 'utf8');
+    const size = /UV_THREADPOOL_SIZE=(\d+)/.exec(dockerfile)?.[1];
+    expect(size).toBe('8');
+    expect(parseEnv({ ...prod(), UV_THREADPOOL_SIZE: size }).UV_THREADPOOL_SIZE).toBe(8);
+  });
+});
+
+describe('session lifetime settings (server-3)', () => {
+  it('defaults to an absolute lifetime of 30 days, the same as the idle limit', () => {
+    expect(parseEnv(prod())).toMatchObject({
+      REFRESH_TOKEN_TTL_DAYS: 30,
+      SESSION_MAX_LIFETIME_DAYS: 30,
+    });
+  });
+
+  it('refuses an absolute lifetime shorter than the idle one, in every environment', () => {
+    expect(() => parseEnv({ ...prod(), SESSION_MAX_LIFETIME_DAYS: '7' })).toThrow(
+      /SESSION_MAX_LIFETIME_DAYS/,
+    );
+    expect(() =>
+      parseEnv({ ...prod(), NODE_ENV: 'development', REFRESH_TOKEN_TTL_DAYS: '60' }),
+    ).toThrow(/SESSION_MAX_LIFETIME_DAYS/);
+    expect(
+      parseEnv({ ...prod(), REFRESH_TOKEN_TTL_DAYS: '7', SESSION_MAX_LIFETIME_DAYS: '90' }),
+    ).toMatchObject({ REFRESH_TOKEN_TTL_DAYS: 7, SESSION_MAX_LIFETIME_DAYS: 90 });
   });
 });

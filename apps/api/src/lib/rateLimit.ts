@@ -9,7 +9,7 @@
  * createApp({ rateLimits: boolean | { [name]: boolean } }). A disabled limiter is a pass-through.
  * Exceeding a limit answers 429 RATE_LIMITED with Retry-After.
  */
-import type { Request, RequestHandler } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 import { rateLimit as expressRateLimit } from 'express-rate-limit';
 import type { Redis } from 'ioredis';
 import { RedisStore, type RedisReply } from 'rate-limit-redis';
@@ -26,6 +26,21 @@ export const RATE_LIMIT_RULES = {
   /** prelogin and login: 10 per 15 min per IP+email. */
   prelogin: { windowMs: 15 * MIN, limit: 10 },
   login: { windowMs: 15 * MIN, limit: 10 },
+  /**
+   * Not in the spec table (critic-1): FAILED logins per client, keyed by ipShareKey (an IPv4 address or an IPv6
+   * /48), whatever the email. The per IP+email bucket above gives one client a fresh budget for every email it
+   * invents, and an IPv6 /64 key gives a free /48 65,536 of them; this one caps what a single client can make the
+   * server hash. 30 per 15 min is three users' worth of the per-email budget behind one NAT; successful logins
+   * are refunded (skipSuccessfulRequests), so an office signing in at 9:00 never spends it. Argon2id work across
+   * many clients is bounded by ctx.argon2 (lib/argon2Limiter.ts) instead.
+   */
+  loginIp: { windowMs: 15 * MIN, limit: 30 },
+  /**
+   * Not in the spec table: re-authentication on signed-in routes (password change, recovery-key rotation, TOTP
+   * enable/disable, backup codes, session revocation, DELETE /me), 10 per 15 min per SESSION, successes included
+   * (modules/auth/service.ts reauthLimit has the key and the reasons).
+   */
+  reauth: { windowMs: 15 * MIN, limit: 10 },
   /** Not in the spec table: /auth/login/mfa code attempts, 10 per 15 min per IP. */
   loginMfa: { windowMs: 15 * MIN, limit: 10 },
   register: { windowMs: HOUR, limit: 5 },
@@ -69,7 +84,24 @@ export interface RateLimitOptions {
    * bucket. A 429 is itself a failure, so a full bucket stays full.
    */
   skipSuccessfulRequests?: boolean;
+  /**
+   * Take back a request that the server refused as busy (AppError.serverBusy: the ctx.argon2 queue was full), on
+   * the per-client limiters in front of server-side Argon2id. Nothing was checked, so it is no attempt; counted, an
+   * honest user who retries during a login flood would spend their own budget and stay locked out for the rest of
+   * the window after the flood ends. The limiter's own 429 is never refunded.
+   */
+  refundServerBusy?: boolean;
 }
+
+/** Set by the error middleware on a serverBusy response, read when it finishes. */
+const SERVER_BUSY = Symbol('serverBusy');
+
+export function markServerBusy(res: Response): void {
+  (res.locals as Record<symbol, unknown>)[SERVER_BUSY] = true;
+}
+
+const wasServerBusy = (res: Response) =>
+  (res.locals as Record<symbol, unknown>)[SERVER_BUSY] === true;
 
 export type RateLimitFactory = (options: RateLimitOptions) => RequestHandler;
 
@@ -133,6 +165,8 @@ export function createRateLimitFactory(deps: RateLimitDeps): RateLimitFactory {
     if (windowMs === undefined || limit === undefined) {
       throw new Error(`rateLimit("${options.name}"): unknown limiter, pass windowMs and limit`);
     }
+    const skipSuccess = options.skipSuccessfulRequests ?? false;
+    const refundBusy = options.refundServerBusy ?? false;
     return expressRateLimit({
       windowMs,
       limit,
@@ -140,7 +174,11 @@ export function createRateLimitFactory(deps: RateLimitDeps): RateLimitFactory {
       legacyHeaders: false,
       keyGenerator: options.key,
       skip: options.skip,
-      skipSuccessfulRequests: options.skipSuccessfulRequests ?? false,
+      // express-rate-limit takes a finished request back out of its bucket when requestWasSuccessful() is true
+      // and skipSuccessfulRequests is on; both refunds go through that one hook.
+      skipSuccessfulRequests: skipSuccess || refundBusy,
+      requestWasSuccessful: (_req, res) =>
+        (skipSuccess && res.statusCode < 400) || (refundBusy && wasServerBusy(res)),
       store: new RefundSafeRedisStore(
         {
           prefix: `${deps.keyPrefix}:rl:${options.name}:`,

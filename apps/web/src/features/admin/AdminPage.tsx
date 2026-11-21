@@ -2,10 +2,12 @@ import { AdminStatsSchema } from '@cipherdrop/shared';
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck } from 'lucide-react';
 import { PageHeader } from '../../components/layout/PageHeader';
+import { AdminMfaRequired } from '../../components/RouteGuards';
 import { Card } from '../../components/ui/Card';
 import { ErrorState } from '../../components/ui/EmptyState';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { api } from '../../lib/api';
+import { isMfaRequired } from '../../lib/errors';
 import { queryKeys } from '../../lib/queryClient';
 import { ReportsCard } from './ReportsCard';
 import { StatsCards } from './StatsCards';
@@ -31,6 +33,10 @@ export function Component() {
     queryKey: queryKeys.adminStats(),
     queryFn: () => api.get('/admin/stats', { schema: AdminStatsSchema }),
   });
+
+  // The session's user said 2FA was on, but the API disagrees (turned off in another tab): show the same notice
+  // as the route guard instead of three error cards.
+  if (stats.isError && isMfaRequired(stats.error)) return <AdminMfaRequired />;
 
   return (
     <>

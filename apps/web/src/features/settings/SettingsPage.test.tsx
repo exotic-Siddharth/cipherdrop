@@ -73,6 +73,7 @@ describe('SettingsPage security tab', () => {
             'otpauth://totp/CipherDrop:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=CipherDrop',
         },
       },
+      'GET /api/auth/vault': { json: vaultJson() },
       'POST /api/auth/mfa/totp/enable': {
         json: { backupCodes: Array.from({ length: 10 }, (_, i) => `abcd${i}-efgh${i}`) },
       },
@@ -86,15 +87,19 @@ describe('SettingsPage security tab', () => {
       await screen.findByRole('img', { name: /QR code for your authenticator app/i }),
     ).toBeVisible();
     expect(screen.getByDisplayValue('JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP')).toBeVisible();
+    // Says up front that turning it on ends the other sessions (the server revokes them).
+    expect(screen.getByText(/Your other devices are then signed out/)).toBeVisible();
 
+    await user.type(screen.getByLabelText('Your password'), PASSWORD);
     await user.type(screen.getByLabelText('6-digit code'), '123456');
     await user.click(screen.getByRole('button', { name: 'Verify and turn on' }));
 
     const list = await screen.findByRole('list', { name: 'Backup codes' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(10);
-    expect(api.calls.find((c) => c.path === '/api/auth/mfa/totp/enable')?.body).toEqual({
-      code: '123456',
-    });
+    // Re-authenticated with the password-derived authKey, never the password itself.
+    const enableBody = api.calls.find((c) => c.path === '/api/auth/mfa/totp/enable')?.body;
+    expect(enableBody).toEqual({ authKey: b64urlEncode(bundle.authKey), code: '123456' });
+    expect(JSON.stringify(enableBody)).not.toContain(PASSWORD);
     // 2FA is now on, but the codes stay on screen until the user confirms they saved them.
     expect(useAuth.getState().user?.totpEnabled).toBe(true);
     const done = screen.getByRole('button', { name: 'Done' });
@@ -103,6 +108,19 @@ describe('SettingsPage security tab', () => {
     await user.click(done);
     expect(screen.queryByRole('list', { name: 'Backup codes' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Regenerate backup codes' })).toBeVisible();
+  });
+
+  it('an admin is told to keep two-step verification on and gets no Turn off button', async () => {
+    signIn({ totpEnabled: true, role: 'ADMIN' });
+    mockApi({});
+    renderRoutes(routes, '/settings');
+    expect(
+      await screen.findByText(/Admins must keep two-step verification on/, undefined, {
+        timeout: 5_000,
+      }),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Regenerate backup codes' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Turn off' })).toBeNull();
   });
 
   it('turns TOTP off with a password-derived proof, not the password', async () => {
@@ -194,6 +212,92 @@ describe('SettingsPage security tab', () => {
     expect(api.calls.filter((c) => c.path === '/api/auth/refresh')).toHaveLength(0);
   });
 
+  it('turning TOTP on checks the password locally first: a wrong one never reaches the server', async () => {
+    const api = mockApi({
+      'POST /api/auth/mfa/totp/setup': {
+        json: {
+          secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP',
+          otpauthUrl: 'otpauth://totp/CipherDrop:ada@example.com?secret=JBSWY3DPEHPK3PXP',
+        },
+      },
+      'GET /api/auth/vault': { json: vaultJson() },
+    });
+    const user = userEvent.setup();
+    renderRoutes(routes, '/settings');
+    await user.click(screen.getByRole('button', { name: 'Set up two-step verification' }));
+    await user.type(await screen.findByLabelText('6-digit code'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Verify and turn on' }));
+    expect(await screen.findByText('Enter your password.')).toBeVisible();
+    await user.type(screen.getByLabelText('Your password'), 'not my password');
+    await user.click(screen.getByRole('button', { name: 'Verify and turn on' }));
+    expect(await screen.findByText('Wrong password.')).toBeVisible();
+    expect(api.calls.some((c) => c.path === '/api/auth/mfa/totp/enable')).toBe(false);
+  });
+
+  it('with 2FA on, a password change needs a code and sends it with the derived values', async () => {
+    signIn({ totpEnabled: true });
+    const api = mockApi({
+      'GET /api/auth/vault': { json: vaultJson() },
+      'POST /api/auth/password': { status: 204 },
+    });
+    const user = userEvent.setup();
+    renderRoutes(routes, '/settings');
+    await user.type(screen.getByLabelText('Current password'), PASSWORD);
+    await user.type(screen.getByLabelText('New password'), 'a brand new passphrase 42');
+    await user.type(screen.getByLabelText('Confirm new password'), 'a brand new passphrase 42');
+    await user.click(screen.getByRole('button', { name: 'Change password' }));
+    expect(await screen.findByText('Enter your 6-digit code or a backup code.')).toBeVisible();
+    expect(api.calls).toHaveLength(0);
+
+    await user.type(screen.getByLabelText('Two-factor or backup code'), 'abcde-12345');
+    await user.click(screen.getByRole('button', { name: 'Change password' }));
+    await waitFor(() => expect(api.calls.some((c) => c.path === '/api/auth/password')).toBe(true));
+    const body = api.calls.find((c) => c.path === '/api/auth/password')?.body as Record<
+      string,
+      unknown
+    >;
+    expect(body.currentAuthKey).toBe(b64urlEncode(bundle.authKey));
+    expect(body.code).toBe('abcde-12345');
+    expect(await screen.findByLabelText('Two-factor or backup code')).toHaveValue('');
+  });
+
+  it('without 2FA the password change shows no code field and sends no code', async () => {
+    const api = mockApi({
+      'GET /api/auth/vault': { json: vaultJson() },
+      'POST /api/auth/password': { status: 204 },
+    });
+    const user = userEvent.setup();
+    renderRoutes(routes, '/settings');
+    expect(screen.queryByLabelText('Two-factor or backup code')).toBeNull();
+    await user.type(screen.getByLabelText('Current password'), PASSWORD);
+    await user.type(screen.getByLabelText('New password'), 'a brand new passphrase 42');
+    await user.type(screen.getByLabelText('Confirm new password'), 'a brand new passphrase 42');
+    await user.click(screen.getByRole('button', { name: 'Change password' }));
+    await waitFor(() => expect(api.calls.some((c) => c.path === '/api/auth/password')).toBe(true));
+    expect(api.calls.find((c) => c.path === '/api/auth/password')?.body).not.toHaveProperty('code');
+  });
+
+  it('regenerating backup codes asks for the password and a TOTP code', async () => {
+    signIn({ totpEnabled: true });
+    const api = mockApi({
+      'GET /api/auth/vault': { json: vaultJson() },
+      'POST /api/auth/mfa/backup-codes': {
+        json: { backupCodes: Array.from({ length: 10 }, (_, i) => `wxyz${i}-qrst${i}`) },
+      },
+      'GET /api/me/audit': { json: { items: [], total: 0, page: 1, pageSize: 20 } },
+    });
+    const user = userEvent.setup();
+    renderRoutes(routes, '/settings');
+    await user.click(screen.getByRole('button', { name: 'Regenerate backup codes' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Your password'), PASSWORD);
+    await user.type(within(dialog).getByLabelText('6-digit code'), '246810');
+    await user.click(within(dialog).getByRole('button', { name: 'Regenerate' }));
+    expect(await screen.findByRole('list', { name: 'Backup codes' })).toBeVisible();
+    const body = api.calls.find((c) => c.path === '/api/auth/mfa/backup-codes')?.body;
+    expect(body).toEqual({ authKey: b64urlEncode(bundle.authKey), code: '246810' });
+  });
+
   it('saves the auto-lock choice', async () => {
     const api = mockApi({
       'PATCH /api/me/settings': { json: { user: { ...TEST_ME, autoLockMinutes: 5 } } },
@@ -222,6 +326,7 @@ describe('SettingsPage sessions tab', () => {
         revoked = true;
         return { status: 204 };
       },
+      'GET /api/auth/vault': { json: vaultJson() },
     });
     const user = userEvent.setup();
     renderRoutes(routes, '/settings?tab=sessions');
@@ -233,9 +338,19 @@ describe('SettingsPage sessions tab', () => {
 
     await user.click(screen.getByRole('button', { name: 'Sign out all others' }));
     const dialog = await screen.findByRole('dialog');
+    // The password is required, and checked locally before anything is sent.
+    await user.click(within(dialog).getByRole('button', { name: 'Sign out all others' }));
+    expect(await within(dialog).findByText('Enter your password.')).toBeVisible();
+    await user.type(within(dialog).getByLabelText('Your password'), 'not my password');
+    await user.click(within(dialog).getByRole('button', { name: 'Sign out all others' }));
+    expect(await within(dialog).findByText('Wrong password.')).toBeVisible();
+    expect(api.calls.some((c) => c.path === '/api/auth/sessions/revoke-others')).toBe(false);
+    await user.clear(within(dialog).getByLabelText('Your password'));
+    await user.type(within(dialog).getByLabelText('Your password'), PASSWORD);
     await user.click(within(dialog).getByRole('button', { name: 'Sign out all others' }));
     await waitFor(() => expect(screen.queryByText('Safari on iPhone')).toBeNull());
-    expect(api.calls.some((c) => c.path === '/api/auth/sessions/revoke-others')).toBe(true);
+    const body = api.calls.find((c) => c.path === '/api/auth/sessions/revoke-others')?.body;
+    expect(body).toEqual({ authKey: b64urlEncode(bundle.authKey) });
   });
 
   it('revokes one session', async () => {
@@ -247,17 +362,23 @@ describe('SettingsPage sessions tab', () => {
         ],
       },
       'DELETE /api/auth/sessions/other_1': { status: 204 },
+      'GET /api/auth/vault': { json: vaultJson() },
     });
+    signIn({ totpEnabled: true });
     const user = userEvent.setup();
     renderRoutes(routes, '/settings?tab=sessions');
     await user.click(await screen.findByRole('button', { name: 'Sign out Safari on iPhone' }));
     const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Your password'), PASSWORD);
+    await user.type(within(dialog).getByLabelText('Two-factor or backup code'), '135790');
     await user.click(within(dialog).getByRole('button', { name: 'Sign out' }));
     await waitFor(() =>
       expect(
         api.calls.some((c) => c.method === 'DELETE' && c.path === '/api/auth/sessions/other_1'),
       ).toBe(true),
     );
+    const del = api.calls.find((c) => c.method === 'DELETE' && c.path.startsWith('/api/auth/s'));
+    expect(del?.body).toEqual({ authKey: b64urlEncode(bundle.authKey), code: '135790' });
   });
 });
 

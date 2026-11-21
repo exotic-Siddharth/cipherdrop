@@ -17,6 +17,7 @@ import {
   validationError,
 } from '../lib/errors';
 import { logger as defaultLogger } from '../lib/logger';
+import { markServerBusy } from '../lib/rateLimit';
 
 export const notFoundHandler: RequestHandler = (_req, _res, next) => {
   next(notFound());
@@ -70,6 +71,8 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
   }
   if (appErr.retryAfterSec !== undefined)
     res.setHeader('Retry-After', String(appErr.retryAfterSec));
+  // Read by the limiters' refund check when the response finishes (lib/rateLimit.ts refundServerBusy).
+  if (appErr.serverBusy) markServerBusy(res);
   res.status(appErr.status).json({
     error: {
       code: appErr.code,

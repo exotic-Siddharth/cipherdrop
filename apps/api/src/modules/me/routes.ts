@@ -23,6 +23,7 @@ import { authUser } from '../../middleware/auth';
 import {
   clearRefreshCookie,
   loadUser,
+  reauthLimit,
   requireAccountProof,
   revokeUserSessions,
   toMe,
@@ -39,12 +40,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
   const r = createRouter('/api/me');
   const tags = ['me'];
   const { prisma } = ctx;
-  const reauthLimit = ctx.rateLimit({
-    name: 'reauth',
-    windowMs: 15 * 60_000,
-    limit: 10,
-    key: (req) => `user|${req.user?.id ?? 'anonymous'}`,
-  });
+  const reauth = reauthLimit(ctx);
 
   r.route(
     {
@@ -93,7 +89,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
         403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       await requireAccountProof(ctx, user, req.body, req, 'account-deletion');

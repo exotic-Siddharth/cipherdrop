@@ -79,7 +79,16 @@ const EnvSchema = z
 
     JWT_ACCESS_SECRET: secret,
     ACCESS_TOKEN_TTL_SEC: int(900, 60, 86_400),
+    /** Idle limit: a refresh token (and its session) expires this long after its last rotation. */
     REFRESH_TOKEN_TTL_DAYS: int(30, 1, 365),
+    /**
+     * Absolute limit (review server-3): a session ends this long after its sign-in however often it is refreshed,
+     * and the user signs in again (password, and the 2FA code when it is on). 30 days follows NIST SP 800-63B's
+     * reauthentication period for AAL1 ("at least once per 30 days ... regardless of user activity"); 2FA is
+     * optional here, so AAL1 is the baseline. With the default idle limit of 30 days, every session is simply 30
+     * days from sign-in. It must be at least REFRESH_TOKEN_TTL_DAYS.
+     */
+    SESSION_MAX_LIFETIME_DAYS: int(30, 1, 365),
     COOKIE_SECURE: bool(false),
     /** 32 bytes, base64: AES-256-GCM key for TOTP secrets at rest. */
     TOTP_ENC_KEY: base64Key32,
@@ -184,6 +193,18 @@ const EnvSchema = z
      * The blobs share the host disk with Postgres, and a full disk takes the database down.
      */
     STORAGE_MIN_FREE_BYTES: int(1_073_741_824, 0),
+    /**
+     * Server-side Argon2id of account auth keys (lib/argon2Limiter.ts, which explains the sizing): hashes running
+     * at once per process, and how many more may wait before a request is refused with 429 + Retry-After.
+     */
+    ARGON2_MAX_CONCURRENT: int(2, 1, 64),
+    ARGON2_MAX_QUEUE: int(32, 0, 10_000),
+    /**
+     * Read by libuv, not by the app: the size of Node's threadpool (default 4), which Argon2id shares with fs,
+     * dns.lookup and async crypto. Parsed here only so that ARGON2_MAX_CONCURRENT can be checked against it; the
+     * API image sets 8 (apps/api/Dockerfile). It takes effect only from the process environment at start-up.
+     */
+    UV_THREADPOOL_SIZE: int(4, 1, 1024),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),
@@ -214,6 +235,22 @@ const EnvSchema = z
         message:
           'must be 0 (off) or at least ANON_MAX_DROP_BYTES rounded up to a whole MiB: raise it ' +
           'together with ANON_MAX_DROP_BYTES',
+      });
+    }
+    if (env.SESSION_MAX_LIFETIME_DAYS < env.REFRESH_TOKEN_TTL_DAYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SESSION_MAX_LIFETIME_DAYS'],
+        message:
+          'must be at least REFRESH_TOKEN_TTL_DAYS (the absolute session lifetime cannot be shorter than the idle one)',
+      });
+    }
+    if (env.ARGON2_MAX_CONCURRENT >= env.UV_THREADPOOL_SIZE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ARGON2_MAX_CONCURRENT'],
+        message:
+          'must be below UV_THREADPOOL_SIZE (default 4), so Argon2id never takes every libuv thread from file I/O',
       });
     }
     if (env.NODE_ENV !== 'production') return;

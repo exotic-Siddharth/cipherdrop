@@ -5,6 +5,7 @@ import { PasswordStrength } from '../../components/PasswordStrength';
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { Card, CardContent, CardHeader } from '../../components/ui/Card';
+import { Input } from '../../components/ui/Input';
 import { PasswordInput } from '../../components/ui/PasswordInput';
 import { ProgressBar } from '../../components/ui/ProgressBar';
 import type { StrengthScore } from '../../lib/passwordStrength';
@@ -13,16 +14,28 @@ import { accountErrorMessage } from '../account/accountErrors';
 import { useAccountActions } from '../account/useAccountActions';
 import { MIN_NEW_PASSWORD_LENGTH, validateNewPassword } from '../auth/passwordRules';
 
-/** Spec 7.5 password change: new salt, the same AK re-wrapped; other sessions are signed out by the server. */
+const MFA_CODE_RE = /^(\d{6}|[0-9A-Za-z]{5}-?[0-9A-Za-z]{5})$/;
+
+/**
+ * Spec 7.5 password change: new salt, the same AK re-wrapped; other sessions are signed out by the server. With
+ * 2FA on it also asks for a TOTP or backup code, like every other sensitive action (the server requires it).
+ */
 export function PasswordCard() {
   const actions = useAccountActions();
   const email = useAuth((s) => s.user?.email);
+  const totpEnabled = useAuth((s) => s.user?.totpEnabled ?? false);
   const strengthId = useId();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [code, setCode] = useState('');
   const [score, setScore] = useState<StrengthScore | null>(null);
-  const [errors, setErrors] = useState<{ current?: string; next?: string; confirm?: string }>({});
+  const [errors, setErrors] = useState<{
+    current?: string;
+    next?: string;
+    confirm?: string;
+    code?: string;
+  }>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -35,16 +48,20 @@ export function PasswordCard() {
     if (problem) nextErrors.next = problem;
     else if (next === current) nextErrors.next = 'Choose a password you have not used here.';
     if (confirm !== next) nextErrors.confirm = 'The two passwords do not match.';
+    if (totpEnabled && !MFA_CODE_RE.test(code.trim())) {
+      nextErrors.code = 'Enter your 6-digit code or a backup code.';
+    }
     setErrors(nextErrors);
     setError(null);
     if (Object.keys(nextErrors).length > 0) return;
 
     setBusy(true);
     try {
-      await actions.changePassword(current, next);
+      await actions.changePassword(current, next, totpEnabled ? code : undefined);
       setCurrent('');
       setNext('');
       setConfirm('');
+      setCode('');
       toast.success('Password changed', {
         description: 'Your other devices were signed out. Your files did not need re-encrypting.',
       });
@@ -107,6 +124,21 @@ export function PasswordCard() {
             error={errors.confirm}
             disabled={busy}
           />
+          {totpEnabled ? (
+            <Input
+              label="Two-factor or backup code"
+              name="code"
+              autoComplete="one-time-code"
+              maxLength={11}
+              mono
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              error={errors.code}
+              hint="Two-step verification is on, so changing the password needs a code too."
+              containerClassName="max-w-56"
+              disabled={busy}
+            />
+          ) : null}
           {busy ? (
             <div aria-live="polite">
               <ProgressBar label="Deriving keys locally…" indeterminate size="sm" />

@@ -68,8 +68,14 @@ COPY deploy/api-entrypoint.sh /usr/local/bin/api-entrypoint.sh
 # Local blob storage lives in /data/blobs (a named volume in docker-compose.prod.yml).
 RUN chmod 0755 /usr/local/bin/api-entrypoint.sh && mkdir -p /data/blobs && chown -R node:node /data
 USER node
+# libuv threadpool (Node's default is 4). Argon2id (@node-rs/argon2) runs on it next to fs (local blob reads and
+# writes), dns.lookup and async crypto. The API runs at most ARGON2_MAX_CONCURRENT (default 2) hashes at once, so
+# 8 threads leave at least 8 - 2 = 6 for that I/O under a login flood, more than the 4 it shared with every hash
+# before. Idle threads cost little (their stacks are reserved, not committed). Raise it together with
+# ARGON2_MAX_CONCURRENT, which must stay below it (config/env.ts refuses otherwise).
 ENV API_PORT=4100 \
-    STORAGE_DIR=/data/blobs
+    STORAGE_DIR=/data/blobs \
+    UV_THREADPOOL_SIZE=8
 EXPOSE 4100
 HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:4100/healthz').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]

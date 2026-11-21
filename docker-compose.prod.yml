@@ -169,9 +169,11 @@ services:
     # heap), an Argon2id hash of 19 MiB per libuv thread, the Prisma query engine and the heap (which Node caps at
     # about half of this limit).
     mem_limit: 1g
-    # Node's threads (main, libuv pool, V8 workers), the query engine's runtime (one thread per CPU) and the
-    # healthcheck's node process every 15 s. [44 MiB, 17]
-    pids_limit: 128
+    # Node's threads (main, libuv pool, V8 workers), the query engine's runtime (one thread per host CPU: no cpus
+    # limit is set) and the healthcheck's node process every 15 s. Measured 14 tasks with 1 CPU and 17 with 4, so about
+    # 13 plus one per CPU, plus 7 while a healthcheck runs. 256 covers hosts up to about 200 CPUs; raise it
+    # beyond that, or the API cannot start its threads. [44 MiB, 17]
+    pids_limit: 256
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
     logging: *logging

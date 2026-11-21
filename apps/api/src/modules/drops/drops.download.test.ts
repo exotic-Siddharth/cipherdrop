@@ -394,6 +394,21 @@ describe('drop download', () => {
       expect(grant.ipPrefix).toBe('2001:db8:abcd::/48');
     });
 
+    it('stores neither the IP prefix nor the browser of opens of a drop without an owner (critic-7)', async () => {
+      const drop = await createReadyDrop(t.app);
+      const res = await openDrop(
+        t.app,
+        drop.dropId,
+        {},
+        { 'X-Forwarded-For': '203.0.113.9', 'User-Agent': 'Mozilla/5.0 Firefox/130.0' },
+      );
+      expect(res.status).toBe(200);
+      const ev = await t.prisma.auditEvent.findFirstOrThrow({
+        where: { dropId: drop.dropId, action: 'DROP_OPENED' },
+      });
+      expect(ev).toMatchObject({ userId: null, ipPrefix: null, userAgent: null });
+    });
+
     it('answers 404 for unknown drops and 410 for expired ones', async () => {
       expect((await openDrop(t.app, id16())).status).toBe(404);
       const drop = await createReadyDrop(t.app, { body: { expiresInHours: 1 } });

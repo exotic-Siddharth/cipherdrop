@@ -24,7 +24,7 @@ function keyOf(link: string): string {
   return key;
 }
 
-test('1. anonymous send of a 5 MB random file, recipient in a new context gets identical bytes', async ({
+test('1. anonymous send of a 5 MB random file, recipient in a new context gets identical bytes @cross', async ({
   page,
   newContext,
   leaks,
@@ -67,7 +67,7 @@ test('1. anonymous send of a 5 MB random file, recipient in a new context gets i
   await expect(recipient.getByText('Integrity verified').first()).toBeVisible();
 });
 
-test('2. password drop: wrong password shows an error, the right one downloads', async ({
+test('2. password drop: wrong password shows an error, the right one downloads @cross', async ({
   page,
   newContext,
   leaks,
@@ -106,7 +106,7 @@ test('2. password drop: wrong password shows an error, the right one downloads',
   expect(saved.filename).toBe('payroll-2026.txt');
 });
 
-test('3. burn after reading: a second visitor sees "All downloads have been used"', async ({
+test('3. burn after reading: a second visitor sees "All downloads have been used" @cross', async ({
   page,
   newContext,
   leaks,
@@ -133,7 +133,7 @@ test('3. burn after reading: a second visitor sees "All downloads have been used
   await expect(second.getByRole('button', { name: 'Decrypt & download' })).toHaveCount(0);
 });
 
-test('4. tamper: one flipped ciphertext byte shows the integrity error and saves nothing', async ({
+test('4. tamper: one flipped ciphertext byte shows the integrity error and saves nothing @cross', async ({
   page,
   newContext,
   leaks,

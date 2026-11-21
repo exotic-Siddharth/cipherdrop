@@ -4,10 +4,12 @@
  * /api proxy limits, how nginx treats slow clients, and one end-to-end encrypted flow with the CSP enforced by a
  * real browser.
  */
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import tls from 'node:tls';
 import { expect, test, type Page } from '@playwright/test';
 import { PRODUCTION_ONLY_HEADERS, SECURITY_HEADERS } from '../securityHeaders';
 import { isCspViolationMessage } from '../e2e/support/fixtures';
@@ -73,6 +75,36 @@ test.describe('nginx', () => {
     expect(res.headers()['cache-control']).toBe('max-age=31536000');
     expect(res.headers()['content-type']).toMatch(/javascript/);
     expect((await request.get('/assets/does-not-exist.js')).status()).toBe(404);
+  });
+
+  test('serves /.well-known/security.txt as UTF-8 plain text with every header; other well-known paths are 404s', async ({
+    request,
+  }) => {
+    const res = await request.get('/.well-known/security.txt');
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type']).toBe('text/plain; charset=utf-8');
+    expect(res.headers()['cache-control']).toBe('no-cache');
+    for (const [name, value] of Object.entries({
+      ...SECURITY_HEADERS,
+      ...PRODUCTION_ONLY_HEADERS,
+    })) {
+      expect(res.headers()[name.toLowerCase()], name).toBe(value);
+    }
+    const text = await res.text();
+    expect(text).toMatch(/^Contact: (?:mailto:|tel:|https:\/\/)\S+$/m);
+    const expires = Date.parse(/^Expires: (\S+)$/m.exec(text)?.[1] ?? '');
+    expect(expires - Date.now()).toBeLessThan(365 * 86_400_000);
+    // Run against a live instance, this is also the reminder to renew: the build date plus 180 days, so a month is
+    // left at the latest five months after a build (an unchanged rebuild keeps the date; renew with --no-cache).
+    expect(
+      expires - Date.now(),
+      'security.txt expires within 30 days: rebuild the web image with `build --no-cache web`',
+    ).toBeGreaterThan(30 * 86_400_000);
+    for (const url of ['/.well-known/', '/.well-known/change-password', '/.well-known/x.txt']) {
+      const other = await request.get(url);
+      expect(other.status(), url).toBe(404);
+      expect(await other.text(), url).not.toContain('<div id="root">');
+    }
   });
 
   test('proxies /api: JSON 404 from the API for unknown routes, headers from both layers', async ({
@@ -355,6 +387,83 @@ test('Swagger UI is not served on the SPA origin; the OpenAPI JSON is', async ({
   const spec = await request.get('/api/openapi.json');
   expect(spec.status()).toBe(200);
   expect((await spec.json()).openapi).toMatch(/^3\./);
+});
+
+/* ---- Access log (ops-6). Needs the docker CLI and the web container's name, for example
+   SMOKE_WEB_CONTAINER=cipherdrop-prod-web-1: the log is read with `docker logs`, stdout only (the access log; nginx's
+   error log goes to stderr). ---- */
+const WEB_CONTAINER = process.env.SMOKE_WEB_CONTAINER;
+
+/** The web container's stdout since `since` (RFC 3339). */
+function accessLog(since: string): string {
+  return execFileSync('docker', ['logs', '--since', since, WEB_CONTAINER as string], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+}
+
+/**
+ * A GET of `target` exactly as given, over plain HTTP or TLS (SMOKE_BASE_URL decides): an HTTP client would drop a
+ * fragment before sending. Resolves with the status, or null when the connection closed without a response.
+ */
+function rawGet(target: string): Promise<number | null> {
+  const port = Number(BASE.port || (BASE.protocol === 'https:' ? 443 : 80));
+  const socket =
+    BASE.protocol === 'https:'
+      ? tls.connect({ host: BASE.hostname, port, servername: BASE.hostname })
+      : net.connect(port, BASE.hostname);
+  let data = '';
+  return new Promise((resolve) => {
+    socket.on('data', (chunk: Buffer) => (data += chunk.toString('latin1')));
+    socket.on('error', () => {});
+    socket.once('close', () => resolve(Number(/^HTTP\/1\.1 (\d{3}) /.exec(data)?.[1]) || null));
+    socket.write(`GET ${target} HTTP/1.1\r\nHost: ${BASE.host}\r\nConnection: close\r\n\r\n`);
+  });
+}
+
+test('the access log keeps the client IP prefix only: no full address, query string, fragment or user agent', async ({
+  playwright,
+}) => {
+  test.skip(!WEB_CONTAINER, 'set SMOKE_WEB_CONTAINER to the web container name to read its log');
+  const marker = randomBytes(8).toString('hex');
+  const since = new Date(Date.now() - 5_000).toISOString();
+  const client = await playwright.request.newContext({
+    baseURL: BASE.origin,
+    userAgent: `smoke-agent-${marker}`,
+    extraHTTPHeaders: { Referer: `${BASE.origin}/?ref=${marker}` },
+  });
+  const paths = [`/d/${NO_ID}`, `/api/drops/${NO_ID}`];
+  for (const p of paths) await client.get(`${p}?probe=${marker}`);
+  await client.dispose();
+  // A share link sent verbatim, fragment (the key) and all, as an unfurler or a script might: "#" as is, and
+  // "%23", the form in which Caddy passes a "#" on to nginx.
+  const verbatim = [`/d/${NO_ID}#${marker}`, `/d/${NO_ID}%23${marker}`];
+  for (const target of verbatim) expect(await rawGet(target), target).toBe(200);
+  const requests = paths.length + verbatim.length;
+
+  let lines: string[] = [];
+  await expect
+    .poll(
+      () => {
+        lines = accessLog(since)
+          .split('\n')
+          .filter((line) => paths.some((p) => line.includes(`"GET ${p}`)));
+        return lines.length;
+      },
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThanOrEqual(requests);
+  for (const line of lines) {
+    // time, IPv4 /24 or IPv6 /48, "method path", status, bytes, seconds: deploy/nginx.conf `log_format privacy`.
+    expect(line).toMatch(
+      /^\S+ (?:\d{1,3}\.\d{1,3}\.\d{1,3}\.0\/24|[0-9a-f:]*::\/48) "GET \/\S+" \d{3} \d+ [\d.]+$/,
+    );
+  }
+  // Nothing from the query string, the fragment, the user agent or the referer; no full IPv4 address (only
+  // a.b.c.0/24 prefixes).
+  const log = lines.join('\n');
+  expect(log).not.toContain(marker);
+  expect(log).not.toMatch(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b(?!\/24)/);
 });
 
 test('the SPA bundle carries no demo credentials', async ({ request }) => {

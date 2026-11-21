@@ -9,6 +9,7 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "securityHeaders.ts",
+    "securityTxt.ts",
     "e2e",
     "bench",
     "deploy-checks",

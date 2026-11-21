@@ -322,6 +322,9 @@ jobs:
       IMAGE_TAG: ci
       WEB_PORT: '8080'
       SMOKE_BASE_URL: http://127.0.0.1:8080
+      # The smoke test also reads nginx's access log with `docker logs` (the privacy format: IP prefixes, no query
+      # string or fragment); compose names the container after the file's project name, cipherdrop-prod.
+      SMOKE_WEB_CONTAINER: cipherdrop-prod-web-1
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -340,18 +343,23 @@ jobs:
         run: |
           umask 077
           postgres_password="$(openssl rand -hex 24)"
+          postgres_app_password="$(openssl rand -hex 24)"
+          redis_password="$(openssl rand -hex 32)"
           jwt_access_secret="$(openssl rand -hex 32)"
           prelogin_secret="$(openssl rand -hex 32)"
           totp_enc_key="$(openssl rand -base64 32)"
-          for secret in "$postgres_password" "$jwt_access_secret" "$prelogin_secret" "$totp_enc_key"; do
+          for secret in "$postgres_password" "$postgres_app_password" "$redis_password" "$jwt_access_secret" \
+            "$prelogin_secret" "$totp_enc_key"; do
             echo "::add-mask::$secret"
           done
-          grep -vE '^(WEB_ORIGIN|WEB_PORT|POSTGRES_PASSWORD|JWT_ACCESS_SECRET|PRELOGIN_SECRET|TOTP_ENC_KEY)=' \
+          grep -vE '^(WEB_ORIGIN|WEB_PORT|POSTGRES_PASSWORD|POSTGRES_APP_PASSWORD|REDIS_PASSWORD|JWT_ACCESS_SECRET|PRELOGIN_SECRET|TOTP_ENC_KEY)=' \
             .env.production.example > .env.production
           {
             echo "WEB_ORIGIN=$SMOKE_BASE_URL"
             echo "WEB_PORT=$WEB_PORT"
             echo "POSTGRES_PASSWORD=$postgres_password"
+            echo "POSTGRES_APP_PASSWORD=$postgres_app_password"
+            echo "REDIS_PASSWORD=$redis_password"
             echo "JWT_ACCESS_SECRET=$jwt_access_secret"
             echo "PRELOGIN_SECRET=$prelogin_secret"
             echo "TOTP_ENC_KEY=$totp_enc_key"

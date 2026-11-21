@@ -308,6 +308,26 @@ describe('DELETE /me', () => {
     expect(await deletedEvents()).toBe(deletedBefore + 1);
   });
 
+  it('keeps the reports of a deleted account (server-5): the drop is detached, its key erased', async () => {
+    const u = await registerViaApi(t.app);
+    const reported = await createDrop(u.user.id, 'READY');
+    const quiet = await createDrop(u.user.id, 'READY');
+    const reportRow = await t.prisma.report.create({
+      data: { dropId: reported.id, reason: 'MALWARE', providedKey: 'k'.repeat(43) },
+    });
+    const res = await request(t.app)
+      .delete('/api/me')
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
+    expect(res.status).toBe(204);
+    const report = await t.prisma.report.findUniqueOrThrow({ where: { id: reportRow.id } });
+    expect(report).toMatchObject({ status: 'OPEN', providedKey: null });
+    const drop = await t.prisma.drop.findUniqueOrThrow({ where: { id: reported.id } });
+    expect(drop).toMatchObject({ ownerId: null, status: 'DELETED' });
+    expect(drop.blobsDeletedAt).not.toBeNull();
+    expect(await t.prisma.drop.count({ where: { id: quiet.id } })).toBe(0);
+  });
+
   it('requires a TOTP code when TOTP is enabled', async () => {
     const u = await registerViaApi(t.app);
     const { secret } = await enableTotpViaApi(t.app, u);

@@ -273,9 +273,8 @@ export async function reviewGrant(
 ): Promise<AdminGrantResponse> {
   const drop = await ctx.prisma.drop.findUnique({ where: { id: dropId } });
   if (!drop || drop.status === 'UPLOADING') throw notFound('Unknown drop');
-  if (drop.status === 'DELETED' || drop.status === 'DISABLED' || drop.status === 'EXPIRED') {
-    throw gone(drop.status);
-  }
+  // An EXPIRED drop is reviewable while its blobs are still there (the evidence hold, server-5).
+  if (drop.status === 'DELETED' || drop.status === 'DISABLED') throw gone(drop.status);
   if (drop.blobsDeletedAt) throw gone(goneReason(drop, ctx.now()) ?? 'EXPIRED');
 
   const now = ctx.now();

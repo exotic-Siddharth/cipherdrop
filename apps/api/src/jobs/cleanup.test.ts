@@ -26,6 +26,7 @@ import { runCleanup, runScheduledCleanup, startCleanupScheduler } from './cleanu
 
 const T0 = new Date('2026-11-08T08:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
+const DAY = 24 * HOUR;
 
 describe('cleanup job', () => {
   let t: TestApp;
@@ -284,9 +285,36 @@ describe('cleanup job', () => {
     expect((await metricValue(t.app, 'cleanup_deleted_drops_total')) - deleted).toBe(1);
   });
 
-  describe('retention (C-13)', () => {
-    const DAY = 24 * HOUR;
+  describe('evidence hold (server-5)', () => {
+    const report = (dropId: string, providedKey: string | null, createdAt = T0) =>
+      t.prisma.report.create({ data: { dropId, reason: 'MALWARE', providedKey, createdAt } });
 
+    it('keeps an expired drop with an open keyed report until it is resolved or the hold ends', async () => {
+      const { drop } = await ownedReadyDrop({ expiresInHours: 1 });
+      const plain = await ownedReadyDrop({ expiresInHours: 1 });
+      const r = await report(drop.dropId, 'k'.repeat(43));
+      await report(plain.drop.dropId, null); // no key: nothing to review, no hold
+      await runCleanup(at(2 * HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(true);
+      expect(await blobExists(plain.drop.dropId, plain.drop.files[0]!.id)).toBe(false);
+
+      // Resolving the report (here: dismissing it) ends the hold.
+      await t.prisma.report.update({ where: { id: r.id }, data: { status: 'DISMISSED' } });
+      await runCleanup(at(3 * HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
+    });
+
+    it('ends after REPORT_EVIDENCE_HOLD_DAYS (14) even while the report is open', async () => {
+      const { drop } = await ownedReadyDrop({ expiresInHours: 1 });
+      await report(drop.dropId, 'k'.repeat(43));
+      await runCleanup(at(14 * DAY - HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(true);
+      await runCleanup(at(14 * DAY + HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
+    });
+  });
+
+  describe('retention (C-13)', () => {
     it('prunes sessions revoked or expired more than 7 days ago (tokens cascade), keeps the rest', async () => {
       const user = await createUserRecord(t.prisma);
       const mk = (expiresAt: Date, revokedAt: Date | null = null) =>

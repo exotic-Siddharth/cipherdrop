@@ -1,7 +1,13 @@
 /** The leak guard is only worth something if it can fail: prove it catches each kind of leak. */
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
-import { isCspViolation, LeakGuard, test as guarded, textVariants } from './support/fixtures';
+import { TRUSTED_TYPES_REPORT_ONLY } from '../securityHeaders';
+import {
+  isCspViolationMessage,
+  LeakGuard,
+  test as guarded,
+  textVariants,
+} from './support/fixtures';
 
 function guardWith(body: string | Buffer, url = 'http://localhost:5184/api/drops'): LeakGuard {
   const guard = new LeakGuard();
@@ -190,14 +196,58 @@ test.describe('leak guard', () => {
     for (const text of [
       "Refused to load the script 'https://cdn.example.test/x.js' because it violates the following Content Security Policy directive: \"script-src 'self'\".",
       "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script.",
+      // Chromium, the report-only Trusted Types policy.
       "This document requires 'TrustedHTML' assignment and the 'default' policy failed to execute. The policy is report-only, so the violation has been logged but no further action has been taken.",
       "This document requires 'TrustedScriptURL' assignment. The policy is report-only, so the violation has been logged but no further action has been taken.",
       '[Report Only] Refused to create a TrustedTypePolicy named \'x\' because it violates the following Content Security Policy directive: "trusted-types default".',
+      // WebKit (ContentSecurityPolicy::allowMissingTrustedTypesForSinkGroup).
+      '[Report Only] This requires a TrustedHTML value else it violates the following Content Security Policy directive: "require-trusted-types-for \'script\'"',
+      // Firefox (csp.properties CSPROTrustedTypesSinkViolation and CSPROTrustedTypesPolicyViolation behind
+      // CSPMessagePrefix), bare and as Playwright receives nsIScriptError.toString().
+      'Content-Security-Policy: (Report-Only policy) The page\u2019s settings would block assigning to an injection sink because it violates the following directive: \u201crequire-trusted-types-for \u2019script\u2019\u201c',
+      '[JavaScript Warning: "Content-Security-Policy: (Report-Only policy) The page\u2019s settings would block assigning to an injection sink because it violates the following directive: \u201crequire-trusted-types-for \u2019script\u2019\u201c" {file: "http://127.0.0.1:5184/assets/index-x.js" line: 1}]',
+      '[JavaScript Warning: "Content-Security-Policy: (Report-Only policy) The page\u2019s settings would block creating a Trusted Types policy because it violates the following directive: \u201ctrusted-types default\u201c" {file: "http://127.0.0.1:5184/" line: 0}]',
     ]) {
-      expect(isCspViolation(text), text).toBe(true);
+      expect(isCspViolationMessage(text), text).toBe(true);
     }
-    for (const text of ['Download the React DevTools', 'worker says hi', 'Trusted contacts: 2']) {
-      expect(isCspViolation(text), text).toBe(false);
+    for (const text of [
+      'Download the React DevTools',
+      'worker says hi',
+      'Trusted contacts: 2',
+      'Failed to load resource: the server responded with a status of 404 (Not Found)',
+    ]) {
+      expect(isCspViolationMessage(text), text).toBe(false);
+    }
+  });
+
+  test('ignores only the notice that the report-only policy has no report endpoint (WebKit, Firefox)', () => {
+    // There is deliberately no endpoint (a Trusted Types report carries a sample of the sink's string), and the
+    // notice comes once per document: counted as a violation, it would fail every test in those engines.
+    const webkit = (policy: string, directive: 'report-to' | 'report-uri') =>
+      `The Content Security Policy '${policy}' was delivered in report-only mode, but does not specify a ` +
+      `'${directive}'; the policy will have no effect. Please either add a '${directive}' directive, or deliver ` +
+      "the policy via the 'Content-Security-Policy' header.";
+    const firefox =
+      'Content-Security-Policy: This site (http://127.0.0.1:5184) has a Report-Only policy without a report-uri ' +
+      'directive nor a report-to directive. CSP will not block and cannot report violations of this policy.';
+    for (const text of [
+      webkit(TRUSTED_TYPES_REPORT_ONLY, 'report-to'),
+      webkit(TRUSTED_TYPES_REPORT_ONLY, 'report-uri'),
+      firefox,
+      `[JavaScript Warning: "${firefox}" {file: "http://127.0.0.1:5184/d/AAAAAAAAAAAAAAAAAAAAAA" line: 0}]`,
+      `[JavaScript Warning: "${firefox}"]`,
+    ]) {
+      expect(isCspViolationMessage(text), text).toBe(false);
+    }
+    // Only that whole message, only for our policy, and Firefox's only as the warning it is.
+    for (const text of [
+      webkit("script-src 'none'", 'report-to'),
+      `${webkit(TRUSTED_TYPES_REPORT_ONLY, 'report-to')} Refused to load https://example.invalid/x.js.`,
+      `[Report Only] ${webkit(TRUSTED_TYPES_REPORT_ONLY, 'report-to')}`,
+      `${firefox} Refused to load https://example.invalid/x.js.`,
+      `[JavaScript Error: "${firefox}" {file: "http://127.0.0.1:5184/" line: 0}]`,
+    ]) {
+      expect(isCspViolationMessage(text), text).toBe(true);
     }
   });
 

@@ -10,6 +10,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { PRODUCTION_ONLY_HEADERS, SECURITY_HEADERS } from '../securityHeaders';
+import { isCspViolationMessage } from '../e2e/support/fixtures';
 import {
   downloadFromReady,
   openLink,
@@ -31,12 +32,12 @@ const DOWNLOAD_DIR = path.join(
 
 /**
  * Console messages a browser prints when the CSP blocks something or the report-only Trusted Types policy
- * reports a violation (Chromium's message for that names no policy), and uncaught page errors.
+ * reports a violation (the e2e leak guard's matcher), and uncaught page errors.
  */
 function watchCsp(page: Page, sink: string[]): void {
   page.on('console', (msg) => {
     const text = msg.text();
-    if (/content security policy|requires 'Trusted\w+' assignment/i.test(text)) sink.push(text);
+    if (isCspViolationMessage(text)) sink.push(text);
   });
   page.on('pageerror', (err) => sink.push(`pageerror: ${err.message}`));
 }

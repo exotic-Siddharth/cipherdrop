@@ -76,14 +76,14 @@ export const quotaExceeded = (message = 'Storage quota exceeded', details?: unkn
   new AppError(413, 'QUOTA_EXCEEDED', message, details);
 
 /**
- * 429 UPLOAD_BUDGET_EXCEEDED: this client (IPv4 address or IPv6 /48) has created its rolling budget of
- * anonymous drop bytes. Retry-After is when enough of it frees up; signed-in senders are not affected.
+ * 429 UPLOAD_BUDGET_EXCEEDED: this drop would take this client (IPv4 address or IPv6 /48) over its rolling
+ * budget of anonymous drop bytes. Retry-After is when enough of it frees up; signed-in senders are not affected.
  */
 export const uploadBudgetExceeded = (retryAfterSec: number, details: UploadBudgetDetails) =>
   new AppError(
     429,
     'UPLOAD_BUDGET_EXCEEDED',
-    'You have sent a lot without an account recently. Try again later, or sign in to send more.',
+    'This drop would go over the limit for sending without an account. Try again later, or sign in to send more.',
     details,
     { retryAfterSec },
   );

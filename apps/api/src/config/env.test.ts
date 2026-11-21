@@ -6,6 +6,8 @@ import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { parseEnv } from './env';
 
+const MiB = 1024 * 1024;
+
 const prod = (): Record<string, string> => ({
   NODE_ENV: 'production',
   JWT_ACCESS_SECRET: randomBytes(32).toString('base64url'),
@@ -108,11 +110,19 @@ describe('parseEnv outside production', () => {
   it('refuses a per-client budget below the largest anonymous drop (it could never be sent)', () => {
     expect(() =>
       parseEnv({ ...dev, ANON_MAX_DROP_BYTES: '1000', ANON_BYTES_PER_CLIENT: '999' }),
+    ).toThrow(/ANON_BYTES_PER_CLIENT: .*together with ANON_MAX_DROP_BYTES/);
+    // The budget counts whole MiB, so a 1000-byte drop takes 1 MiB of it.
+    expect(() =>
+      parseEnv({ ...dev, ANON_MAX_DROP_BYTES: '1000', ANON_BYTES_PER_CLIENT: String(MiB - 1) }),
     ).toThrow(/ANON_BYTES_PER_CLIENT/);
     expect(
-      parseEnv({ ...dev, ANON_MAX_DROP_BYTES: '1000', ANON_BYTES_PER_CLIENT: '1000' })
+      parseEnv({ ...dev, ANON_MAX_DROP_BYTES: '1000', ANON_BYTES_PER_CLIENT: String(MiB) })
         .ANON_BYTES_PER_CLIENT,
-    ).toBe(1000);
+    ).toBe(MiB);
+    // The upgrade case: a larger ANON_MAX_DROP_BYTES with the default budget is refused at boot.
+    expect(() => parseEnv({ ...dev, ANON_MAX_DROP_BYTES: String(2 * 1024 * MiB) })).toThrow(
+      /ANON_BYTES_PER_CLIENT/,
+    );
   });
 
   it('puts new accounts on probation by default (256 MiB for 7 days); 0 days turns it off', () => {

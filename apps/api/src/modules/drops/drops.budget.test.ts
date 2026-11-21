@@ -1,7 +1,7 @@
 /**
  * server-1: the rolling per-client byte budget for anonymous drops (ANON_BYTES_PER_CLIENT per
  * ANON_BYTES_WINDOW_HOURS, per IPv4 address or IPv6 /48). Beyond it: 429 UPLOAD_BUDGET_EXCEEDED with a
- * Retry-After that says when enough bytes leave the window.
+ * Retry-After that says when enough bytes leave the window. Redis keeps only hourly MiB totals per client.
  */
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -19,17 +19,23 @@ import {
   testFile,
 } from './test-utils';
 
-/** testFile(2000) is 2016 bytes of ciphertext: a 5000-byte budget takes two of them, not three. */
+const MiB = 1024 * 1024;
+/** testFile(2000) is 2016 bytes of ciphertext, which the budget rounds up to 1 MiB. */
 const FILE = 2000;
-const CT = 2016;
-const BUDGET = 5000;
+/** About 1.5 MiB of ciphertext: 2 MiB of budget. */
+const FILE_2MIB = 1.5 * MiB;
+/** Takes two 1-MiB creates, not three. */
+const BUDGET = 2 * MiB;
+/** 08:30 UTC: the hour bucket of a create made now is 08:00-09:00. */
+const START = new Date('2026-11-20T08:30:00.000Z');
+const hourOf = (d: Date) => String(Math.floor(d.getTime() / HOUR));
 
 const from = (ip: string) => ({ 'X-Forwarded-For': ip });
 const anonDrop = (t: TestApp, ip: string, plain = FILE) =>
   postDrop(t.app, createBody([testFile(plain)]), from(ip));
 
 describe('anonymous byte budget per client', () => {
-  const clock = testClock(new Date('2026-11-20T08:00:00.000Z'));
+  const clock = testClock(START);
   let t: TestApp;
 
   beforeAll(async () => {
@@ -40,6 +46,7 @@ describe('anonymous byte budget per client', () => {
     await resetTables(t.prisma);
   });
   afterEach(async () => {
+    clock.set(START);
     await resetTables(t.prisma);
   });
   afterAll(async () => {
@@ -48,40 +55,65 @@ describe('anonymous byte budget per client', () => {
 
   it('refuses the create that would exceed the budget with 429, Retry-After and the budget', async () => {
     const ip = '198.51.100.10';
-    expect((await anonDrop(t, ip)).status).toBe(201);
-    clock.advance(HOUR);
-    expect((await anonDrop(t, ip)).status).toBe(201);
-    clock.advance(HOUR);
-    const before = await metricValue(t.app, 'drops_refused_total', 'reason="client_budget"');
-
-    const refused = await anonDrop(t, ip);
-    expect(refused.status).toBe(429);
-    expect(refused.body.error).toEqual({
-      code: 'UPLOAD_BUDGET_EXCEEDED',
-      message: expect.stringMatching(/sign in/i),
-      details: { limitBytes: BUDGET, windowHours: 24 },
+    const budget3 = await createTestApp({
+      now: clock.now,
+      env: { ANON_BYTES_PER_CLIENT: 3 * MiB, ANON_BYTES_WINDOW_HOURS: 24 },
     });
-    // The first drop leaves the window 24 h after it was created, 22 h from now.
-    expect(Number(refused.headers['retry-after'])).toBe(22 * 3600);
-    expect(await metricValue(t.app, 'drops_refused_total', 'reason="client_budget"')).toBe(
-      before + 1,
-    );
-    // A smaller drop that still fits is accepted: the budget counts bytes, not drops.
-    expect((await anonDrop(t, ip, 500)).status).toBe(201);
+    try {
+      expect((await anonDrop(budget3, ip)).status).toBe(201); // 08:30, 1 MiB
+      clock.advance(HOUR);
+      expect((await anonDrop(budget3, ip)).status).toBe(201); // 09:30, 1 MiB
+      clock.advance(HOUR);
+      const before = await metricValue(
+        budget3.app,
+        'drops_refused_total',
+        'reason="client_budget"',
+      );
+
+      const refused = await anonDrop(budget3, ip, FILE_2MIB); // 10:30, 2 MiB: 4 > 3
+      expect(refused.status).toBe(429);
+      expect(refused.body.error).toEqual({
+        code: 'UPLOAD_BUDGET_EXCEEDED',
+        message: expect.stringMatching(/sign in/i),
+        details: { limitBytes: 3 * MiB, windowHours: 24 },
+      });
+      // The 08:00 hour counts for 24 full hours after it: it leaves at 09:00 tomorrow, 22.5 h from now.
+      expect(Number(refused.headers['retry-after'])).toBe(22.5 * 3600);
+      expect(await metricValue(budget3.app, 'drops_refused_total', 'reason="client_budget"')).toBe(
+        before + 1,
+      );
+      // A smaller drop that still fits is accepted: the budget counts bytes, not drops.
+      expect((await anonDrop(budget3, ip)).status).toBe(201);
+    } finally {
+      await budget3.close();
+    }
   });
 
-  it('is a rolling window: bytes come back as their creates age out, not at a fixed reset', async () => {
+  it('counts every create as whole MiB, rounded up', async () => {
+    const ip = '198.51.100.17';
+    // Two 2016-byte drops fill a 2 MiB budget: each takes 1 MiB.
+    expect((await anonDrop(t, ip)).status).toBe(201);
+    expect((await anonDrop(t, ip)).status).toBe(201);
+    expect((await anonDrop(t, ip, 1)).status).toBe(429);
+    // A 1.5 MiB drop takes 2 MiB: alone it fits the budget of another client, with anything else it does not.
+    const other = '198.51.100.18';
+    expect((await anonDrop(t, other, FILE_2MIB)).status).toBe(201);
+    expect((await anonDrop(t, other, 1)).status).toBe(429);
+  });
+
+  it('is a rolling window of hours: bytes come back as their hour ages out, not at a fixed reset', async () => {
     const ip = '198.51.100.11';
-    expect((await anonDrop(t, ip)).status).toBe(201);
+    expect((await anonDrop(t, ip)).status).toBe(201); // 08:30, hour 08
     clock.advance(HOUR);
-    expect((await anonDrop(t, ip)).status).toBe(201);
-    clock.advance(23 * HOUR - 1000);
+    expect((await anonDrop(t, ip)).status).toBe(201); // 09:30, hour 09
+    // Tomorrow 08:59:59, the 08:00 hour still counts (24 full hours after it have not passed).
+    clock.set(new Date('2026-11-21T08:59:59.000Z'));
     expect((await anonDrop(t, ip)).status).toBe(429);
-    clock.advance(1000); // the first create is now 24 h old
+    clock.set(new Date('2026-11-21T09:00:00.000Z')); // the 08:00 hour has left the window
     expect((await anonDrop(t, ip)).status).toBe(201);
     const refused = await anonDrop(t, ip);
     expect(refused.status).toBe(429);
-    // The second create (made 1 h after the first) is next to leave.
+    // The 09:00 hour is next to leave, at 10:00.
     expect(Number(refused.headers['retry-after'])).toBe(3600);
   });
 
@@ -129,18 +161,22 @@ describe('anonymous byte budget per client', () => {
     expect((await anonDrop(t, ip)).status).toBe(201);
   });
 
-  it('keeps no drop id and no IP address beyond the client key, and expires with the window', async () => {
+  it('stores per client only MiB totals per hour (no create time, size or drop id); expires with the window', async () => {
     const ip = '198.51.100.16';
-    const res = await anonDrop(t, ip);
-    expect(res.status).toBe(201);
+    const first = await anonDrop(t, ip);
+    expect(first.status).toBe(201);
+    clock.advance(20 * 60_000); // 08:50, same hour
+    const second = await anonDrop(t, ip);
+    expect(second.status).toBe(201);
     const key = anonBytesKey(ip);
-    const members = await t.redis.zrange(key, 0, -1);
-    expect(members).toHaveLength(1);
-    expect(members[0]).toMatch(new RegExp(`^[A-Za-z0-9_-]{16}:${CT}$`));
-    expect(members[0]).not.toContain(res.body.dropId);
+    // One field for the hour, its value the MiB of both creates together: the two 2016-byte creates, their
+    // times and their ids are not in Redis, so a Drop row matches only "a create of up to 1 MiB that hour".
+    expect(await t.redis.hgetall(key)).toEqual({ [hourOf(START)]: '2' });
+    expect(await t.redis.type(key)).toBe('hash');
+    // The key goes when the 08:00 hour leaves the window, at 09:00 tomorrow: 24 h 10 min from 08:50.
     const ttl = await t.redis.pttl(key);
-    expect(ttl).toBeGreaterThan(23 * HOUR);
-    expect(ttl).toBeLessThanOrEqual(24 * HOUR);
+    expect(ttl).toBeGreaterThan(24 * HOUR);
+    expect(ttl).toBeLessThanOrEqual(24 * HOUR + 10 * 60_000);
   });
 });
 
@@ -154,7 +190,7 @@ describe('anonymous byte budget refunds and opt-out', () => {
       const ip = '198.51.100.20';
       const first = await anonDrop(t, ip);
       expect(first.status).toBe(201);
-      // The pool is full: 413, and the 2016 bytes reserved for it go back to the client.
+      // The pool is full: 413, and the 1 MiB reserved for it goes back to the client.
       const full = await anonDrop(t, ip);
       expect(full.status).toBe(413);
       expect(full.body.error.code).toBe('QUOTA_EXCEEDED');
@@ -162,8 +198,9 @@ describe('anonymous byte budget refunds and opt-out', () => {
         where: { id: first.body.dropId as string },
         data: { blobsDeletedAt: new Date() },
       });
-      // 2016 + 2016 fits the 5000-byte budget only if the refused create was refunded.
+      // 1 MiB + 1 MiB fits the 2 MiB budget only if the refused create was refunded.
       expect((await anonDrop(t, ip)).status).toBe(201);
+      expect(Object.values(await t.redis.hgetall(anonBytesKey(ip)))).toEqual(['2']);
     } finally {
       await resetTables(t.prisma);
       await t.close();
@@ -195,7 +232,7 @@ describe('anonymous byte budget refunds and opt-out', () => {
       expect(t.ctx.env.ANON_BYTES_WINDOW_HOURS).toBe(24);
       await resetTables(t.prisma);
       expect((await anonDrop(t, '198.51.100.22')).status).toBe(201);
-      expect(await t.redis.zcard(anonBytesKey('198.51.100.22'))).toBe(1);
+      expect(Object.values(await t.redis.hgetall(anonBytesKey('198.51.100.22')))).toEqual(['1']);
     } finally {
       await resetTables(t.prisma);
       await t.close();

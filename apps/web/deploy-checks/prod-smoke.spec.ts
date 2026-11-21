@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import tls from 'node:tls';
 import { expect, test, type Page } from '@playwright/test';
 import { PRODUCTION_ONLY_HEADERS, SECURITY_HEADERS } from '../securityHeaders';
 import {
@@ -369,7 +370,26 @@ function accessLog(since: string): string {
   });
 }
 
-test('the access log keeps the client IP prefix only: no full address, query string or user agent', async ({
+/**
+ * A GET of `target` exactly as given, over plain HTTP or TLS (SMOKE_BASE_URL decides): an HTTP client would drop a
+ * fragment before sending. Resolves with the status, or null when the connection closed without a response.
+ */
+function rawGet(target: string): Promise<number | null> {
+  const port = Number(BASE.port || (BASE.protocol === 'https:' ? 443 : 80));
+  const socket =
+    BASE.protocol === 'https:'
+      ? tls.connect({ host: BASE.hostname, port, servername: BASE.hostname })
+      : net.connect(port, BASE.hostname);
+  let data = '';
+  return new Promise((resolve) => {
+    socket.on('data', (chunk: Buffer) => (data += chunk.toString('latin1')));
+    socket.on('error', () => {});
+    socket.once('close', () => resolve(Number(/^HTTP\/1\.1 (\d{3}) /.exec(data)?.[1]) || null));
+    socket.write(`GET ${target} HTTP/1.1\r\nHost: ${BASE.host}\r\nConnection: close\r\n\r\n`);
+  });
+}
+
+test('the access log keeps the client IP prefix only: no full address, query string, fragment or user agent', async ({
   playwright,
 }) => {
   test.skip(!WEB_CONTAINER, 'set SMOKE_WEB_CONTAINER to the web container name to read its log');
@@ -383,6 +403,11 @@ test('the access log keeps the client IP prefix only: no full address, query str
   const paths = [`/d/${NO_ID}`, `/api/drops/${NO_ID}`];
   for (const p of paths) await client.get(`${p}?probe=${marker}`);
   await client.dispose();
+  // A share link sent verbatim, fragment (the key) and all, as an unfurler or a script might: "#" as is, and
+  // "%23", the form in which Caddy passes a "#" on to nginx.
+  const verbatim = [`/d/${NO_ID}#${marker}`, `/d/${NO_ID}%23${marker}`];
+  for (const target of verbatim) expect(await rawGet(target), target).toBe(200);
+  const requests = paths.length + verbatim.length;
 
   let lines: string[] = [];
   await expect
@@ -390,19 +415,20 @@ test('the access log keeps the client IP prefix only: no full address, query str
       () => {
         lines = accessLog(since)
           .split('\n')
-          .filter((line) => paths.some((p) => line.includes(`"GET ${p}"`)));
+          .filter((line) => paths.some((p) => line.includes(`"GET ${p}`)));
         return lines.length;
       },
       { timeout: 10_000 },
     )
-    .toBeGreaterThanOrEqual(paths.length);
+    .toBeGreaterThanOrEqual(requests);
   for (const line of lines) {
     // time, IPv4 /24 or IPv6 /48, "method path", status, bytes, seconds: deploy/nginx.conf `log_format privacy`.
     expect(line).toMatch(
       /^\S+ (?:\d{1,3}\.\d{1,3}\.\d{1,3}\.0\/24|[0-9a-f:]*::\/48) "GET \/\S+" \d{3} \d+ [\d.]+$/,
     );
   }
-  // Nothing from the query string, the user agent or the referer; no full IPv4 address (only a.b.c.0/24 prefixes).
+  // Nothing from the query string, the fragment, the user agent or the referer; no full IPv4 address (only
+  // a.b.c.0/24 prefixes).
   const log = lines.join('\n');
   expect(log).not.toContain(marker);
   expect(log).not.toMatch(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b(?!\/24)/);

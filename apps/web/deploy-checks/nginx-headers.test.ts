@@ -448,7 +448,7 @@ describe('deploy/nginx.conf access log (ops-6)', () => {
     }
   });
 
-  it('logs the path the client asked for, without the query string', () => {
+  it('logs the path the client asked for, without the query string or the fragment', () => {
     const map = block(code, 'map $request_uri $request_path');
     const rules = [...map.matchAll(/"~([^"]+)"\s+\$(\w+);/g)];
     expect(rules).toHaveLength(1);
@@ -459,6 +459,17 @@ describe('deploy/nginx.conf access log (ops-6)', () => {
     expect(pathOf('/api/drops?cursor=abc&limit=10')).toBe('/api/drops');
     expect(pathOf('/SECURITY.md?name=board%20minutes')).toBe('/SECURITY.md');
     expect(pathOf('/?')).toBe('/');
+    // A share link's fragment is its key: a client that sends the link verbatim puts it in the request line, as "#"
+    // straight to nginx and as "%23" through Caddy (Go re-encodes a "#" in the path). Neither reaches the log.
+    expect(pathOf('/d/AAAAAAAAAAAAAAAAAAAAAA#key')).toBe('/d/AAAAAAAAAAAAAAAAAAAAAA');
+    expect(pathOf('/d/X#k?x=1')).toBe('/d/X');
+    expect(pathOf('/d/X?review=1#k')).toBe('/d/X');
+    expect(pathOf('/d/AAAAAAAAAAAAAAAAAAAAAA%23key')).toBe('/d/AAAAAAAAAAAAAAAAAAAAAA');
+    expect(pathOf('/d/X%23k?x=1')).toBe('/d/X');
+    // Other escapes stay (a literal "%23" is sent as "%2523").
+    expect(pathOf('/assets/a%20b.js')).toBe('/assets/a%20b.js');
+    expect(pathOf('/a%2523b')).toBe('/a%2523b');
+    expect(pathOf('/a%2')).toBe('/a%2');
   });
 
   it('writes the client prefix exactly as the API ipPrefix() does, for every form nginx prints an address in', () => {

@@ -18,6 +18,8 @@ type Dialogs = 'regenerate' | 'disable' | null;
 export function TwoFactorCard() {
   const actions = useAccountActions();
   const enabled = useAuth((s) => s.user?.totpEnabled ?? false);
+  // Admins keep 2FA on (the API refuses to turn it off for them, and only accounts with it can be promoted).
+  const isAdmin = useAuth((s) => s.user?.role === 'ADMIN');
   const [setup, setSetup] = useState<TotpSetupResponse | null>(null);
   const [starting, setStarting] = useState(false);
   const [codes, setCodes] = useState<string[] | null>(null);
@@ -59,13 +61,21 @@ export function TwoFactorCard() {
           Logging in needs your password and a 6-digit code from your authenticator app. If you lose
           your phone, use one of your backup codes.
         </p>
+        {isAdmin ? (
+          <p className="text-sm leading-relaxed text-muted">
+            Admins must keep two-step verification on. To turn it off, ask another admin to change
+            your role to User first.
+          </p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" icon={RefreshCw} onClick={() => setDialog('regenerate')}>
             Regenerate backup codes
           </Button>
-          <Button variant="outline" icon={ShieldOff} onClick={() => setDialog('disable')}>
-            Turn off
-          </Button>
+          {isAdmin ? null : (
+            <Button variant="outline" icon={ShieldOff} onClick={() => setDialog('disable')}>
+              Turn off
+            </Button>
+          )}
         </div>
       </div>
     );

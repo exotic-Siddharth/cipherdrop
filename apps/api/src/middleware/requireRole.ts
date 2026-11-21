@@ -9,8 +9,11 @@ import { forbidden, mfaRequired, unauthorized } from '../lib/errors';
  *
  * ADMIN also needs two-step verification on the account (review server-3): admin routes return reporter-supplied
  * decryption keys and mint review grants, the one place where plaintext of other people's drops is reachable, so a
- * stolen admin password alone must not open them. Checked in the same query, so turning 2FA off closes the console
- * at once. A non-admin gets the plain 403 first, with no hint about 2FA.
+ * stolen admin password alone must not open them. The rest of that rule lives elsewhere: only accounts with 2FA can
+ * be promoted (PATCH /admin/users/:id), admins cannot turn it off, and enabling it signs out every other session,
+ * so each live admin session has passed the second factor. This check, in the same query as the role, still covers
+ * rows changed out of band (the seeded dev admin, accounts promoted before the rule, SQL). A non-admin gets the
+ * plain 403 first, with no hint about 2FA.
  */
 export function requireRole(role: Role): RequestHandler {
   return async (req, _res, next) => {

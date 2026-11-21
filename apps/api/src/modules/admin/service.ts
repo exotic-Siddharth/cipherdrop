@@ -253,6 +253,16 @@ export async function listUsers(ctx: AppContext, query: AdminUsersQuery): Promis
   return toPage(rows.map(toAdminUser), total, p);
 }
 
+/** 409 for a promotion of an account without two-step verification (see patchUser). */
+const ADMIN_NEEDS_MFA =
+  'This account needs two-step verification before it can be an admin. Ask its owner to turn it on in Settings, Security.';
+
+/**
+ * Role and quota edits. Only an account with two-step verification can become an admin (review of server-3): the
+ * admin routes need it anyway (requireRole), and an admin account without it is open to anyone who knows its
+ * password, who could enrol their own authenticator and then open the console. The write is conditional, so a TOTP
+ * disable racing the promotion cannot leave an admin without it either (TOTP disable refuses admins in turn).
+ */
 export async function patchUser(
   ctx: AppContext,
   userId: string,
@@ -262,16 +272,25 @@ export async function patchUser(
   if (userId === admin.id && patch.role !== undefined && patch.role !== 'ADMIN') {
     throw validationError('Admins cannot remove their own admin role');
   }
-  const exists = await ctx.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
-  if (!exists) throw notFound('Unknown user');
-  const user = await ctx.prisma.user.update({
+  const target = await ctx.prisma.user.findUnique({
     where: { id: userId },
+    select: { id: true, totpEnabledAt: true },
+  });
+  if (!target) throw notFound('Unknown user');
+  const promoting = patch.role === 'ADMIN';
+  if (promoting && target.totpEnabledAt === null) throw conflict(ADMIN_NEEDS_MFA);
+  const updated = await ctx.prisma.user.updateMany({
+    where: { id: userId, ...(promoting ? { totpEnabledAt: { not: null } } : {}) },
     data: {
       ...(patch.role !== undefined ? { role: patch.role } : {}),
       ...(patch.storageQuotaBytes !== undefined
         ? { storageQuotaBytes: BigInt(patch.storageQuotaBytes) }
         : {}),
     },
+  });
+  if (updated.count !== 1) throw promoting ? conflict(ADMIN_NEEDS_MFA) : notFound('Unknown user');
+  const user = await ctx.prisma.user.findUniqueOrThrow({
+    where: { id: userId },
     include: { _count: { select: { drops: true } } },
   });
   return toAdminUser(user);

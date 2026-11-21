@@ -76,6 +76,8 @@ import {
 const INVALID_CODE = 'Invalid or expired code';
 const EMAIL_TAKEN = 'An account with this email already exists';
 const INVALID_RECOVERY_TOKEN = 'Invalid or expired recovery token';
+const ADMIN_KEEPS_MFA =
+  'Admins cannot turn off two-step verification. Ask another admin to change your role to User first.';
 
 /** Compared against when the email is unknown, so a recovery attempt costs the same either way. */
 const DUMMY_RECOVERY_HASH = sha256B64url('cipherdrop/v1/dummy-recovery-auth');
@@ -652,33 +654,39 @@ export function authRoutes(ctx: AppContext): AppRouter {
     {
       method: 'post',
       path: '/mfa/totp/disable',
-      summary: 'Disable TOTP (authKey + code)',
+      summary: 'Disable TOTP (authKey + code; refused for admins)',
       tags,
       auth: 'user',
       request: { body: TotpDisableRequestSchema },
       responses: {
         204: { description: 'TOTP disabled' },
         403: { description: 'Wrong authKey or code (FORBIDDEN)' },
-        409: { description: 'TOTP is not enabled (CONFLICT)' },
+        409: { description: 'TOTP is not enabled, or the account is an admin (CONFLICT)' },
       },
     },
     reauthLimit,
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       if (!user.totpEnabledAt) throw conflict('Two-factor authentication is not enabled');
+      // An admin without TOTP could be taken over with the password alone (the thief enrols their own
+      // authenticator, then opens the console), so admins keep it on; PATCH /admin/users refuses the reverse
+      // order. Checked before the proof, so the admin's code is not spent on a refusal.
+      if (user.role === 'ADMIN') throw conflict(ADMIN_KEEPS_MFA);
       await requireAccountProof(ctx, user, req.body, req, 'totp-disable');
-      await prisma.$transaction([
-        prisma.user.update({
-          where: { id: user.id },
+      await prisma.$transaction(async (tx) => {
+        // Conditional: a promotion that raced this request wins, and TOTP stays on.
+        const off = await tx.user.updateMany({
+          where: { id: user.id, role: { not: 'ADMIN' } },
           data: {
             totpSecretEnc: null,
             totpPendingSecretEnc: null,
             totpEnabledAt: null,
             totpLastStep: null,
           },
-        }),
-        prisma.backupCode.deleteMany({ where: { userId: user.id } }),
-      ]);
+        });
+        if (off.count !== 1) throw conflict(ADMIN_KEEPS_MFA);
+        await tx.backupCode.deleteMany({ where: { userId: user.id } });
+      });
       await ctx.audit.record({ userId: user.id, action: 'MFA_DISABLED', req });
       res.status(204).end();
     },

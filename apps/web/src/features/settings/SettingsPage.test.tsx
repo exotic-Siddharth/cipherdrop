@@ -110,6 +110,19 @@ describe('SettingsPage security tab', () => {
     expect(screen.getByRole('button', { name: 'Regenerate backup codes' })).toBeVisible();
   });
 
+  it('an admin is told to keep two-step verification on and gets no Turn off button', async () => {
+    signIn({ totpEnabled: true, role: 'ADMIN' });
+    mockApi({});
+    renderRoutes(routes, '/settings');
+    expect(
+      await screen.findByText(/Admins must keep two-step verification on/, undefined, {
+        timeout: 5_000,
+      }),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Regenerate backup codes' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Turn off' })).toBeNull();
+  });
+
   it('turns TOTP off with a password-derived proof, not the password', async () => {
     signIn({ totpEnabled: true });
     const api = mockApi({

@@ -1,9 +1,11 @@
 /**
  * Report -> moderation flow against the real API (R13): a recipient reports a drop (with and without the
  * key), the admin reviews it through the non-consuming grant, disables it, dismisses another report and edits a
- * user. Also checks that a plain user is refused on /admin, and that a new admin must turn on two-step
- * verification first (the API refuses admin routes without it): the admin enrols TOTP through Settings here, like
- * a real one would, rather than starting from a seeded secret, so the gate and its notice are exercised too.
+ * user. Also checks that a plain user is refused on /admin, and that an admin without two-step verification must
+ * turn it on first (the API refuses admin routes without it): the admin here is promoted in the database before
+ * enrolling, like the seeded dev admin or one promoted before admins needed 2FA, and enrols TOTP through Settings
+ * rather than starting from a seeded secret, so the gate and its notice are exercised too. Promoting from the
+ * console needs 2FA on the promoted account: refused first, accepted once its owner turned it on.
  */
 import { expect, test } from './support/fixtures';
 import {
@@ -169,7 +171,8 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   await expect(row(id1)).toHaveCount(0, { timeout: 20_000 });
   await expect(row(id2)).toHaveCount(0);
 
-  // Users: search, edit the quota and promote.
+  // Users: search, edit the quota and promote. The user has no two-step verification yet: the console warns,
+  // the API refuses, and nothing changes.
   await page.getByLabel('Search users').fill(userEmail.slice(0, 18));
   await expect(page.getByRole('button', { name: `Edit ${userEmail}` })).toBeVisible({
     timeout: 20_000,
@@ -177,6 +180,17 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   await page.getByRole('button', { name: `Edit ${userEmail}` }).click();
   await page.getByLabel('Storage quota').fill('1');
   await page.getByLabel('Role').selectOption('ADMIN');
+  await expect(page.getByText(/so it cannot be an admin yet/)).toBeVisible();
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText(/needs two-step verification before it can be an admin/)).toBeVisible(
+    { timeout: 20_000 },
+  );
+  expect(await userRole(userEmail)).toBe('USER');
+  expect(await userQuotaBytes(userEmail)).not.toBe(1024n ** 3n);
+  // Its owner turns two-step verification on; the same promotion then goes through.
+  await userPage.goto('/settings');
+  const { secret: userSecret } = await enableTotpInSettings(userPage, password);
+  leaks.forbidText('promoted user totp secret', userSecret);
   await page.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByText('User updated')).toBeVisible({ timeout: 20_000 });
   expect(await userRole(userEmail)).toBe('ADMIN');

@@ -5,7 +5,9 @@
  * It registers its own throw-away account (never a seeded one), runs everything as that user and deletes the
  * account at the end (DELETE /me removes its drops and blobs), so the seeded dev data is untouched. The API must
  * allow 5 registrations per hour per IP (the default rate limits); set BENCH_EMAIL + BENCH_PASSWORD to reuse an
- * existing account instead (it is then NOT deleted, only the bench drops are).
+ * existing account instead (it is then NOT deleted, only the bench drops are). A throw-away account is new, so it is
+ * on the new-account probation quota (NEW_ACCOUNT_QUOTA_BYTES, 256 MiB by default): each run deletes its drops before
+ * the next, but a BENCH_SIZE_MIB above that quota needs NEW_ACCOUNT_PROBATION_DAYS=0 on the API (or an older account).
  *
  * What is timed, per run of BENCH_SIZE_MIB MiB (random data, 4 MiB chunks, so 24 chunks for the default 96 MiB):
  *   - upload only: the ciphertext and the X-Chunk-SHA256 headers are prepared before the timer starts; the timer

@@ -210,6 +210,41 @@ describe('cleanup job', () => {
     expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
   });
 
+  it('deletes an upload that stored no chunk an hour after its create; one that stored a chunk stays', async () => {
+    const user = await createUserRecord(t.prisma);
+    const auth = { Authorization: authHeader(user) };
+    const f = testFile(1000);
+    const g = testFile(1000);
+    const empty = await createDropOk(
+      t.app,
+      createBody([f], { ownerWrappedKey: fakeWrappedKey() }),
+      auth,
+    );
+    const started = await createDropOk(
+      t.app,
+      createBody([g], { ownerWrappedKey: fakeWrappedKey() }),
+      auth,
+    );
+    expect(
+      (await putChunk(t.app, started.dropId, started.uploadToken, g.id, 0, chunkData(g, 0))).status,
+    ).toBe(204);
+
+    expect((await runCleanup(at(HOUR - 1000), t.ctx)).staleDeleted).toBe(0);
+    expect((await runCleanup(at(HOUR), t.ctx)).staleDeleted).toBe(1);
+    const status = async (id: string) =>
+      t.prisma.drop.findUniqueOrThrow({
+        where: { id },
+        select: { status: true, deletedAt: true, blobsDeletedAt: true },
+      });
+    // DELETED: no longer counted by the owner's quota, the anonymous pool or the global cap.
+    expect(await status(empty.dropId)).toEqual({
+      status: 'DELETED',
+      deletedAt: at(HOUR),
+      blobsDeletedAt: at(HOUR),
+    });
+    expect((await status(started.dropId)).status).toBe('UPLOADING');
+  });
+
   it('moves UPLOADING drops past their expiry to DELETED and frees their blobs', async () => {
     const f = testFile(1000);
     const user = await createUserRecord(t.prisma);

@@ -45,7 +45,9 @@ function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => voi
   const selfId = useAuth((s) => s.user?.id);
   const formId = useId();
   const [role, setRole] = useState<Role>(user.role);
-  const [quota, setQuota] = useState(() => quotaToGbText(user.storageQuotaBytes));
+  // The stored quota, not the probation cap: saving the field unchanged must not store the cap for good.
+  const initialQuota = quotaToGbText(user.storageQuotaBytes);
+  const [quota, setQuota] = useState(initialQuota);
   const [touched, setTouched] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -67,7 +69,11 @@ function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => voi
   const quotaError = touched && !parsed.ok ? parsed.error : undefined;
   const isSelf = user.id === selfId;
   const roleChanged = role !== user.role;
-  const quotaChanged = parsed.ok && parsed.bytes !== user.storageQuotaBytes;
+  // Compared with the field as it opened, not with the stored bytes: quotaToGbText rounds to 0.01 GB, so a
+  // quota such as 100 MiB would otherwise read as changed, and a role-only edit would also rewrite the quota
+  // (and end the probation).
+  const initial = parseQuotaGb(initialQuota);
+  const quotaChanged = parsed.ok && (!initial.ok || parsed.bytes !== initial.bytes);
   const belowUsage = parsed.ok && parsed.bytes < user.storageUsedBytes;
 
   const submit = (e: FormEvent) => {
@@ -141,6 +147,13 @@ function EditUserDialog({ user, onClose }: { user: AdminUser; onClose: () => voi
               : `Using ${formatBytes(user.storageUsedBytes)} now. Allowed: up to ${MAX_QUOTA_GB.toLocaleString('en')} GB.`
           }
         />
+        {user.quotaProbationEndsAt ? (
+          <Alert tone="info" live="off">
+            New account: limited to {formatBytes(user.effectiveQuotaBytes)} until{' '}
+            {formatDate(user.quotaProbationEndsAt)}, then this quota applies. Saving a new quota
+            ends the limit at once.
+          </Alert>
+        ) : null}
         {belowUsage && !quotaError ? (
           <Alert tone="warning" live="off">
             This is below the current usage: the user keeps their drops but cannot upload until they
@@ -268,13 +281,21 @@ export function UsersCard() {
                       hideLabel
                       size="sm"
                       value={u.storageUsedBytes}
-                      max={Math.max(u.storageQuotaBytes, 1)}
-                      tone={u.storageUsedBytes >= u.storageQuotaBytes * 0.95 ? 'danger' : 'primary'}
-                      valueText={`${formatBytes(u.storageUsedBytes)} of ${formatBytes(u.storageQuotaBytes)}`}
+                      max={Math.max(u.effectiveQuotaBytes, 1)}
+                      tone={
+                        u.storageUsedBytes >= u.effectiveQuotaBytes * 0.95 ? 'danger' : 'primary'
+                      }
+                      valueText={`${formatBytes(u.storageUsedBytes)} of ${formatBytes(u.effectiveQuotaBytes)}`}
                     />
                     <p className="mt-1 text-xs tabular-nums text-muted-strong">
-                      {formatBytes(u.storageUsedBytes)} of {formatBytes(u.storageQuotaBytes)} used
+                      {formatBytes(u.storageUsedBytes)} of {formatBytes(u.effectiveQuotaBytes)} used
                     </p>
+                    {u.quotaProbationEndsAt ? (
+                      <p className="mt-0.5 text-xs text-muted-strong">
+                        New account: limited until {formatDate(u.quotaProbationEndsAt)}, then{' '}
+                        {formatBytes(u.storageQuotaBytes)}. Editing the quota ends it.
+                      </p>
+                    ) : null}
                   </div>
                   <div className="lg:text-right">
                     <Button

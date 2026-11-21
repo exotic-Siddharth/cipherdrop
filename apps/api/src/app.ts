@@ -3,8 +3,8 @@
  *
  * Order: requestId -> pino-http -> helmet -> CORS(WEB_ORIGIN) -> no-store on /api -> metrics ->
  * /healthz /readyz /metrics -> global limiter on /api (600/min per IP; chunk PUT/GET exempt, they have chunkIp 6000/min per IP + per-token limits) ->
- * cookies -> JSON (1 MB) -> /api/openapi.json (+ /api/docs when API_DOCS_UI) -> /api/auth, /api/me (B1), /api/drops,
- * /api/admin (B2) -> 404 -> error handler.
+ * cookies -> JSON (1 MB) -> /api/openapi.json (+ /api/docs when API_DOCS_UI) -> /api/config, /api/auth,
+ * /api/me (B1), /api/drops, /api/admin (B2) -> 404 -> error handler.
  */
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
@@ -21,6 +21,7 @@ import { noStore } from './middleware/noStore';
 import { requestId } from './middleware/requestId';
 import { adminRoutes } from './modules/admin/routes';
 import { authRoutes } from './modules/auth/routes';
+import { configRoutes } from './modules/config/routes';
 import { dropsRoutes } from './modules/drops/routes';
 import { healthRoutes } from './modules/health/routes';
 import { meRoutes } from './modules/me/routes';
@@ -99,7 +100,13 @@ export function createApp(deps: AppDeps = {}): Express {
     );
   }
 
-  for (const r of [authRoutes(ctx), meRoutes(ctx), dropsRoutes(ctx), adminRoutes(ctx)]) {
+  for (const r of [
+    configRoutes(ctx),
+    authRoutes(ctx),
+    meRoutes(ctx),
+    dropsRoutes(ctx),
+    adminRoutes(ctx),
+  ]) {
     mount(app, r);
   }
 

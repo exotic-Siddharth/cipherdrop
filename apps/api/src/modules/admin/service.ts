@@ -21,6 +21,7 @@ import { conflict, gone, notFound, validationError } from '../../lib/errors';
 import { sha256B64url } from '../../lib/hash';
 import { ipPrefix } from '../../lib/ip';
 import { paginate, toPage } from '../../lib/pagination';
+import { effectiveQuotaBytes, probationEndsAt } from '../../lib/quota';
 import { randomToken } from '../../lib/tokens';
 import type { AuthUser } from '../../types/express';
 import { recordAfterCommit } from '../audit/service';
@@ -221,14 +222,19 @@ export async function reviewGrant(
 
 type UserWithCount = User & { _count: { drops: number } };
 
-function toAdminUser(u: UserWithCount): AdminUser {
+function toAdminUser(ctx: AppContext, u: UserWithCount): AdminUser {
+  const now = ctx.now();
   return {
     id: u.id,
     email: u.email,
     role: u.role,
     totpEnabled: u.totpEnabledAt !== null,
+    // The stored quota, which the edit dialog changes, and the one that applies now (Me reports only the
+    // latter: it is the user's quota).
     storageQuotaBytes: Number(u.storageQuotaBytes),
+    effectiveQuotaBytes: Number(effectiveQuotaBytes(u, ctx.env, now)),
     storageUsedBytes: Number(u.storageUsedBytes),
+    quotaProbationEndsAt: probationEndsAt(u, now)?.toISOString() ?? null,
     dropCount: u._count.drops,
     lockedUntil: u.lockedUntil ? u.lockedUntil.toISOString() : null,
     createdAt: u.createdAt.toISOString(),
@@ -250,7 +256,11 @@ export async function listUsers(ctx: AppContext, query: AdminUsersQuery): Promis
     }),
     ctx.prisma.user.count({ where }),
   ]);
-  return toPage(rows.map(toAdminUser), total, p);
+  return toPage(
+    rows.map((u) => toAdminUser(ctx, u)),
+    total,
+    p,
+  );
 }
 
 export async function patchUser(
@@ -268,11 +278,12 @@ export async function patchUser(
     where: { id: userId },
     data: {
       ...(patch.role !== undefined ? { role: patch.role } : {}),
+      // An admin's quota edit overrides the new-account probation: their value applies at once.
       ...(patch.storageQuotaBytes !== undefined
-        ? { storageQuotaBytes: BigInt(patch.storageQuotaBytes) }
+        ? { storageQuotaBytes: BigInt(patch.storageQuotaBytes), quotaProbationEndsAt: null }
         : {}),
     },
     include: { _count: { select: { drops: true } } },
   });
-  return toAdminUser(user);
+  return toAdminUser(ctx, user);
 }

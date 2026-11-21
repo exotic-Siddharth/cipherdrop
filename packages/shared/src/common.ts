@@ -75,12 +75,18 @@ export const ErrorCodeSchema = z.enum([
   'VALIDATION_ERROR',
   'UNAUTHORIZED',
   'FORBIDDEN',
+  /** 403 with details.feature: an operator switched this feature off (ALLOW_ANONYMOUS_UPLOADS, ...). */
+  'FEATURE_DISABLED',
   'NOT_FOUND',
   'CONFLICT',
   'GONE',
   'RATE_LIMITED',
   'PAYLOAD_TOO_LARGE',
   'QUOTA_EXCEEDED',
+  /** 429 + Retry-After: this client's rolling byte budget for anonymous drops is spent. */
+  'UPLOAD_BUDGET_EXCEEDED',
+  /** 507: the instance is full (global storage cap or free-disk floor); no new drops for now. */
+  'STORAGE_FULL',
   'INTERNAL',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
@@ -98,6 +104,13 @@ export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 /** 410 details: `{reason}`. */
 export const GoneDetailsSchema = z.object({ reason: GoneReasonSchema });
 export type GoneDetails = z.infer<typeof GoneDetailsSchema>;
+
+/** 429 UPLOAD_BUDGET_EXCEEDED details: the per-client budget for anonymous drops (Retry-After says when). */
+export const UploadBudgetDetailsSchema = z.object({
+  limitBytes: z.number().int().positive(),
+  windowHours: z.number().int().positive(),
+});
+export type UploadBudgetDetails = z.infer<typeof UploadBudgetDetailsSchema>;
 
 /** `?page&pageSize` (query strings are coerced). */
 export const PageQuerySchema = z.object({
@@ -181,6 +194,17 @@ export const IdSchema = z
 export const OpaqueTokenSchema = B64Url32Schema;
 
 export const IsoDateTimeSchema = z.string().datetime({ offset: true });
+
+/**
+ * 413 QUOTA_EXCEEDED details of a signed-in create: the quota that applies and what is committed already;
+ * probationEndsAt while the smaller new-account quota applies. (The anonymous pool's 413 has no details.)
+ */
+export const QuotaExceededDetailsSchema = z.object({
+  quotaBytes: z.number().int().nonnegative(),
+  usedBytes: z.number().int().nonnegative(),
+  probationEndsAt: IsoDateTimeSchema.optional(),
+});
+export type QuotaExceededDetails = z.infer<typeof QuotaExceededDetailsSchema>;
 
 export const EmailSchema = z.string().trim().toLowerCase().email().max(254);
 

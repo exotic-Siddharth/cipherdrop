@@ -11,6 +11,7 @@ import { configure, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { formatDate } from '../../lib/format';
 import { queryClient } from '../../lib/queryClient';
 import { routes } from '../../router';
 import { useAuth } from '../../stores/auth';
@@ -31,6 +32,7 @@ const admin: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 5 * GIB,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: iso(-30 * 86_400_000),
 };
 
@@ -98,7 +100,9 @@ function users(): AdminUser[] {
     lockedUntil: null,
     createdAt: iso(-10 * 86_400_000),
     storageQuotaBytes: 5 * GIB,
+    effectiveQuotaBytes: 5 * GIB,
     storageUsedBytes: 2 * GIB,
+    quotaProbationEndsAt: null,
   };
   return [
     { ...base, id: admin.id, email: admin.email, role: 'ADMIN', totpEnabled: true },
@@ -120,7 +124,7 @@ interface Call {
   body?: unknown;
 }
 
-function mockApi(overrides: { reportItems?: AdminReport[] } = {}) {
+function mockApi(overrides: { reportItems?: AdminReport[]; userItems?: AdminUser[] } = {}) {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), 'http://localhost');
@@ -135,7 +139,9 @@ function mockApi(overrides: { reportItems?: AdminReport[] } = {}) {
     }
     if (method === 'GET' && url.pathname === '/api/admin/users') {
       const search = url.searchParams.get('search')?.toLowerCase();
-      const items = users().filter((u) => !search || u.email.includes(search));
+      const items = (overrides.userItems ?? users()).filter(
+        (u) => !search || u.email.includes(search),
+      );
       const page: AdminUserPage = { items, total: items.length, page: 1, pageSize: 10 };
       return json(page);
     }
@@ -294,6 +300,69 @@ describe('AdminPage users', () => {
     await userEvent.click(await screen.findByRole('button', { name: `Edit ${email}` }));
     return screen.findByRole('dialog', { name: 'Edit user' });
   }
+
+  /** bob on probation: 5 GB stored, `effective` applies until `ends`. */
+  const onProbation = (effective: number, ends: string) =>
+    users().map((u) =>
+      u.email === 'bob@example.com'
+        ? { ...u, storageUsedBytes: 0, effectiveQuotaBytes: effective, quotaProbationEndsAt: ends }
+        : u,
+    );
+
+  it('marks a new account whose probation quota still applies (server-1)', async () => {
+    const ends = iso(5 * 86_400_000);
+    mockApi({ userItems: onProbation(256 * 1024 ** 2, ends) });
+    renderAdmin();
+    expect(
+      await screen.findByText(
+        `New account: limited until ${formatDate(ends)}, then 5 GB. Editing the quota ends it.`,
+      ),
+    ).toBeVisible();
+    expect(screen.getAllByText(/New account: limited until/)).toHaveLength(1);
+    // The bar shows the quota that applies now.
+    expect(screen.getByText('0 B of 256 MB used')).toBeVisible();
+  });
+
+  it('edits the stored quota of an account on probation: a role-only edit leaves quota and probation alone', async () => {
+    const ends = iso(5 * 86_400_000);
+    // 100 MiB is not a whole 0.01 GB: shown as "0.1", it would read back as 107374182 bytes.
+    const calls = mockApi({ userItems: onProbation(100 * 1024 ** 2, ends) });
+    renderAdmin();
+    const dialog = await openEdit('bob@example.com');
+    expect(within(dialog).getByLabelText('Storage quota')).toHaveValue('5');
+    expect(
+      within(dialog).getByText(
+        `New account: limited to 100 MB until ${formatDate(ends)}, then this quota applies. Saving a new quota ends the limit at once.`,
+      ),
+    ).toBeVisible();
+    const save = within(dialog).getByRole('button', { name: 'Save changes' });
+    expect(save).toBeDisabled();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ role: 'ADMIN' }),
+    );
+  });
+
+  it('does not count a stored quota that is not a whole 0.01 GB as changed', async () => {
+    const calls = mockApi({
+      userItems: users().map((u) =>
+        u.email === 'bob@example.com'
+          ? { ...u, storageQuotaBytes: 100 * 1024 ** 2, effectiveQuotaBytes: 100 * 1024 ** 2 }
+          : u,
+      ),
+    });
+    renderAdmin();
+    const dialog = await openEdit('bob@example.com');
+    expect(within(dialog).getByLabelText('Storage quota')).toHaveValue('0.1');
+    const save = within(dialog).getByRole('button', { name: 'Save changes' });
+    expect(save).toBeDisabled();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ role: 'ADMIN' }),
+    );
+  });
 
   it('searches by email (debounced)', async () => {
     const calls = mockApi();

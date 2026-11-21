@@ -12,6 +12,7 @@ import {
   type CreateDropResponse,
   type DropMeta,
   type OpenResponse,
+  type QuotaExceededDetails,
   type UploadStatus,
 } from '@cipherdrop/shared';
 import { Prisma, type Drop } from '@prisma/client';
@@ -19,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Request } from 'express';
 import type { AppContext } from '../../context';
+import { reserveBytes } from '../../lib/byteBudget';
 import {
   conflict,
   forbidden,
@@ -26,12 +28,15 @@ import {
   notFound,
   payloadTooLarge,
   quotaExceeded,
+  storageFull,
   unauthorized,
+  uploadBudgetExceeded,
   validationError,
 } from '../../lib/errors';
 import { decodeB64url, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
-import { ipPrefix } from '../../lib/ip';
+import { ipPrefix, ipShareKey } from '../../lib/ip';
 import { metrics } from '../../lib/metrics';
+import { effectiveQuotaBytes, probationEndsAt } from '../../lib/quota';
 import { randomToken } from '../../lib/tokens';
 import { recordAfterCommit } from '../audit/service';
 import type { AuthUser } from '../../types/express';
@@ -39,8 +44,14 @@ import { downloadsRemaining, goneReason, purgeDropBlobs } from './lifecycle';
 
 const HOUR_MS = 3_600_000;
 const MIN_MS = 60_000;
+/**
+ * The free-disk floor counts an upload in progress only while it is active: created, or stored a chunk,
+ * within this long. A reservation that writes nothing stops holding the floor after it (and cleanup deletes
+ * an upload with no chunk at all after an hour, jobs/cleanup.ts).
+ */
+export const UPLOAD_ACTIVE_MS = 10 * MIN_MS;
 /** Advisory lock namespaces (pg_advisory_xact_lock(int, int) first key). */
-const ANON_CAPACITY_LOCK = 1;
+const CAPACITY_LOCK = 1;
 const CHUNK_ROW_LOCK = 2;
 
 type Req = Pick<Request, 'ip' | 'headers'>;
@@ -75,6 +86,34 @@ export function expectedChunkSize(
 }
 
 /* ---------------------------------------------------------------- create */
+
+/**
+ * Take `bytes` (rounded up to whole MiB, lib/byteBudget.ts) from the rolling anonymous budget of the
+ * requesting client (IPv4 address or IPv6 /48), or throw 429 UPLOAD_BUDGET_EXCEEDED with the wait. Returns
+ * the release for a create that fails afterwards, or null when the budget is off. A drop deleted later does
+ * not give its bytes back: the budget meters what a client asked the server to store, so create-and-delete
+ * cycles cannot reset it.
+ */
+async function reserveAnonBudget(
+  ctx: AppContext,
+  req: Req,
+  bytes: number,
+): Promise<(() => Promise<void>) | null> {
+  const { ANON_BYTES_PER_CLIENT: limitBytes, ANON_BYTES_WINDOW_HOURS: windowHours } = ctx.env;
+  if (limitBytes <= 0) return null;
+  const result = await reserveBytes(
+    ctx.redis,
+    { limitBytes, windowHours },
+    ipShareKey(req.ip),
+    bytes,
+    ctx.now(),
+  );
+  if (!result.ok) {
+    metrics.dropsRefused.inc({ reason: 'client_budget' });
+    throw uploadBudgetExceeded(Math.ceil(result.retryAfterMs / 1000), { limitBytes, windowHours });
+  }
+  return result.release;
+}
 
 export async function createDrop(
   ctx: AppContext,
@@ -149,61 +188,175 @@ export async function createDrop(
       },
     });
 
-  if (user) {
-    // The quota check and the insert run under a per-user row lock: parallel creates queue on it, so each
-    // one sees the pending bytes of the creates before it (READ COMMITTED re-reads after the lock is won).
-    // complete() and purgeDropBlobs() update the same user row, so they serialise with it too.
-    await ctx.prisma.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<{ id: string }[]>`
-        SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
-      if (locked.length === 0) throw unauthorized();
-      const owner = await tx.user.findUniqueOrThrow({
-        where: { id: user.id },
-        select: { storageQuotaBytes: true, storageUsedBytes: true },
-      });
-      // Pending uploads count too, so parallel uploads cannot overshoot the quota.
-      const pending = await tx.drop.aggregate({
-        _sum: { totalCiphertextBytes: true },
-        where: { ownerId: user.id, status: 'UPLOADING' },
-      });
-      const committed = owner.storageUsedBytes + (pending._sum.totalCiphertextBytes ?? 0n);
-      if (committed + BigInt(totalBytes) > owner.storageQuotaBytes) {
-        throw quotaExceeded('Storage quota exceeded', {
-          quotaBytes: Number(owner.storageQuotaBytes),
-          usedBytes: Number(committed),
-        });
-      }
-      await insert(tx);
-    });
-  } else if (ctx.env.ANON_TOTAL_PENDING_BYTES > 0) {
-    // The anonymous capacity check and the insert run under one transaction-scoped advisory lock (the
-    // anonymous counterpart of the per-user row lock above), so parallel creates see each other's bytes.
-    // Every anonymous drop whose blobs are not purged yet counts, whatever its status (EXHAUSTED and
-    // EXPIRED drops keep their blobs while a grant lives).
-    await ctx.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ANON_CAPACITY_LOCK}::int, 0)`;
-      const held = await tx.drop.aggregate({
-        _sum: { totalCiphertextBytes: true },
-        where: { ownerId: null, blobsDeletedAt: null },
-      });
-      if (
-        (held._sum.totalCiphertextBytes ?? 0n) + BigInt(totalBytes) >
-        ctx.env.ANON_TOTAL_PENDING_BYTES
-      ) {
-        throw quotaExceeded(
-          'Anonymous uploads are at capacity right now, try again later or sign in',
-        );
-      }
-      await insert(tx);
-    });
-  } else {
-    await insert(ctx.prisma);
+  // Checked last among the cheap checks, so a request refused for its shape spends no budget.
+  const releaseBudget = anon ? await reserveAnonBudget(ctx, req, totalBytes) : null;
+  try {
+    await insertWithCapacityChecks(ctx, user, totalBytes, insert);
+  } catch (err) {
+    await releaseBudget?.();
+    throw err;
   }
 
   metrics.dropsCreated.inc({ anon: anon ? 'true' : 'false' });
   if (user)
     await recordAfterCommit(ctx, { userId: user.id, dropId: id, action: 'DROP_CREATED', req });
   return { dropId: id, ownerToken, uploadToken, expiresAt: expiresAt.toISOString() };
+}
+
+type Tx = Prisma.TransactionClient;
+
+/** The owner's quota check (the new-account probation included, lib/quota.ts), under the user row lock. */
+async function checkQuota(ctx: AppContext, tx: Tx, user: AuthUser, totalBytes: number) {
+  const locked = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+  if (locked.length === 0) throw unauthorized();
+  const owner = await tx.user.findUniqueOrThrow({
+    where: { id: user.id },
+    select: { storageQuotaBytes: true, storageUsedBytes: true, quotaProbationEndsAt: true },
+  });
+  // Pending uploads count too, so parallel uploads cannot overshoot the quota.
+  const pending = await tx.drop.aggregate({
+    _sum: { totalCiphertextBytes: true },
+    where: { ownerId: user.id, status: 'UPLOADING' },
+  });
+  const committed = owner.storageUsedBytes + (pending._sum.totalCiphertextBytes ?? 0n);
+  // A new account on probation has the smaller of its quota and NEW_ACCOUNT_QUOTA_BYTES.
+  const now = ctx.now();
+  const quota = effectiveQuotaBytes(owner, ctx.env, now);
+  if (committed + BigInt(totalBytes) > quota) {
+    const probation = probationEndsAt(owner, now);
+    throw quotaExceeded(
+      probation
+        ? 'Storage quota exceeded. New accounts have a smaller quota for their first days.'
+        : 'Storage quota exceeded',
+      {
+        quotaBytes: Number(quota),
+        usedBytes: Number(committed),
+        ...(probation ? { probationEndsAt: probation.toISOString() } : {}),
+      } satisfies QuotaExceededDetails,
+    );
+  }
+}
+
+/** Ciphertext bytes of the drops matching `where` whose blobs are not purged yet. */
+async function heldBytes(tx: Tx, where: Prisma.DropWhereInput): Promise<bigint> {
+  const held = await tx.drop.aggregate({
+    _sum: { totalCiphertextBytes: true },
+    where: { ...where, blobsDeletedAt: null },
+  });
+  return held._sum.totalCiphertextBytes ?? 0n;
+}
+
+/**
+ * Bytes held by account drops, counted as the quota counts them: every owner's storageUsedBytes (READY drops
+ * until their blobs are purged) plus the account drops still UPLOADING. One pass over User (it grows with
+ * accounts, not with drop history) and the (status, expiresAt) index for the uploads. Not counted: an account
+ * drop that never reached READY and left UPLOADING (deleted, disabled, expired) but whose purge has not run
+ * yet, which the cleanup job ends within CLEANUP_INTERVAL_SEC.
+ */
+async function accountHeldBytes(tx: Tx): Promise<bigint> {
+  // complete() moves a drop from UPLOADING to storageUsedBytes in one transaction, which does not take the
+  // capacity lock. Reading the uploads first means a complete() that commits between the two reads is
+  // counted twice (conservative), never missed.
+  const uploading = await heldBytes(tx, { status: 'UPLOADING', ownerId: { not: null } });
+  const used = await tx.user.aggregate({ _sum: { storageUsedBytes: true } });
+  return uploading + (used._sum.storageUsedBytes ?? 0n);
+}
+
+/**
+ * Declared bytes of the uploads in progress that are active: created after `since`, or with a chunk stored
+ * after `since` (a correlated EXISTS: one (dropId, storedAt) index probe per upload in progress).
+ */
+const activeUploadBytes = (tx: Tx, since: Date) =>
+  heldBytes(tx, {
+    status: 'UPLOADING',
+    OR: [{ createdAt: { gt: since } }, { chunks: { some: { storedAt: { gt: since } } } }],
+  });
+
+/**
+ * The instance-wide checks, under the capacity advisory lock: the anonymous pool (ANON_TOTAL_PENDING_BYTES,
+ * anonymous drops only), the global cap (GLOBAL_STORAGE_CAP_BYTES, every drop) and the free-disk floor
+ * (STORAGE_MIN_FREE_BYTES, local storage). An anonymous drop counts until its blobs are purged, whatever its
+ * status (EXHAUSTED and EXPIRED drops keep their blobs while a grant lives); account drops count as their
+ * owners' quotas count them (accountHeldBytes).
+ *
+ * The floor: free space on the blob volume, minus the declared bytes of every ACTIVE upload in progress
+ * (activeUploadBytes, UPLOAD_ACTIVE_MS) and of this drop, must stay at or above STORAGE_MIN_FREE_BYTES.
+ * Active uploads count in full, even the chunks already written (which free space already reflects):
+ * conservative. Idle ones do not count at all: otherwise anyone could shut new drops off for the whole
+ * instance without writing a byte, by reserving quota-sized drops and leaving them idle for 24 h. The cost of
+ * that choice: an upload that stalls for UPLOAD_ACTIVE_MS and then resumes can write below the floor.
+ * The pending sum is read BEFORE the free space, under the lock: a drop that is no longer UPLOADING then has
+ * every chunk on disk, so the free space reflects it, and no new drop can appear in between. Chunk PUTs of
+ * drops already accepted are not refused, so an accepted upload can finish.
+ *
+ * The global cap and the floor answer the same 507 STORAGE_FULL, so a client does not learn which one (or how
+ * full the disk is); drops_refused_total{reason} tells the operator.
+ */
+async function checkInstanceCapacity(
+  ctx: AppContext,
+  tx: Tx,
+  anon: boolean,
+  totalBytes: number,
+): Promise<void> {
+  const { ANON_TOTAL_PENDING_BYTES, GLOBAL_STORAGE_CAP_BYTES, STORAGE_MIN_FREE_BYTES } = ctx.env;
+  const bytes = BigInt(totalBytes);
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CAPACITY_LOCK}::int, 0)`;
+  let anonHeld: bigint | undefined;
+  const anonHeldBytes = async () => (anonHeld ??= await heldBytes(tx, { ownerId: null }));
+  if (anon && ANON_TOTAL_PENDING_BYTES > 0) {
+    if ((await anonHeldBytes()) + bytes > BigInt(ANON_TOTAL_PENDING_BYTES)) {
+      metrics.dropsRefused.inc({ reason: 'anon_pool' });
+      throw quotaExceeded(
+        'Anonymous uploads are at capacity right now, try again later or sign in',
+      );
+    }
+  }
+  if (GLOBAL_STORAGE_CAP_BYTES > 0) {
+    const held = (await anonHeldBytes()) + (await accountHeldBytes(tx));
+    if (held + bytes > BigInt(GLOBAL_STORAGE_CAP_BYTES)) {
+      metrics.dropsRefused.inc({ reason: 'global_cap' });
+      throw storageFull();
+    }
+  }
+  if (STORAGE_MIN_FREE_BYTES > 0 && ctx.storage.freeBytes) {
+    const since = new Date(ctx.now().getTime() - UPLOAD_ACTIVE_MS);
+    const uploading = await activeUploadBytes(tx, since);
+    const free = BigInt(Math.floor(await ctx.storage.freeBytes()));
+    if (free - uploading - bytes < BigInt(STORAGE_MIN_FREE_BYTES)) {
+      metrics.dropsRefused.inc({ reason: 'disk_floor' });
+      throw storageFull();
+    }
+  }
+}
+
+/**
+ * Insert the drop once the storage it reserves fits: the owner's quota (signed in), then the instance-wide
+ * checks. Both run in one transaction with the insert, so parallel creates see each other's bytes. Locks are
+ * taken in one order, the user row first and the capacity advisory lock second; nothing takes them the other
+ * way round, so they cannot deadlock. complete() and purgeDropBlobs() update the same user row, so they
+ * serialise with the quota check too (READ COMMITTED re-reads after the lock is won).
+ */
+async function insertWithCapacityChecks(
+  ctx: AppContext,
+  user: AuthUser | undefined,
+  totalBytes: number,
+  insert: (db: Pick<Prisma.TransactionClient, 'drop'>) => Promise<unknown>,
+): Promise<void> {
+  const { env } = ctx;
+  const instanceChecks =
+    (!user && env.ANON_TOTAL_PENDING_BYTES > 0) ||
+    env.GLOBAL_STORAGE_CAP_BYTES > 0 ||
+    (env.STORAGE_MIN_FREE_BYTES > 0 && ctx.storage.freeBytes !== undefined);
+  if (!user && !instanceChecks) {
+    await insert(ctx.prisma);
+    return;
+  }
+  await ctx.prisma.$transaction(async (tx) => {
+    if (user) await checkQuota(ctx, tx, user, totalBytes);
+    if (instanceChecks) await checkInstanceCapacity(ctx, tx, !user, totalBytes);
+    await insert(tx);
+  });
 }
 
 /* ---------------------------------------------------------------- upload */
@@ -281,8 +434,16 @@ export async function storeChunk(
       });
       await tx.dropChunk.upsert({
         where: { dropId_fileId_index: { dropId, fileId, index } },
-        create: { dropId, fileId, index, size: body.length, sha256, blobVersion: version },
-        update: { size: body.length, sha256, blobVersion: version },
+        create: {
+          dropId,
+          fileId,
+          index,
+          size: body.length,
+          sha256,
+          blobVersion: version,
+          storedAt: now,
+        },
+        update: { size: body.length, sha256, blobVersion: version, storedAt: now },
       });
       return previous;
     });

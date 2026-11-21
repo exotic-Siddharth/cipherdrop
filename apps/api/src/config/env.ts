@@ -13,6 +13,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { apiRoot } from './paths';
 
+const MiB = 1024 * 1024;
 const TRUE = new Set(['true', '1', 'yes', 'on']);
 const FALSE = new Set(['false', '0', 'no', 'off']);
 
@@ -108,6 +109,13 @@ const EnvSchema = z
     ANON_MAX_DROP_BYTES: int(104_857_600, 1),
     USER_MAX_DROP_BYTES: int(2_147_483_648, 1),
     USER_DEFAULT_QUOTA_BYTES: int(5_368_709_120, 0),
+    /**
+     * Probation for new accounts (sign-up is free and unverified): for their first NEW_ACCOUNT_PROBATION_DAYS
+     * (default 7; 0 = none) their quota is at most NEW_ACCOUNT_QUOTA_BYTES (default 256 MiB). The end date is
+     * fixed at registration; an admin's quota edit ends the probation at once (lib/quota.ts).
+     */
+    NEW_ACCOUNT_QUOTA_BYTES: int(268_435_456, 0),
+    NEW_ACCOUNT_PROBATION_DAYS: int(7, 0, 365),
     ANON_MAX_EXPIRY_HOURS: int(72, 1, 720),
     USER_MAX_EXPIRY_HOURS: int(720, 1, 720),
     MAX_FILES_PER_DROP: int(20, 1, 20),
@@ -141,8 +149,41 @@ const EnvSchema = z
      * or about 42 KB/s (0.34 Mbit/s) for the web uploader's 3 parallel PUTs.
      */
     CHUNK_UPLOAD_MIN_BYTES_PER_SEC: int(4096, 1, 1_048_576),
-    /** Ceiling on the ciphertext bytes of anonymous drops whose blobs are not purged yet (0 = no ceiling). */
-    ANON_TOTAL_PENDING_BYTES: int(0, 0),
+    /**
+     * Operator switches (ops-3). false: POST /drops without a session, or POST /auth/register, answers 403
+     * FEATURE_DISABLED; GET /api/config tells the SPA. Drops already created finish and stay downloadable.
+     */
+    ALLOW_ANONYMOUS_UPLOADS: bool(true),
+    ALLOW_REGISTRATION: bool(true),
+    /**
+     * Ceiling on the ciphertext bytes of all anonymous drops whose blobs are not purged yet, any status
+     * (default 10 GiB; 0 = no ceiling, an explicit opt-out). On by default: anonymous, end-to-end encrypted
+     * drops are free file hosting, and the server cannot scan ciphertext.
+     */
+    ANON_TOTAL_PENDING_BYTES: int(10_737_418_240, 0),
+    /**
+     * Rolling per-client budget for anonymous drops: at most this many declared ciphertext bytes per IPv4
+     * address or IPv6 /48 in any ANON_BYTES_WINDOW_HOURS (default 1 GiB per 24 h; 0 = off). Beyond it the
+     * create gets 429 UPLOAD_BUDGET_EXCEEDED with Retry-After. Kept in Redis, so it holds across API processes,
+     * and one client can no longer fill ANON_TOTAL_PENDING_BYTES and lock every other anonymous sender out.
+     * Counted in whole MiB per hour (lib/byteBudget.ts), so it must hold one ANON_MAX_DROP_BYTES drop rounded
+     * up to a MiB.
+     */
+    ANON_BYTES_PER_CLIENT: int(1_073_741_824, 0),
+    ANON_BYTES_WINDOW_HOURS: int(24, 1, 720),
+    /**
+     * Ceiling on the ciphertext bytes of ALL drops, anonymous and signed in, whose blobs are not purged yet
+     * (0 = off, the default). Beyond it a new drop gets 507 STORAGE_FULL. Size it to the disk or the bucket
+     * budget: quotas are per account and free accounts are cheap.
+     */
+    GLOBAL_STORAGE_CAP_BYTES: int(0, 0),
+    /**
+     * Local storage only: a new drop gets 507 STORAGE_FULL when the blob volume's free space, minus the
+     * declared bytes of every active upload in progress (created or stored a chunk in the last 10 minutes,
+     * drops/service.ts UPLOAD_ACTIVE_MS) and of this drop, would fall below this (default 1 GiB; 0 = off).
+     * The blobs share the host disk with Postgres, and a full disk takes the database down.
+     */
+    STORAGE_MIN_FREE_BYTES: int(1_073_741_824, 0),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),
@@ -161,6 +202,20 @@ const EnvSchema = z
     SEED_DEMO_PASSWORD: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
+    // A budget below the largest anonymous drop would refuse every drop of that size for ever. The budget
+    // counts whole MiB, so the largest drop is rounded up first. Upgrades: raising ANON_MAX_DROP_BYTES above
+    // 1 GiB now needs ANON_BYTES_PER_CLIENT raised too (or set to 0), and the message says so.
+    const largestAnonDrop = Math.ceil(env.ANON_MAX_DROP_BYTES / MiB) * MiB;
+    if (env.ANON_BYTES_PER_CLIENT > 0 && env.ANON_BYTES_PER_CLIENT < largestAnonDrop) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ANON_BYTES_PER_CLIENT'],
+        // Names only, like every message here (values are never printed).
+        message:
+          'must be 0 (off) or at least ANON_MAX_DROP_BYTES rounded up to a whole MiB: raise it ' +
+          'together with ANON_MAX_DROP_BYTES',
+      });
+    }
     if (env.NODE_ENV !== 'production') return;
     if (!env.RATE_LIMITS_ENABLED) {
       ctx.addIssue({

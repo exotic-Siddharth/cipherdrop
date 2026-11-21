@@ -32,7 +32,13 @@ import {
 } from '@cipherdrop/shared';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import type { AppContext } from '../../context';
-import { notFound, payloadTooLarge, rateLimited, validationError } from '../../lib/errors';
+import {
+  featureDisabled,
+  notFound,
+  payloadTooLarge,
+  rateLimited,
+  validationError,
+} from '../../lib/errors';
 import { sha256B64url, sha256Hex, timingSafeEqualStr } from '../../lib/hash';
 import { ipKey, ipShareKey } from '../../lib/ip';
 import { metrics } from '../../lib/metrics';
@@ -122,13 +128,28 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
   const tags = ['drops'];
 
   // Limiters are built once per app (each owns a RedisStore).
-  const createAnonLimiter = ctx.rateLimit({ name: 'createDropAnon', key: (req) => ipKey(req.ip) });
+  // Anonymous creates are counted per IPv4 address or IPv6 /48, like the in-flight shares: a subscriber is
+  // commonly delegated a /56 or a /48, and keying on the /64 would give one client 256 or 65,536 buckets.
+  const createAnonLimiter = ctx.rateLimit({
+    name: 'createDropAnon',
+    key: (req) => ipShareKey(req.ip),
+  });
   const createUserLimiter = ctx.rateLimit({
     name: 'createDropUser',
     key: (req) => req.user?.id ?? 'anonymous',
   });
   const createLimiter: RequestHandler = (req, res, next) =>
     (req.user ? createUserLimiter : createAnonLimiter)(req, res, next);
+  // Operator switch (ops-3), checked before the limiter: drops created earlier still finish and download.
+  const anonymousUploadsOpen: RequestHandler = (req, _res, next) => {
+    if (!req.user && !ctx.env.ALLOW_ANONYMOUS_UPLOADS) {
+      throw featureDisabled(
+        'anonymousUploads',
+        'This server accepts uploads from signed-in users only. Sign in to send files.',
+      );
+    }
+    next();
+  };
   const chunkIpLimiter = ctx.rateLimit({ name: 'chunkIp', key: (req) => ipKey(req.ip) });
   const chunkPutLimiter = ctx.rateLimit({ name: 'chunkPut', key: tokenKey });
   const chunkGetLimiter = ctx.rateLimit({ name: 'chunkGet', key: tokenKey });
@@ -220,8 +241,21 @@ export function dropsRoutes(ctx: AppContext): AppRouter {
           description:
             'Per-drop byte limit or storage quota exceeded (PAYLOAD_TOO_LARGE / QUOTA_EXCEEDED)',
         },
+        403: {
+          description:
+            'Anonymous uploads are switched off on this server (FEATURE_DISABLED, details.feature anonymousUploads)',
+        },
+        507: {
+          description:
+            'The instance is full: GLOBAL_STORAGE_CAP_BYTES reached or free disk below STORAGE_MIN_FREE_BYTES (STORAGE_FULL)',
+        },
+        429: {
+          description:
+            'Too many creates (RATE_LIMITED), or this anonymous client (IPv4 address or IPv6 /48) spent its rolling byte budget (UPLOAD_BUDGET_EXCEEDED, details {limitBytes, windowHours}); Retry-After',
+        },
       },
     },
+    anonymousUploadsOpen,
     createLimiter,
     async (req, res) => {
       res.status(201).json(await createDrop(ctx, req.body, req.user, req));

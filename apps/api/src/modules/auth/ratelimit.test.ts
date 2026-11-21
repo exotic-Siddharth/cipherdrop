@@ -43,17 +43,25 @@ describe('auth rate limits', () => {
     await hitUntilLimited(() => post('/prelogin', '192.0.2.20', { email }), 10);
   });
 
+  const registerBody = () => ({
+    email: uniqueEmail('rl'),
+    authKey: TEST_ACCOUNT.authKey,
+    kdf: TEST_ACCOUNT.kdf,
+    wrappedAccountKey: TEST_ACCOUNT.wrappedAccountKey,
+    wrappedAccountKeyRecovery: TEST_ACCOUNT.wrappedAccountKeyRecovery,
+    recoveryAuthHash: TEST_ACCOUNT.recoveryAuthHash,
+  });
+
   it('register: 5 per hour per IP', async () => {
-    const send = () =>
-      post('/register', '192.0.2.30', {
-        email: uniqueEmail('rl'),
-        authKey: TEST_ACCOUNT.authKey,
-        kdf: TEST_ACCOUNT.kdf,
-        wrappedAccountKey: TEST_ACCOUNT.wrappedAccountKey,
-        wrappedAccountKeyRecovery: TEST_ACCOUNT.wrappedAccountKeyRecovery,
-        recoveryAuthHash: TEST_ACCOUNT.recoveryAuthHash,
-      });
-    await hitUntilLimited(send, 5);
+    await hitUntilLimited(() => post('/register', '192.0.2.30', registerBody()), 5);
+  });
+
+  it('register: one IPv6 /48 is one bucket, whichever /64 inside it the requests come from', async () => {
+    let n = 0;
+    // Five sign-ups from five different /64s of 2001:db8:31::/48, then a sixth /64 is refused.
+    await hitUntilLimited(() => post('/register', `2001:db8:31:${++n}::1`, registerBody()), 5);
+    // The neighbouring /48 has its own bucket.
+    expect((await post('/register', '2001:db8:32::1', registerBody())).status).toBe(201);
   });
 
   it('recovery/start: 5 per hour per IP', async () => {

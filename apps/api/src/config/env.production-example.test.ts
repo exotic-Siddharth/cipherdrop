@@ -166,6 +166,10 @@ describe('.env.production.example', () => {
     });
   });
 
+  it('ships with a ceiling on anonymous storage (ANON_TOTAL_PENDING_BYTES is not 0)', () => {
+    expect(parseEnv(filled()).ANON_TOTAL_PENDING_BYTES).toBeGreaterThan(0);
+  });
+
   it('still depends on COOKIE_SECURE and a bare-origin WEB_ORIGIN (the guard is not bypassed by the file)', () => {
     expect(() => parseEnv({ ...filled(), COOKIE_SECURE: 'false' })).toThrow(/COOKIE_SECURE/);
     expect(() => parseEnv({ ...filled(), WEB_ORIGIN: 'https://drop.example.com/' })).toThrow(

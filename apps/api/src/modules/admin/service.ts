@@ -323,7 +323,7 @@ export async function patchUser(
  * Clear the sign-in lockout of an account (server-2): the failed-login counter and `lockedUntil`. The lock is
  * account-wide, so anyone who knows an email can keep its owner out by re-locking it every 15 minutes; this is
  * the owner's way back in, through an admin, until the lock itself is scoped per device. Audited on both
- * accounts: the owner sees it in Activity (no admin id in the metadata), the admin's row names the target.
+ * accounts: the owner sees it in Activity (no admin id, IP prefix or User-Agent), the admin's row names the target.
  */
 export async function clearUserLock(
   ctx: AppContext,
@@ -342,10 +342,12 @@ export async function clearUserLock(
     include: { _count: { select: { drops: true } } },
   });
   const wasLocked = before.lockedUntil !== null && before.lockedUntil > ctx.now();
+  // No `req` on the owner's row (unless the admin cleared their own): its IP prefix and User-Agent would be the
+  // admin's, shown to the owner in Activity.
   await recordAfterCommit(ctx, {
     userId,
     action: 'ACCOUNT_LOCK_CLEARED',
-    req,
+    ...(admin.id === userId ? { req } : {}),
     metadata: { byAdmin: true, wasLocked, failedLogins: before.failedLoginCount },
   });
   if (admin.id !== userId) {

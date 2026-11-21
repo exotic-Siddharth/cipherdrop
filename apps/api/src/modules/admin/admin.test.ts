@@ -658,7 +658,9 @@ describe('admin API', () => {
 
       const res = await request(t.app)
         .post(`/api/admin/users/${user.id}/clear-lock`)
-        .set(as(admin));
+        .set(as(admin))
+        .set('X-Forwarded-For', '198.51.100.4')
+        .set('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0');
       expect(res.status).toBe(200);
       expect(res.body.user).toMatchObject({ id: user.id, lockedUntil: null });
       const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
@@ -669,12 +671,14 @@ describe('admin API', () => {
         where: { userId: user.id, action: 'ACCOUNT_LOCK_CLEARED' },
       });
       expect(owned).toHaveLength(1);
-      // The owner sees that an admin cleared it, not which admin.
+      // The owner sees that an admin cleared it, not which admin: no admin id, nor the admin's network or browser.
       expect(owned[0]?.metadata).toEqual({ byAdmin: true, wasLocked: true, failedLogins: 3 });
+      expect(owned[0]).toMatchObject({ ipPrefix: null, userAgent: null });
       const mine = await t.prisma.auditEvent.findMany({
         where: { userId: admin.id, action: 'ACCOUNT_LOCK_CLEARED' },
       });
       expect(mine.map((e) => e.metadata)).toEqual([{ targetUserId: user.id, wasLocked: true }]);
+      expect(mine[0]?.ipPrefix).toBe('198.51.100.0/24');
 
       expect(
         (await request(t.app).post('/api/admin/users/unknownid/clear-lock').set(as(admin))).status,

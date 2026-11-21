@@ -28,6 +28,7 @@ import {
   RecoveryRotateRequestSchema,
   RecoveryStartRequestSchema,
   RecoveryStartResponseSchema,
+  RecoveryVaultSchema,
   RefreshResponseSchema,
   RegisterRequestSchema,
   SessionIdParamsSchema,
@@ -402,6 +403,23 @@ export function authRoutes(ctx: AppContext): AppRouter {
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       res.json({ wrappedAccountKey: user.wrappedAccountKey, kdf: kdfOf(user) });
+    },
+  );
+  r.route(
+    {
+      method: 'get',
+      path: '/vault/recovery',
+      summary:
+        'Account key wrapped by the recovery key, for a local "Test recovery key" check (changes nothing)',
+      tags,
+      auth: 'user',
+      responses: {
+        200: { description: 'Recovery-wrapped account key', schema: RecoveryVaultSchema },
+      },
+    },
+    async (req, res) => {
+      const user = await loadUser(ctx, authUser(req).id);
+      res.json({ wrappedAccountKeyRecovery: user.wrappedAccountKeyRecovery });
     },
   );
 

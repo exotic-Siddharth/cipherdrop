@@ -423,7 +423,7 @@ describe('deploy/nginx.conf access log (ops-6)', () => {
         'time_iso8601',
         'client_prefix',
         'request_method',
-        'uri',
+        'request_path',
         'status',
         'body_bytes_sent',
         'request_time',
@@ -436,6 +436,7 @@ describe('deploy/nginx.conf access log (ops-6)', () => {
       'realip_remote_addr',
       'request',
       'request_uri',
+      'uri',
       'args',
       'query_string',
       'http_user_agent',
@@ -445,6 +446,19 @@ describe('deploy/nginx.conf access log (ops-6)', () => {
     ]) {
       expect(variables, forbidden).not.toContain(forbidden);
     }
+  });
+
+  it('logs the path the client asked for, without the query string', () => {
+    const map = block(code, 'map $request_uri $request_path');
+    const rules = [...map.matchAll(/"~([^"]+)"\s+\$(\w+);/g)];
+    expect(rules).toHaveLength(1);
+    const [, re, group] = rules[0] as RegExpMatchArray;
+    const pathOf = (requestUri: string) =>
+      new RegExp(re as string).exec(requestUri)?.groups?.[group as string];
+    expect(pathOf('/d/AAAAAAAAAAAAAAAAAAAAAA')).toBe('/d/AAAAAAAAAAAAAAAAAAAAAA');
+    expect(pathOf('/api/drops?cursor=abc&limit=10')).toBe('/api/drops');
+    expect(pathOf('/SECURITY.md?name=board%20minutes')).toBe('/SECURITY.md');
+    expect(pathOf('/?')).toBe('/');
   });
 
   it('writes the client prefix exactly as the API ipPrefix() does, for every form nginx prints an address in', () => {

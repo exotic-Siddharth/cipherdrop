@@ -134,18 +134,18 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
   }
 
   // Evidence hold (server-5): an open report that carries the key keeps an expired or exhausted drop's blobs
-  // for review, for at most REPORT_EVIDENCE_HOLD_DAYS after the report.
+  // for review, for at most REPORT_EVIDENCE_HOLD_DAYS after the drop ended (expiresAt, or the open that
+  // exhausted it). The hold is measured from the drop, never from a report, so filing new reports cannot
+  // extend it.
   const holdDays = c.env.REPORT_EVIDENCE_HOLD_DAYS;
-  const notHeld: Prisma.DropWhereInput =
+  const holdCutoff = new Date(now.getTime() - holdDays * 24 * HOUR_MS);
+  const notHeld = (endedBeforeCutoff: Prisma.DropWhereInput): Prisma.DropWhereInput =>
     holdDays > 0
       ? {
-          reports: {
-            none: {
-              status: 'OPEN',
-              providedKey: { not: null },
-              createdAt: { gt: new Date(now.getTime() - holdDays * 24 * HOUR_MS) },
-            },
-          },
+          OR: [
+            { reports: { none: { status: 'OPEN', providedKey: { not: null } } } },
+            endedBeforeCutoff,
+          ],
         }
       : {};
 
@@ -154,7 +154,8 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     status: 'EXHAUSTED',
     blobsDeletedAt: null,
     grants: { none: { expiresAt: { gt: now } } },
-    ...notHeld,
+    // The last open exhausts the drop, so lastOpenedAt is when it ended.
+    ...notHeld({ OR: [{ lastOpenedAt: null }, { lastOpenedAt: { lte: holdCutoff } }] }),
   };
   for await (const d of candidates(c, exhaustedWhere)) {
     if (!(await purge(d.id))) continue;
@@ -186,7 +187,11 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     blobsDeletedAt: null,
     OR: [
       { status: { in: ['DELETED', 'DISABLED'] } },
-      { status: 'EXPIRED', grants: { none: { expiresAt: { gt: now } } }, ...notHeld },
+      {
+        status: 'EXPIRED',
+        grants: { none: { expiresAt: { gt: now } } },
+        ...notHeld({ expiresAt: { lte: holdCutoff } }),
+      },
     ],
   };
   for await (const d of candidates(c, orphanWhere)) await purge(d.id);

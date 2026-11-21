@@ -30,7 +30,9 @@ the operator commands.
 
 While a report that carries the key is open, cleanup does not delete the blobs of the drop when it expires or
 runs out of downloads, so the review stays possible. The hold ends when the report is resolved, or
-`REPORT_EVIDENCE_HOLD_DAYS` (default 14, 0 = none) after the report, whichever comes first. An owner's delete and
+`REPORT_EVIDENCE_HOLD_DAYS` (default 14, 0 = none) after the drop expired or its last download, whichever comes
+first. The hold is measured from the drop, not from a report, so filing more reports cannot extend it. A held
+drop still counts against its owner's quota, or the anonymous pool. An owner's delete and
 a takedown are never held: they delete the blobs at once and erase the key.
 
 When an account is deleted, its drops and blobs go as before, but a drop that has reports is kept as an ownerless

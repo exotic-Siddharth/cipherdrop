@@ -234,7 +234,9 @@ on the merged branch only `mobile-chromium`, which uses the installed Chromium, 
 2026-11-20, pull request #1), CI passed every job it then had: lint, typecheck and unit tests; the integration tests
 with Postgres, Redis and MinIO, `test:s3` included; e2e; the production image builds from the committed Dockerfiles;
 actionlint; and the audit gate. The jobs added on 2026-11-21 (`e2e-cross`, `prod-stack`, `secrets`, zizmor and
-`codeql.yml`) had not run on GitHub yet.
+`codeql.yml`) passed on their first GitHub run the same day (commit ee40e84): the cross-engine e2e in Firefox,
+WebKit, mobile WebKit and mobile Chromium, the production stack built from the committed Dockerfiles, booted and
+smoke-tested with Trivy and SBOMs, gitleaks over the full history, zizmor and CodeQL.
 
 What the tests cover, in brief: `packages/crypto` tests each security property of the construction, Argon2id
 known-answer vectors from the reference implementation, and a re-implementation of the spec with `node:crypto`
@@ -327,7 +329,8 @@ Firefox 114 (module Workers), Safari 16 (`'wasm-unsafe-eval'`).
 
 No automated test saves a file over 256 MiB in a real browser: the file-system path is unit-tested with fakes
 (`apps/web/src/crypto/sinks.test.ts`), and the cross-engine C-03 test checks the refusal with a drop whose manifest
-claims 300 MiB. The cross-engine CI job had not run on GitHub as of 2026-11-21 ([Running the tests](#running-the-tests)).
+claims 300 MiB. The cross-engine CI job runs that refusal test in Firefox, WebKit and mobile WebKit and passed on GitHub on
+2026-11-21 ([Running the tests](#running-the-tests)).
 
 ## Deployment
 

@@ -197,7 +197,7 @@ A send is `create`, then one PUT per chunk, then `complete`. A receive is `GET /
 | `POST /admin/reports/:id/resolve` | `DISABLE_DROP` (blobs deleted) or `DISMISS` |
 | `POST /admin/drops/:id/grant` | review grant that consumes no download; audited as `ADMIN_REVIEW_GRANT`. Needs a sign-in or step-up within `ADMIN_STEP_UP_MINUTES` (403 `STEP_UP_REQUIRED`; `GET /admin/reports` withholds the keys then) |
 | `GET /admin/users?search`, `PATCH /admin/users/:id` | list users; change role or storage quota. `storageQuotaBytes` is the stored quota and `effectiveQuotaBytes` the one that applies now; a PATCH with `storageQuotaBytes` ends the probation, a role-only PATCH does not; promoting an account without 2FA answers 409 |
-| `POST /admin/users/:id/clear-lock` | clear the sign-in lockout (failed-login counter and `lockedUntil`); audited as `ACCOUNT_LOCK_CLEARED` on the account (`{byAdmin: true}`) and on the admin |
+| `POST /admin/users/:id/clear-lock` | clear the sign-in lockout (failed-login counter and `lockedUntil`); audited as `ACCOUNT_LOCK_CLEARED` on the account (`{byAdmin: true}`, with no admin id, IP prefix or User-Agent) and on the admin |
 
 ### Operations (no `/api` prefix)
 

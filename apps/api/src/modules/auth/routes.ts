@@ -33,6 +33,7 @@ import {
   SessionIdParamsSchema,
   SessionListResponseSchema,
   SessionRevokeRequestSchema,
+  StepUpRequestSchema,
   TotpDisableRequestSchema,
   TotpEnableRequestSchema,
   TotpSetupResponseSchema,
@@ -843,6 +844,32 @@ export function authRoutes(ctx: AppContext): AppRouter {
           metadata: { scope: 'others', count: revoked.length },
         });
       }
+      res.status(204).end();
+    },
+  );
+  r.route(
+    {
+      method: 'post',
+      path: '/step-up',
+      summary:
+        'Re-authenticate this session (authKey + code when TOTP is on) for admin actions that need a recent sign-in',
+      tags,
+      auth: 'user',
+      request: { body: StepUpRequestSchema },
+      responses: {
+        204: { description: 'This session counts as just authenticated' },
+        403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
+      },
+    },
+    reauth,
+    async (req, res) => {
+      const me = authUser(req);
+      await requireAccountProof(ctx, await loadUser(ctx, me.id), req.body, req, 'step-up');
+      const updated = await ctx.prisma.session.updateMany({
+        where: { id: me.sid, userId: me.id, revokedAt: null },
+        data: { authenticatedAt: ctx.now() },
+      });
+      if (updated.count !== 1) throw unauthorized();
       res.status(204).end();
     },
   );

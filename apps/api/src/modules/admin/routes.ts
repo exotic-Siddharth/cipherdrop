@@ -22,6 +22,7 @@ import { createRouter, type AppRouter } from '../../lib/router';
 import {
   clearUserLock,
   getStats,
+  hasAdminStepUp,
   listReports,
   listUsers,
   patchUser,
@@ -51,14 +52,16 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     {
       method: 'get',
       path: '/reports',
-      summary: 'Abuse reports (decryptionKey is exposed only here)',
+      summary:
+        'Abuse reports (decryptionKey is exposed only here, and only within ADMIN_STEP_UP_MINUTES of a sign-in or step-up)',
       tags,
       auth,
       request: { query: AdminReportsQuerySchema },
       responses: { 200: { description: 'Page of reports', schema: AdminReportPageSchema } },
     },
     async (req, res) => {
-      res.json(await listReports(ctx, req.validatedQuery));
+      const withKeys = await hasAdminStepUp(ctx, authUser(req));
+      res.json(await listReports(ctx, req.validatedQuery, { withKeys }));
     },
   );
   r.route(
@@ -80,12 +83,13 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     {
       method: 'post',
       path: '/drops/:id/grant',
-      summary: 'Non-consuming review grant (audited)',
+      summary: 'Non-consuming review grant (audited; needs a recent sign-in or step-up)',
       tags,
       auth,
       request: { params: DropIdParamsSchema },
       responses: {
         200: { description: 'Review grant', schema: AdminGrantResponseSchema },
+        403: { description: 'No recent step-up (FORBIDDEN; details.reason STEP_UP_REQUIRED)' },
         404: { description: 'Unknown drop' },
       },
     },

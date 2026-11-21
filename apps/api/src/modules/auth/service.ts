@@ -123,6 +123,7 @@ export async function createSession(ctx: AppContext, user: User, req: Req): Prom
       ipPrefix: ipPrefix(req.ip),
       createdAt: now,
       lastUsedAt: now,
+      authenticatedAt: now,
       expiresAt: refreshExpiresAt,
       tokens: {
         create: {
@@ -472,4 +473,22 @@ export async function requireAccountProof(
     context,
   });
   if (!factor) throw forbidden('Invalid two-factor code');
+}
+
+/**
+ * True when the caller's session proved the password (and 2FA when on) within `minutes`: at sign-in or with
+ * POST /auth/step-up (server-3). Refreshes never count, so a long-lived session cannot reach the admin keys on its
+ * access token alone.
+ */
+export async function isRecentlyAuthenticated(
+  ctx: Pick<AppContext, 'prisma' | 'now'>,
+  caller: { id: string; sid: string },
+  minutes: number,
+): Promise<boolean> {
+  const session = await ctx.prisma.session.findUnique({
+    where: { id: caller.sid },
+    select: { userId: true, authenticatedAt: true, revokedAt: true },
+  });
+  if (!session || session.userId !== caller.id || session.revokedAt) return false;
+  return ctx.now().getTime() - session.authenticatedAt.getTime() <= minutes * 60_000;
 }

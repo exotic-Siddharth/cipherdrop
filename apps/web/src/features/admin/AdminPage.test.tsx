@@ -287,6 +287,20 @@ describe('AdminPage reports', () => {
     expect(screen.getByText('Contains a trojan <b>dropper</b>')).toBeVisible();
   });
 
+  it('asks for a step-up when the API withholds the key (server-3)', async () => {
+    const reportItems = reports().map((r) => (r.hasKey ? { ...r, decryptionKey: null } : r));
+    mockApi({ reportItems });
+    renderAdmin();
+    const confirm = await screen.findByRole('button', {
+      name: `Review drop ${dropId(1)} (confirm it's you first)`,
+    });
+    expect(screen.queryByRole('link', { name: `Review drop ${dropId(1)}` })).toBeNull();
+    await userEvent.click(confirm);
+    const dialog = await screen.findByRole('dialog', { name: "Confirm it's you" });
+    expect(within(dialog).getByLabelText('Your password')).toBeVisible();
+    expect(within(dialog).getByLabelText('Two-factor or backup code')).toBeVisible();
+  });
+
   it('Disable asks for confirmation, then resolves with DISABLE_DROP', async () => {
     const calls = mockApi();
     renderAdmin();

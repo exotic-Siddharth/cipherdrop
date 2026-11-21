@@ -17,7 +17,7 @@ import type {
 import { Prisma, type User } from '@prisma/client';
 import type { Request } from 'express';
 import type { AppContext } from '../../context';
-import { conflict, gone, notFound, validationError } from '../../lib/errors';
+import { conflict, gone, notFound, stepUpRequired, validationError } from '../../lib/errors';
 import { sha256B64url } from '../../lib/hash';
 import { ipPrefix } from '../../lib/ip';
 import { paginate, toPage } from '../../lib/pagination';
@@ -25,6 +25,7 @@ import { effectiveQuotaBytes, probationEndsAt } from '../../lib/quota';
 import { randomToken } from '../../lib/tokens';
 import type { AuthUser } from '../../types/express';
 import { recordAfterCommit } from '../audit/service';
+import { isRecentlyAuthenticated } from '../auth/service';
 import { goneReason, purgeDropBlobs } from '../drops/lifecycle';
 import { grantExpiry } from '../drops/service';
 
@@ -80,9 +81,19 @@ export async function getStats(ctx: AppContext): Promise<AdminStats> {
 
 /* ---------------------------------------------------------------- reports */
 
+/** Reporters' keys and review grants need a recent authentication of the admin's session (server-3). */
+export function hasAdminStepUp(ctx: AppContext, admin: AuthUser): Promise<boolean> {
+  return isRecentlyAuthenticated(ctx, admin, ctx.env.ADMIN_STEP_UP_MINUTES);
+}
+
+/**
+ * `withKeys` false (no recent step-up) withholds every decryption key: `hasKey` still says the report holds one, so
+ * the console can ask for the step-up and fetch again.
+ */
 export async function listReports(
   ctx: AppContext,
   query: AdminReportsQuery,
+  { withKeys }: { withKeys: boolean },
 ): Promise<Page<AdminReport>> {
   const p = paginate(query);
   const where: Prisma.ReportWhereInput = query.status ? { status: query.status } : {};
@@ -115,7 +126,7 @@ export async function listReports(
     createdAt: r.createdAt.toISOString(),
     // The key is only for reviewing an OPEN report; closed reports never serve one.
     hasKey: r.status === 'OPEN' && r.providedKey !== null,
-    decryptionKey: r.status === 'OPEN' ? r.providedKey : null,
+    decryptionKey: withKeys && r.status === 'OPEN' ? r.providedKey : null,
     drop: {
       id: r.drop.id,
       status: r.drop.status,
@@ -183,6 +194,7 @@ export async function reviewGrant(
   admin: AuthUser,
   req: Req,
 ): Promise<AdminGrantResponse> {
+  if (!(await hasAdminStepUp(ctx, admin))) throw stepUpRequired();
   const drop = await ctx.prisma.drop.findUnique({ where: { id: dropId } });
   if (!drop || drop.status === 'UPLOADING') throw notFound('Unknown drop');
   if (drop.status === 'DELETED' || drop.status === 'DISABLED' || drop.status === 'EXPIRED') {

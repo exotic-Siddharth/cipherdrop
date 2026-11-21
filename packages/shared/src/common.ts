@@ -72,9 +72,10 @@ export type GoneReason = z.infer<typeof GoneReasonSchema>;
 
 /**
  * `details.reason` of a 403 FORBIDDEN that the user can fix. MFA_REQUIRED: an admin without two-step
- * verification on an admin route (the SPA then asks them to turn it on).
+ * verification on an admin route (the SPA then asks them to turn it on). STEP_UP_REQUIRED: an admin action that
+ * needs a recent authentication (POST /auth/step-up, then retry; ADMIN_STEP_UP_MINUTES).
  */
-export const ForbiddenReasonSchema = z.enum(['MFA_REQUIRED']);
+export const ForbiddenReasonSchema = z.enum(['MFA_REQUIRED', 'STEP_UP_REQUIRED']);
 export type ForbiddenReason = z.infer<typeof ForbiddenReasonSchema>;
 
 /* ---- Errors and paging ---- */

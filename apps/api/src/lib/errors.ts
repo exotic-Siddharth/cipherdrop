@@ -67,6 +67,15 @@ export const mfaRequired = (
   message = 'Admin access needs two-step verification. Turn it on in Settings, Security, then try again.',
 ) => new AppError(403, 'FORBIDDEN', message, { reason: 'MFA_REQUIRED' satisfies ForbiddenReason });
 
+/**
+ * 403 FORBIDDEN with `details.reason` STEP_UP_REQUIRED: an admin action (reporters' keys, review grants) that needs
+ * a recent authentication of this session (server-3). POST /auth/step-up, then retry.
+ */
+export const stepUpRequired = (
+  message = 'Confirm your password and a two-factor code to continue.',
+) =>
+  new AppError(403, 'FORBIDDEN', message, { reason: 'STEP_UP_REQUIRED' satisfies ForbiddenReason });
+
 export const notFound = (message = 'Not found') => new AppError(404, 'NOT_FOUND', message);
 
 export const conflict = (message = 'Conflict', details?: unknown) =>

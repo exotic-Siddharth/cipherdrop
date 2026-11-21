@@ -1,13 +1,16 @@
 /**
  * The logger's err serializer: Prisma errors keep only safe fields, whatever their message carries, on every
  * path pino has for an error (the serializer, the message pino copies into `msg`, pino-http's child logger).
+ * The request log keeps the path of a request target only (no query string, no fragment).
  */
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { Prisma } from '@prisma/client';
 import express from 'express';
 import { pino } from 'pino';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
-import { createHttpLogger, createLogger, serializeError } from './logger';
+import { createHttpLogger, createLogger, pathOnly, serializeError } from './logger';
 
 const SECRET = 'NHQLjAoPm44F9kDrwhV7u3CPHHucOoBzVFOBmVwdGmw';
 const CLIENT = { clientVersion: '6.19.3' };
@@ -169,5 +172,43 @@ describe('serializeError', () => {
     const output = lines.join('');
     expect(output).not.toContain(SECRET);
     expect(output.match(/"type":"PrismaClientValidationError"/g)).toHaveLength(4);
+  });
+});
+
+describe('the request log', () => {
+  it('keeps the path only: no query string and no fragment, sent as "#" or re-encoded as "%23"', async () => {
+    expect(pathOnly('/api/drops/X?cursor=abc')).toBe('/api/drops/X');
+    expect(pathOnly('/api/drops/X#key')).toBe('/api/drops/X');
+    expect(pathOnly('/api/drops/X%23key')).toBe('/api/drops/X');
+    expect(pathOnly('/api/drops/X%2523key')).toBe('/api/drops/X%2523key');
+    expect(pathOnly(undefined)).toBe('');
+
+    const { lines, log } = captured();
+    const app = express();
+    app.use(createHttpLogger(log));
+    app.get('/x', (_req, res) => res.status(204).end());
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise((resolve) => server.once('listening', resolve));
+    const { port } = server.address() as AddressInfo;
+    // Raw request targets (supertest would drop the fragment client-side); Node keeps a "#" in req.url.
+    const targets = [`/x?token=${SECRET}`, `/x#${SECRET}`, `/x%23${SECRET}`, `/x#a?b=${SECRET}`];
+    try {
+      for (const target of targets) {
+        await new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path: target }, (res) => {
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      }
+      await vi.waitFor(() => expect(lines).toHaveLength(targets.length));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    const paths = lines.map((l) => (JSON.parse(l) as { req: { path: string } }).req.path);
+    expect(paths).toEqual(targets.map(() => '/x'));
+    expect(lines.join('')).not.toContain(SECRET);
   });
 });

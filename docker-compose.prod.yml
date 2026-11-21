@@ -18,10 +18,10 @@
 name: cipherdrop-prod
 
 # Container logs (nginx's access log with IP prefixes only, the API's request log): Docker's json-file driver keeps at
-# most 3 files of 10 MB per container, so retention is bounded by size, not time. A privacy-format nginx line takes
-# about 200 bytes on disk (Docker's JSON wrapper included), so 30 MB holds some 150,000 requests: days on a busy
-# instance, months on a quiet one. For a time limit, use the journald driver with MaxRetentionSec= in the host's
-# journald.conf, or ship the logs to a store that expires them (docs/DEPLOYMENT.md).
+# most 3 files of 10 MB per container, so retention is bounded by size, not time. A privacy-format nginx line took
+# about 150 bytes on disk (Docker's JSON wrapper included, measured over the smoke test's requests), so 30 MB holds some
+# 200,000 requests: days on a busy instance, months on a quiet one. For a time limit, use the journald driver with
+# MaxRetentionSec= in the host's journald.conf, or ship the logs to a store that expires them (docs/DEPLOYMENT.md).
 x-logging: &logging
   driver: json-file
   options:

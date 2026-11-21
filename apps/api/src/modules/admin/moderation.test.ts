@@ -98,7 +98,7 @@ describe('moderation', () => {
       );
       expect(dis).toMatchObject({ dropId: disabled.dropId, metadata: { reportId: r2 } });
 
-      // Filters: by target account, by action; scope=all also lists the users' own events.
+      // Filters: by target account, by action. Never an account's own events: no scope, no other action.
       const byUser = await request(t.app).get(`/api/admin/audit?userId=${user.id}`).set(as(admin));
       expect(byUser.body.items.map((e: { action: string }) => e.action)).toEqual([
         'ADMIN_USER_UPDATED',
@@ -108,12 +108,14 @@ describe('moderation', () => {
         .set(as(admin));
       expect(byAction.body.total).toBe(1);
       const all = await request(t.app).get('/api/admin/audit?scope=all').set(as(admin));
-      expect(all.body.items.some((e: { action: string }) => e.action === 'DROP_DISABLED')).toBe(
-        true,
+      expect(all.status).toBe(200);
+      expect(all.body.total).toBe(3);
+      expect(all.body.items.some((e: { action: string }) => !e.action.startsWith('ADMIN_'))).toBe(
+        false,
       );
-      expect((await request(t.app).get('/api/admin/audit?scope=x').set(as(admin))).status).toBe(
-        400,
-      );
+      expect(
+        (await request(t.app).get('/api/admin/audit?action=DROP_OPENED').set(as(admin))).status,
+      ).toBe(400);
     });
 
     it('keeps the record when the target or the acting admin deletes their account', async () => {

@@ -561,13 +561,9 @@ describe('AdminPage users', () => {
         within(list).getByText('Reason: Repeat malware · 2 sessions signed out'),
       ).toBeInTheDocument();
       expect(within(list).getByText(/By Operator \(command line\)/)).toBeInTheDocument();
-      expect(calls.find((c) => c.path === '/api/admin/audit')?.search.get('scope')).toBe('admin');
-      await userEvent.selectOptions(screen.getByLabelText('Show'), 'all');
-      await waitFor(() =>
-        expect(
-          calls.some((c) => c.path === '/api/admin/audit' && c.search.get('scope') === 'all'),
-        ).toBe(true),
-      );
+      // Admin actions only: no picker for every account's own activity, and no scope sent.
+      expect(screen.queryByLabelText('Show')).toBeNull();
+      expect(calls.find((c) => c.path === '/api/admin/audit')?.search.has('scope')).toBe(false);
     });
 
     it('suspends with a reason (required), and never offers it for admins', async () => {

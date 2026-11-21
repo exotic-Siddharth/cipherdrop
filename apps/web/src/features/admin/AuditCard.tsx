@@ -2,7 +2,6 @@ import {
   AUDIT_ACTION_LABELS,
   AdminAuditPageSchema,
   type AdminAuditEvent,
-  type AdminAuditQuery,
 } from '@cipherdrop/shared';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ScrollText } from 'lucide-react';
@@ -10,7 +9,6 @@ import { useState } from 'react';
 import { Card, CardHeader } from '../../components/ui/Card';
 import { EmptyState, ErrorState } from '../../components/ui/EmptyState';
 import { Pagination } from '../../components/ui/Pagination';
-import { Select } from '../../components/ui/Select';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { api } from '../../lib/api';
 import { cn } from '../../lib/cn';
@@ -19,15 +17,6 @@ import { queryKeys } from '../../lib/queryClient';
 import { AUDIT_PRESENTATION } from '../settings/auditPresentation';
 
 const PAGE_SIZE = 10;
-
-type Scope = AdminAuditQuery['scope'];
-
-const SCOPE_OPTIONS = [
-  { value: 'admin', label: 'Admin actions' },
-  { value: 'all', label: 'All events' },
-] as const;
-
-const isScope = (value: string): value is Scope => value === 'admin' || value === 'all';
 
 function actorText(e: AdminAuditEvent): string | null {
   if (e.byOperator) return 'Operator (command line)';
@@ -50,17 +39,19 @@ function detailText(e: AdminAuditEvent): string | null {
   return parts.length ? parts.join(' · ') : null;
 }
 
-/** Instance audit log (server-4): who did what, newest first. Admin actions by default. */
+/**
+ * Instance audit log (server-4): who did what, newest first. Admin and operator actions only; an account's own
+ * activity is its owner's alone (Settings, Activity).
+ */
 export function AuditCard() {
-  const [scope, setScope] = useState<Scope>('admin');
   const [page, setPage] = useState(1);
 
   const audit = useQuery({
-    queryKey: queryKeys.adminAudit({ page, pageSize: PAGE_SIZE, scope }),
+    queryKey: queryKeys.adminAudit({ page, pageSize: PAGE_SIZE }),
     queryFn: () =>
       api.get('/admin/audit', {
         schema: AdminAuditPageSchema,
-        query: { page, pageSize: PAGE_SIZE, scope },
+        query: { page, pageSize: PAGE_SIZE },
       }),
     placeholderData: keepPreviousData,
   });
@@ -73,21 +64,7 @@ export function AuditCard() {
         title={<span id="audit-title">Audit</span>}
         description="Every admin and operator action, with who did it. Kept for a year."
       />
-      <div className="px-5 pt-4 sm:px-6">
-        <Select
-          label="Show"
-          value={scope}
-          onChange={(e) => {
-            if (isScope(e.target.value)) {
-              setScope(e.target.value);
-              setPage(1);
-            }
-          }}
-          options={SCOPE_OPTIONS}
-          containerClassName="max-w-xs"
-        />
-      </div>
-      <div className="mt-4 border-t border-border">
+      <div className="border-t border-border">
         {audit.isPending ? (
           <div className="space-y-3 p-5" aria-hidden="true">
             {[0, 1, 2].map((i) => (

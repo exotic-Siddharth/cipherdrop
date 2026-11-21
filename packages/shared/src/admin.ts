@@ -16,6 +16,7 @@ import {
   EncryptedManifestSchema,
   pageSchema,
 } from './common';
+import { ADMIN_AUDIT_ACTIONS } from './constants';
 
 /* GET /admin/stats */
 export const AdminStatsSchema = z.object({
@@ -139,14 +140,14 @@ export type AdminUserResponse = z.infer<typeof AdminUserResponseSchema>;
 export const AdminDropDisableRequestSchema = z.object({ reason: ModerationReasonSchema });
 export type AdminDropDisableRequest = z.infer<typeof AdminDropDisableRequestSchema>;
 
-/* GET /admin/audit?scope&action&actorId&userId&dropId&page&pageSize -> Page<AdminAuditEvent> (server-4) */
+/* GET /admin/audit?action&actorId&userId&dropId&page&pageSize -> Page<AdminAuditEvent> (server-4). Admin and
+   operator actions only: an account's own activity (sign-ins, opens of its drops) stays readable by its owner
+   alone, through /me/audit. */
 export const AdminAuditQuerySchema = PageQuerySchema.extend({
-  /** admin (default): admin and operator actions only; all: every audit event of the instance. */
-  scope: z.enum(['admin', 'all']).default('admin'),
-  action: AuditActionSchema.optional(),
+  action: z.enum(ADMIN_AUDIT_ACTIONS).optional(),
   /** The acting admin. */
   actorId: IdSchema.optional(),
-  /** The account the event is about: its own events and the admin actions that targeted it. */
+  /** The account an admin action targeted. */
   userId: IdSchema.optional(),
   dropId: DropIdSchema.optional(),
 });

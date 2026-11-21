@@ -73,7 +73,8 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 
 - Moderation (2026-11-22): every admin action is an audit event naming the acting admin (role and quota edits,
   dismissals, disables, review grants, suspensions, session revocations), kept for a year and listed by
-  `GET /api/admin/audit` and the console's Audit card. Admins can suspend an account (all sessions signed out,
+  `GET /api/admin/audit` and the console's Audit card. That log holds admin and operator actions only: an account's
+  own activity (sign-ins, opens of its drops) stays readable by its owner alone. Admins can suspend an account (all sessions signed out,
   sign-in refused with 403 `ACCOUNT_SUSPENDED` after a correct password) and take a drop down by link or id without
   a report (`POST /api/admin/drops/:id/disable`).
 - An operator CLI (`node apps/api/dist/cli.js` in the api container, `npm run cli -w @cipherdrop/api` in development):

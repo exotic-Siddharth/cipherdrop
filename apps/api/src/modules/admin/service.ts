@@ -507,28 +507,20 @@ export async function revokeSessions(
 const ADMIN_ACTIONS: AuditAction[] = [...ADMIN_AUDIT_ACTIONS];
 
 /**
- * The instance audit log for admins (server-4), newest first. `scope=admin` (default) lists admin and operator
- * actions only; `userId` matches the account's own events and the admin actions that targeted it.
+ * The instance audit log for admins (server-4), newest first: admin and operator actions only, never an
+ * account's own activity (that is the owner's, through /me/audit). `userId` matches the actions that targeted it.
  */
 export async function listAudit(
   ctx: AppContext,
   query: AdminAuditQuery,
 ): Promise<Page<AdminAuditEvent>> {
   const p = paginate(query);
-  const and: Prisma.AuditEventWhereInput[] = [];
-  if (query.scope === 'admin') and.push({ action: { in: ADMIN_ACTIONS } });
+  const and: Prisma.AuditEventWhereInput[] = [{ action: { in: ADMIN_ACTIONS } }];
   if (query.action) and.push({ action: query.action });
   if (query.actorId) and.push({ actorId: query.actorId });
   if (query.dropId) and.push({ dropId: query.dropId });
-  if (query.userId) {
-    and.push({
-      OR: [
-        { userId: query.userId },
-        { metadata: { path: ['targetUserId'], equals: query.userId } },
-      ],
-    });
-  }
-  const where: Prisma.AuditEventWhereInput = and.length ? { AND: and } : {};
+  if (query.userId) and.push({ metadata: { path: ['targetUserId'], equals: query.userId } });
+  const where: Prisma.AuditEventWhereInput = { AND: and };
   const [rows, total] = await Promise.all([
     ctx.prisma.auditEvent.findMany({
       where,

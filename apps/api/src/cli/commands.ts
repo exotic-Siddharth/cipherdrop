@@ -23,7 +23,7 @@ Commands:
   drop:disable <dropId> --reason <text> Take a drop down (blobs deleted, open reports resolved)
   sessions:revoke <email>               Sign out every session of one account
   sessions:revoke --all                 Sign out every session of every account (incident response)
-  audit:tail [--limit <n>] [--all]      Print the latest admin and operator actions (--all: every event)
+  audit:tail [--limit <n>]              Print the latest admin and operator actions
   help                                  Show this text
 
 Every command is recorded in the audit log as an operator action.`;
@@ -130,11 +130,7 @@ export async function runCli(ctx: AppContext, argv: string[], out: Out): Promise
         if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
           throw new UsageError('--limit is a whole number from 1 to 100');
         }
-        const page = await listAudit(ctx, {
-          page: 1,
-          pageSize: limit,
-          scope: options.get('all') === true ? 'all' : 'admin',
-        });
+        const page = await listAudit(ctx, { page: 1, pageSize: limit });
         for (const e of [...page.items].reverse()) {
           const who = e.byOperator ? 'operator' : (e.actor?.email ?? '-');
           const subject = e.subject ? (e.subject.email ?? e.subject.id) : '-';

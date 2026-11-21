@@ -52,6 +52,15 @@ describe('securityTxt', () => {
     expect(days).toBeGreaterThanOrEqual(90);
   });
 
+  it('tells the operator how to renew Expires: a rebuild without the build cache', () => {
+    // An unchanged `up -d --build` is a cache hit for the build step and keeps the old Expires.
+    const comments = securityTxt({}, now)
+      .split('\n')
+      .filter((line) => line.startsWith('#'));
+    expect(comments.join('\n')).toMatch(/rebuild the web image without the build cache/);
+    expect(comments.join('\n')).not.toMatch(/a rebuild renews/i);
+  });
+
   it("takes the operator's contacts in order of preference, and their policy", () => {
     const text = securityTxt(
       {

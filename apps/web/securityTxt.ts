@@ -2,8 +2,10 @@
  * /.well-known/security.txt (RFC 9116): where to report a vulnerability in this deployment. Generated rather than
  * committed, because RFC 9116 requires an Expires field: each build writes one SECURITY_TXT_MAX_AGE_DAYS ahead (the
  * RFC recommends less than a year), so an instance that has not been rebuilt for that long says its contact data may
- * be stale, and a rebuild also brings in the security fixes made since. vite.config.ts serves it from the dev and
- * preview servers and writes it into the build output, where deploy/nginx.conf serves it as UTF-8 plain text.
+ * be stale, and a rebuild also brings in the security fixes made since. Only a build step that runs again renews it:
+ * Docker reuses the cached build step of an unchanged tree, so the renewal is a rebuild without the cache
+ * (`docker compose ... build --no-cache web`). vite.config.ts serves it from the dev and preview servers and writes it
+ * into the build output, where deploy/nginx.conf serves it as UTF-8 plain text.
  *
  * Operators name their own contact when they build the web image (docs/DEPLOYMENT.md, .env.production.example):
  *   SECURITY_TXT_CONTACT  one or more mailto:, tel: or https:// URIs, comma-separated, in order of preference
@@ -71,7 +73,7 @@ export function securityTxt(config: SecurityTxtConfig = {}, now: Date = new Date
   const expires = new Date(now.getTime() + SECURITY_TXT_MAX_AGE_DAYS * 86_400_000);
   return [
     '# Where to report a security vulnerability in this CipherDrop instance (RFC 9116).',
-    '# Generated when the web app is built; a rebuild renews Expires.',
+    '# Generated when the web app is built. To renew Expires, rebuild the web image without the build cache.',
     ...contacts.map((c) => `Contact: ${c}`),
     `Expires: ${expires.toISOString().replace(/\.\d{3}Z$/, 'Z')}`,
     `Policy: ${policy}`,

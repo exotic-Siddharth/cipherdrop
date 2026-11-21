@@ -118,7 +118,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<AuditAction, string>> = Object
   ADMIN_DROP_DISABLED: 'Admin took a drop down',
 });
 
-/** Admin-action audit events (server-4): the GET /admin/audit `scope=admin` filter, kept for a year. */
+/** Admin-action audit events (server-4): the only events GET /admin/audit lists, kept for a year. */
 export const ADMIN_AUDIT_ACTIONS = Object.freeze([
   'ADMIN_REVIEW_GRANT',
   'ADMIN_USER_UPDATED',

@@ -49,4 +49,6 @@ attached to a still-open report.
 
 Every admin and operator action (role and quota edits, suspensions, takedowns, dismissals, review grants, session
 revocations) is one audit event naming the acting admin, or "operator" for the command line. The console's Audit
-card and `node apps/api/dist/cli.js audit:tail` show them. They are kept for a year, other audit events for 90 days.
+card and `node apps/api/dist/cli.js audit:tail` show them, and only them: an account's own events (sign-ins, opens
+of its drops, with their network prefix and browser) are its owner's alone, in Settings. They are kept for a year,
+other audit events for 90 days.

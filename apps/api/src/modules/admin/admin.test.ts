@@ -6,7 +6,12 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
-import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
+import {
+  TEST_ACCOUNT,
+  authHeader,
+  createAdminRecord,
+  createUserRecord,
+} from '../../../test/factories';
 import type { AppContext } from '../../context';
 import { bearer, enableTotpViaApi, newSession, registerViaApi } from '../auth/testkit';
 import {
@@ -68,6 +73,7 @@ describe('admin API', () => {
       ['post', (i) => `/api/admin/drops/${i.drop}/grant`],
       ['get', () => '/api/admin/users'],
       ['patch', (i) => `/api/admin/users/${i.user}`, { storageQuotaBytes: 1 }],
+      ['post', (i) => `/api/admin/users/${i.user}/clear-lock`],
     ];
 
     it('answers 401 without a token and 403 for regular users on every admin route', async () => {
@@ -585,6 +591,44 @@ describe('admin API', () => {
         patchUser(racing, user.id, { role: 'ADMIN' }, { id: admin.id, role: 'ADMIN', sid: 's' }),
       ).rejects.toMatchObject({ status: 409, code: 'CONFLICT' });
       expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe('USER');
+    });
+
+    it('clears a sign-in lockout, audited on the account and on the admin (server-2)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, {
+        failedLoginCount: 3,
+        lockedUntil: new Date(T0.getTime() + 10 * 60_000),
+      });
+      const login = () =>
+        request(t.app)
+          .post('/api/auth/login')
+          .send({ email: user.email, authKey: TEST_ACCOUNT.authKey });
+      // While locked, even the right password is refused.
+      expect((await login()).status).toBe(401);
+
+      const res = await request(t.app)
+        .post(`/api/admin/users/${user.id}/clear-lock`)
+        .set(as(admin));
+      expect(res.status).toBe(200);
+      expect(res.body.user).toMatchObject({ id: user.id, lockedUntil: null });
+      const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(row).toMatchObject({ lockedUntil: null, failedLoginCount: 0 });
+      expect((await login()).status).toBe(200);
+
+      const owned = await t.prisma.auditEvent.findMany({
+        where: { userId: user.id, action: 'ACCOUNT_LOCK_CLEARED' },
+      });
+      expect(owned).toHaveLength(1);
+      // The owner sees that an admin cleared it, not which admin.
+      expect(owned[0]?.metadata).toEqual({ byAdmin: true, wasLocked: true, failedLogins: 3 });
+      const mine = await t.prisma.auditEvent.findMany({
+        where: { userId: admin.id, action: 'ACCOUNT_LOCK_CLEARED' },
+      });
+      expect(mine.map((e) => e.metadata)).toEqual([{ targetUserId: user.id, wasLocked: true }]);
+
+      expect(
+        (await request(t.app).post('/api/admin/users/unknownid/clear-lock').set(as(admin))).status,
+      ).toBe(404);
     });
 
     it('validates the patch, answers 404 for unknown users and refuses self-demotion', async () => {

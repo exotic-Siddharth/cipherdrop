@@ -6,7 +6,9 @@
  * - script-src 'wasm-unsafe-eval': hash-wasm compiles its Argon2id WebAssembly module at runtime.
  * - style-src 'unsafe-inline': React style props and the toast library's injected stylesheet.
  * - img-src blob: data:: decrypted image previews (blob:) and small inline SVG/data URIs.
- * - worker-src blob:: module workers are same-origin files; blob: keeps bundler-inlined workers working.
+ * - worker-src 'self' only: both workers (upload, KDF) are same-origin module files that Vite emits under
+ *   /assets/ from `new Worker(new URL(..., import.meta.url))`; nothing builds a blob: worker
+ *   (src/workers/workerCsp.test.ts keeps it that way).
  * No inline <script> exists anywhere: the theme is applied by the external /theme-init.js (R22).
  */
 export const CONTENT_SECURITY_POLICY = [
@@ -15,7 +17,7 @@ export const CONTENT_SECURITY_POLICY = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' blob: data:",
   "connect-src 'self'",
-  "worker-src 'self' blob:",
+  "worker-src 'self'",
   "font-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",

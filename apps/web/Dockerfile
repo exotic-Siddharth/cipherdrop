@@ -19,6 +19,10 @@ COPY packages packages
 COPY apps/web apps/web
 # Served at /SECURITY.md (linked from /how-it-works); the build copies it into dist.
 COPY docs/SECURITY.md docs/SECURITY.md
+# The contact and policy of /.well-known/security.txt (apps/web/securityTxt.ts; empty = the CipherDrop project's own).
+# docker-compose.prod.yml passes them from .env.production. The build fails on a value that is not a valid URI.
+ARG SECURITY_TXT_CONTACT=
+ARG SECURITY_TXT_POLICY=
 RUN npm run build -w @cipherdrop/web
 
 FROM ${NGINX_IMAGE} AS runtime

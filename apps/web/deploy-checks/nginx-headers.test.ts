@@ -505,3 +505,22 @@ describe('deploy/nginx.conf access log (ops-6)', () => {
     expect(prefixOf('unix:')).toBe('-');
   });
 });
+
+describe('deploy/nginx.conf /.well-known/ (docs-9)', () => {
+  it('serves the built security.txt as UTF-8 plain text, never the SPA, with the inherited headers', () => {
+    const body = block(server, 'location = /.well-known/security.txt');
+    const own = ownLevel(body);
+    // An empty types map: every file here is text/plain, whatever its extension.
+    expect(body).toMatch(/^\s*types \{ \}$/m);
+    expect(directive(own, 'default_type')).toEqual(['text/plain']);
+    expect(directive(own, 'charset')).toEqual(['utf-8']);
+    expect(directive(own, 'try_files')).toEqual(['$uri =404']);
+    expect(directive(own, 'add_header')).toEqual([]);
+  });
+
+  it('answers every other /.well-known/ path with a 404, ahead of the regex locations', () => {
+    const own = ownLevel(block(server, 'location ^~ /.well-known/'));
+    expect(directive(own, 'return')).toEqual(['404']);
+    expect(directive(own, 'add_header')).toEqual([]);
+  });
+});

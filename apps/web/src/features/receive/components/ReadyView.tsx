@@ -56,6 +56,16 @@ import { ReportDialog } from './ReportDialog';
 export const INTEGRITY_ERROR_TITLE =
   'This file was modified in transit or storage. Download blocked.';
 
+/**
+ * What "Integrity verified" proves, and what it does not (crypto-5). Every chunk authenticated under a key derived
+ * from this link's key, so the bytes are exactly what someone holding that key encrypted. Anyone can create a
+ * drop and CipherDrop never sees the contents, so it says nothing about who sent the file or whether it is safe.
+ */
+const INTEGRITY_MEANING =
+  "A verified file is exactly what was encrypted with this link's key, unchanged in transit and storage. It does not tell you who sent it or whether it is safe to open: CipherDrop cannot see or scan files.";
+const INTEGRITY_BADGE_HINT =
+  "Exactly what was encrypted with this link's key. Not a check of who sent it or whether it is safe.";
+
 type FileStatus =
   | { status: 'idle' }
   | { status: 'downloading'; written: number }
@@ -308,7 +318,7 @@ export function ReadyView({
       case 'verified':
         trailing = (
           <>
-            <Badge tone="success" icon={ShieldCheck}>
+            <Badge tone="success" icon={ShieldCheck} title={INTEGRITY_BADGE_HINT}>
               Integrity verified
             </Badge>
             {s.blob ? (
@@ -387,7 +397,12 @@ export function ReadyView({
 
       {manifest.note ? (
         <Card>
-          <CardHeader icon={MessageSquareText} title="Note from the sender" titleAs="h2" />
+          <CardHeader
+            icon={MessageSquareText}
+            title="Note from the sender (not verified)"
+            titleAs="h2"
+            description="Text written by whoever created this link. CipherDrop cannot confirm who that is."
+          />
           <CardContent className="pt-0">
             <p className="text-sm break-words whitespace-pre-wrap text-foreground">
               {manifest.note}
@@ -416,7 +431,7 @@ export function ReadyView({
           }
           actions={
             allVerified ? (
-              <Badge tone="success" icon={ShieldCheck} size="md">
+              <Badge tone="success" icon={ShieldCheck} size="md" title={INTEGRITY_BADGE_HINT}>
                 Integrity verified
               </Badge>
             ) : undefined
@@ -456,7 +471,7 @@ export function ReadyView({
           ) : null}
           <p className="text-center text-xs text-muted">
             Files are decrypted on this device and checked chunk by chunk. Anything modified is
-            blocked, never saved.
+            blocked, never saved. {INTEGRITY_MEANING}
           </p>
         </CardContent>
       </Card>

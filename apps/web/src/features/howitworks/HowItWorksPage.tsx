@@ -46,6 +46,10 @@ const LIMITATIONS = [
     text: 'The key is part of the link, so share it only through a channel you trust. Add a password for a second factor the link alone cannot give.',
   },
   {
+    title: 'A link does not prove who sent it.',
+    text: 'Anyone can create a drop. "Integrity verified" means the files are exactly what was encrypted with the link\'s key, unchanged since. It does not mean they come from the person you expect or are safe to open, and the note says whatever the link\'s creator wrote. If a link is unexpected, confirm it with the sender another way, and report abuse.',
+  },
+  {
     title: 'The link stays in your browser history.',
     text: 'The receive page takes the key out of the address bar once it has read it, so it no longer shows on a shared screen or in a copied address. Your browser saved the full link to its history when you opened it, though, and synced history copies it to your other devices. A drop password never appears in a link.',
   },

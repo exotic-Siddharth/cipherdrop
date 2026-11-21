@@ -236,6 +236,39 @@ describe('ReceivePage', () => {
     }
   });
 
+  it('says what "Integrity verified" proves, and that it says nothing about the sender (crypto-5)', async () => {
+    const f = await fixture();
+    mockApi(f);
+    renderAt(`/d/${f.dropId}#${f.dkB64}`);
+    // Before anything is downloaded, the page already says what the check means.
+    expect(
+      await screen.findByText(/A verified file is exactly what was encrypted with this link's key/),
+    ).toHaveTextContent(/does not tell you who sent it or whether it is safe to open/);
+    await userEvent.click(screen.getByRole('button', { name: /decrypt & download/i }));
+    const list = screen.getByRole('list', { name: 'Files in this drop' });
+    const badge = await within(list).findByText('Integrity verified');
+    expect(badge.closest('[title]')).toHaveAttribute(
+      'title',
+      expect.stringMatching(/encrypted with this link's key.*Not a check of who sent it/),
+    );
+  });
+
+  it("marks the sender's note as unverified text from whoever created the link (crypto-5)", async () => {
+    const f = await fixture({ note: 'Hi, it is your bank. Open the invoice.' });
+    mockApi(f);
+    renderAt(`/d/${f.dropId}#${f.dkB64}`);
+    const heading = await screen.findByRole('heading', {
+      name: 'Note from the sender (not verified)',
+    });
+    expect(heading).toBeVisible();
+    expect(
+      screen.getByText(
+        'Text written by whoever created this link. CipherDrop cannot confirm who that is.',
+      ),
+    ).toBeVisible();
+    expect(screen.getByText('Hi, it is your bank. Open the invoice.')).toBeVisible();
+  });
+
   describe('the key leaves the address bar (crypto-4)', () => {
     const fragmentOf = (router: ReturnType<typeof renderAt>) =>
       (router.state.location.state as { shareFragment?: unknown } | null)?.shareFragment;

@@ -79,6 +79,23 @@ describe('securityTxt', () => {
     ]);
   });
 
+  it('says, when it points at the project, where a report about the deployment itself goes', () => {
+    // .github/SECURITY.md sends reports about other instances to their security.txt; without an operator contact
+    // that file names the project again, so it says which reports the project takes and which the operator does.
+    const hint =
+      /names no contact of its own: report problems in the CipherDrop code to the project/;
+    const comments = (text: string) =>
+      text
+        .split('\n')
+        .filter((line) => line.startsWith('#'))
+        .join('\n');
+    expect(comments(securityTxt({}, now))).toMatch(hint);
+    expect(comments(securityTxt({ policy: 'https://drop.example/disclosure' }, now))).toMatch(hint);
+    expect(comments(securityTxt({ contact: 'mailto:security@drop.example' }, now))).not.toMatch(
+      /no contact/,
+    );
+  });
+
   it.each([
     ['http://drop.example/report', 'a web contact must be https'],
     ['javascript:alert(1)', 'not a contact scheme'],

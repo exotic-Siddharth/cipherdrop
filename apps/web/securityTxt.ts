@@ -74,6 +74,14 @@ export function securityTxt(config: SecurityTxtConfig = {}, now: Date = new Date
   return [
     '# Where to report a security vulnerability in this CipherDrop instance (RFC 9116).',
     '# Generated when the web app is built. To renew Expires, rebuild the web image without the build cache.',
+    // No contact of the operator's own: say where each kind of report goes, so that a reporter whom
+    // .github/SECURITY.md sends to an instance's security.txt is not just sent back to the project.
+    ...(contactList === undefined
+      ? [
+          '# This instance names no contact of its own: report problems in the CipherDrop code to the project',
+          '# below, and problems specific to this deployment to its operator through the site itself.',
+        ]
+      : []),
     ...contacts.map((c) => `Contact: ${c}`),
     `Expires: ${expires.toISOString().replace(/\.\d{3}Z$/, 'Z')}`,
     `Policy: ${policy}`,

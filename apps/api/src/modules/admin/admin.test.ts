@@ -572,7 +572,7 @@ describe('admin API', () => {
       const user = await createUserRecord(t.prisma, { totpEnabledAt: T0 });
       const res = await request(t.app)
         .patch(`/api/admin/users/${user.id}`)
-        .set(as(admin))
+        .set(await steppedUp(admin))
         .send({ storageQuotaBytes: 1000, role: 'ADMIN' });
       expect(res.status).toBe(200);
       expect(res.body.user).toMatchObject({ id: user.id, role: 'ADMIN', storageQuotaBytes: 1000 });
@@ -593,10 +593,11 @@ describe('admin API', () => {
 
     it('promotes only accounts with two-step verification (409 otherwise, nothing changed)', async () => {
       const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
       const user = await createUserRecord(t.prisma);
       const refused = await request(t.app)
         .patch(`/api/admin/users/${user.id}`)
-        .set(as(admin))
+        .set(fresh)
         .send({ storageQuotaBytes: 1000, role: 'ADMIN' });
       expect(refused.status).toBe(409);
       expect(refused.body.error).toEqual({
@@ -618,19 +619,88 @@ describe('admin API', () => {
       await t.prisma.user.update({ where: { id: user.id }, data: { totpEnabledAt: T0 } });
       const promoted = await request(t.app)
         .patch(`/api/admin/users/${user.id}`)
-        .set(as(admin))
+        .set(fresh)
         .send({ role: 'ADMIN' });
       expect(promoted.status).toBe(200);
       expect(promoted.body.user).toMatchObject({ role: 'ADMIN', totpEnabled: true });
     });
 
+    it('a promotion needs a recent step-up: a stale or unknown session gets 403 STEP_UP_REQUIRED (server-3)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, { totpEnabledAt: T0 });
+      const fresh = await steppedUp(admin);
+      clock.advance(15 * 60_000 + 1000);
+      const promote = (headers: Record<string, string>) =>
+        request(t.app)
+          .patch(`/api/admin/users/${user.id}`)
+          .set(headers)
+          .send({ role: 'ADMIN', storageQuotaBytes: 1000 });
+      for (const headers of [fresh, as(admin)]) {
+        const res = await promote(headers);
+        expect(res.status).toBe(403);
+        expect(res.body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          details: { reason: 'STEP_UP_REQUIRED' },
+        });
+      }
+      // Nothing changed, not even the quota half of the patch.
+      const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(row.role).toBe('USER');
+      expect(row.storageQuotaBytes).toBe(user.storageQuotaBytes);
+      // Quota edits and demotions need no step-up, nor does a patch that keeps an admin an admin.
+      const quota = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(as(admin))
+        .send({ storageQuotaBytes: 2000, role: 'USER' });
+      expect(quota.status).toBe(200);
+      const other = await createAdminRecord(t.prisma);
+      const keep = await request(t.app)
+        .patch(`/api/admin/users/${other.id}`)
+        .set(as(admin))
+        .send({ role: 'ADMIN', storageQuotaBytes: 3000 });
+      expect(keep.status).toBe(200);
+
+      const ok = await promote(await steppedUp(admin));
+      expect(ok.status).toBe(200);
+      expect(ok.body.user).toMatchObject({ role: 'ADMIN', storageQuotaBytes: 1000 });
+    });
+
     it('the promotion write is conditional: 2FA turned off after the check still refuses it', async () => {
       const admin = await createAdminRecord(t.prisma);
       const user = await createUserRecord(t.prisma);
+      const session = await t.prisma.session.create({
+        data: { userId: admin.id, authenticatedAt: T0, expiresAt: new Date(T0.getTime() + DAY) },
+      });
       // The read sees 2FA on (it was turned off right after): only the conditional update stands in the way.
       const prisma = {
+        session: t.prisma.session,
         user: {
-          findUnique: async () => ({ id: user.id, totpEnabledAt: T0 }),
+          findUnique: async () => ({ id: user.id, role: 'USER', totpEnabledAt: T0 }),
+          updateMany: (args: Prisma.UserUpdateManyArgs) => t.prisma.user.updateMany(args),
+          findUniqueOrThrow: (args: Prisma.UserFindUniqueOrThrowArgs) =>
+            t.prisma.user.findUniqueOrThrow(args),
+        },
+      };
+      const racing = { ...t.ctx, prisma } as unknown as AppContext;
+      await expect(
+        patchUser(
+          racing,
+          user.id,
+          { role: 'ADMIN' },
+          { id: admin.id, role: 'ADMIN', sid: session.id },
+        ),
+      ).rejects.toMatchObject({ status: 409, code: 'CONFLICT' });
+      expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe('USER');
+    });
+
+    it('a demotion racing a patch that keeps an admin an admin does not let it promote without a step-up', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, { totpEnabledAt: T0 });
+      // The read still sees the account as an admin (it was demoted right after), and this session is stale.
+      const prisma = {
+        session: t.prisma.session,
+        user: {
+          findUnique: async () => ({ id: user.id, role: 'ADMIN', totpEnabledAt: T0 }),
           updateMany: (args: Prisma.UserUpdateManyArgs) => t.prisma.user.updateMany(args),
           findUniqueOrThrow: (args: Prisma.UserFindUniqueOrThrowArgs) =>
             t.prisma.user.findUniqueOrThrow(args),

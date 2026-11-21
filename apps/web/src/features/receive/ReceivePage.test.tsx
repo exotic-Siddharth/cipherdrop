@@ -214,6 +214,15 @@ describe('ReceivePage', () => {
     expect(await screen.findByRole('heading', { name: title })).toBeVisible();
   });
 
+  it('tells the recipient what an account sender sees of the open (critic-7)', async () => {
+    const f = await fixture({ remaining: 2, max: 3 });
+    mockApi(f);
+    renderAt(`/d/${f.dropId}#${f.dkB64}`);
+    expect(
+      await screen.findByText(/If the sender has an account, they see when this link was opened/),
+    ).toBeVisible();
+  });
+
   it('ready: decrypted note, file list and downloads left; download verifies and saves', async () => {
     const f = await fixture({ remaining: 2, max: 3 });
     const calls = mockApi(f);

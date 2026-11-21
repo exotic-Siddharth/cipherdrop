@@ -601,12 +601,18 @@ function authKeyMatches(drop: Drop, authKey: string): boolean {
   return timingSafeEqualStr(sha256B64url(bytes), drop.authKeyHash ?? '');
 }
 
+/**
+ * The owner's Activity shows the network prefix and browser of opens and failed unlocks (critic-7). A drop without
+ * an owner has nobody to show them to, so its events carry neither.
+ */
+const ownerReq = (drop: Pick<Drop, 'ownerId'>, req: Req) => (drop.ownerId ? { req } : {});
+
 async function auditUnlockFailure(ctx: AppContext, drop: Drop, req: Req): Promise<void> {
   await ctx.audit.record({
     userId: drop.ownerId,
     dropId: drop.id,
     action: 'DROP_UNLOCK_FAILED',
-    req,
+    ...ownerReq(drop, req),
   });
 }
 
@@ -700,7 +706,12 @@ export async function openDrop(
   }
 
   metrics.dropOpens.inc();
-  await recordAfterCommit(ctx, { userId: drop.ownerId, dropId, action: 'DROP_OPENED', req });
+  await recordAfterCommit(ctx, {
+    userId: drop.ownerId,
+    dropId,
+    action: 'DROP_OPENED',
+    ...ownerReq(drop, req),
+  });
   return {
     downloadToken,
     expiresAt: expiresAt.toISOString(),

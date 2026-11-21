@@ -64,6 +64,28 @@ export function checkRuntimeRoleOptions(opts: RuntimeRoleOptions): void {
   }
 }
 
+/**
+ * Throws (naming the variable, never its value) unless `url`, the owner's DATABASE_URL, parses and its password is
+ * not a template placeholder. The API's guard (config/env.ts) never sees this URL: in docker-compose.prod.yml it
+ * carries POSTGRES_PASSWORD, the superuser's, which only the `migrate` service and Postgres itself receive.
+ */
+export function checkOwnerUrl(url: string | undefined): void {
+  if (url === undefined || !URL.canParse(url)) {
+    throw new Error('DATABASE_URL must be set to the owner role URL');
+  }
+  let password: string;
+  try {
+    password = decodeURIComponent(new URL(url).password);
+  } catch {
+    throw new Error('DATABASE_URL: its password is not valid percent-encoding');
+  }
+  if (PLACEHOLDER_RE.test(password)) {
+    throw new Error(
+      'DATABASE_URL: the owner password is still a placeholder (POSTGRES_PASSWORD in .env.production)',
+    );
+  }
+}
+
 type Raw = Pick<PrismaClient, '$queryRaw' | '$executeRawUnsafe'>;
 
 /**

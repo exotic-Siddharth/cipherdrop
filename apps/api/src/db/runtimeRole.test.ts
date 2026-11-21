@@ -10,7 +10,12 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { testDatabaseUrl, testSchema } from '../../test/config';
 import { createUserRecord } from '../../test/factories';
-import { checkRuntimeRoleOptions, provisionRuntimeRole, scramSha256Verifier } from './runtimeRole';
+import {
+  checkOwnerUrl,
+  checkRuntimeRoleOptions,
+  provisionRuntimeRole,
+  scramSha256Verifier,
+} from './runtimeRole';
 
 const schema = testSchema();
 const role = `cd_runtime_${randomBytes(4).toString('hex')}`;
@@ -197,6 +202,37 @@ describe('checkRuntimeRoleOptions', () => {
 
   it('accepts a generated password', () => {
     expect(() => checkRuntimeRoleOptions({ ...ok, password: newPassword() })).not.toThrow();
+  });
+});
+
+describe('checkOwnerUrl', () => {
+  const template = 'change-me-generate-with-openssl-rand-hex-24';
+
+  it.each([
+    [undefined, /DATABASE_URL must be set/],
+    ['', /DATABASE_URL must be set/],
+    ['not a url', /DATABASE_URL must be set/],
+    [`postgresql://cipherdrop:${template}@postgres:5432/cipherdrop?schema=public`, /placeholder/],
+    ['postgresql://cipherdrop:cipherdrop-dev-only@127.0.0.1:5432/cipherdrop', /placeholder/],
+    ['postgresql://cipherdrop:%63hange-me-x@postgres:5432/cipherdrop', /placeholder/],
+    ['postgresql://cipherdrop:%E0%A4%A@postgres:5432/cipherdrop', /percent-encoding/],
+  ])('refuses %j, naming DATABASE_URL and not the value', (url, message) => {
+    expect(() => checkOwnerUrl(url)).toThrow(message);
+    expect(() => checkOwnerUrl(url)).toThrow(/DATABASE_URL/);
+    try {
+      checkOwnerUrl(url);
+    } catch (err) {
+      expect((err as Error).message).not.toContain(template);
+      expect((err as Error).message).not.toContain('dev-only');
+    }
+  });
+
+  it('accepts an owner URL with a generated password', () => {
+    expect(() =>
+      checkOwnerUrl(
+        `postgresql://cipherdrop:${newPassword()}@postgres:5432/cipherdrop?schema=public`,
+      ),
+    ).not.toThrow();
   });
 });
 

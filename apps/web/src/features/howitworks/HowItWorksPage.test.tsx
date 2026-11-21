@@ -93,6 +93,14 @@ describe('HowItWorksPage', () => {
     expect(text).toMatch(/saved the full link to its history/);
   });
 
+  it('says a link proves nothing about who sent it, and what "Integrity verified" means (crypto-5)', () => {
+    renderPage();
+    const heading = screen.getByRole('heading', { name: /link does not prove who sent it/i });
+    const text = heading.parentElement?.textContent ?? '';
+    expect(text).toMatch(/exactly what was encrypted with the link's key/);
+    expect(text).toMatch(/does not mean they come from the person you expect or are safe to open/);
+  });
+
   it('keeps the CTA banner line at AA contrast (C-40)', () => {
     renderPage();
     expect(screen.getByText(/No account needed\. Drops up to 72 hours/)).toHaveClass(

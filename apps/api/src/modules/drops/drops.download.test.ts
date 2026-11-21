@@ -49,7 +49,8 @@ describe('drop download', () => {
   const clock = testClock(T0);
 
   beforeAll(async () => {
-    t = await createTestApp({ now: clock.now });
+    // The R12 sliding test re-fetches one chunk ~50 times; the byte budget has its own test (critic-2).
+    t = await createTestApp({ now: clock.now, env: { DOWNLOAD_GRANT_BYTE_FACTOR: 100 } });
     await resetTables(t.prisma);
   });
   afterAll(async () => {

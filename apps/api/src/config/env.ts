@@ -310,6 +310,9 @@ const EnvSchema = z
 
 export type Env = z.infer<typeof EnvSchema>;
 
+/** The name of every variable the schema reads (the repo root's .env.example, a documentation copy, lists them all). */
+export const ENV_KEYS = Object.keys(EnvSchema.innerType().shape) as (keyof Env)[];
+
 /** Variables that have a local-dev default in the schema and so must be stated in production. */
 const EXPLICIT_IN_PRODUCTION = [
   ['DATABASE_URL', 'must be set explicitly in production (no dev default)'],

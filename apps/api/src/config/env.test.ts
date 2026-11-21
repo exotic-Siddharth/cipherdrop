@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseEnv } from './env';
+import { ENV_KEYS, parseEnv } from './env';
 import { apiRoot } from './paths';
 
 const MiB = 1024 * 1024;
@@ -280,5 +280,32 @@ describe('session lifetime settings (server-3)', () => {
     expect(
       parseEnv({ ...prod(), REFRESH_TOKEN_TTL_DAYS: '7', SESSION_MAX_LIFETIME_DAYS: '90' }),
     ).toMatchObject({ REFRESH_TOKEN_TTL_DAYS: 7, SESSION_MAX_LIFETIME_DAYS: 90 });
+  });
+});
+
+describe('.env.example at the repo root (the documentation copy of every variable)', () => {
+  const repoRoot = path.resolve(apiRoot, '..', '..');
+  /** KEY=value lines, and the commented-out `# KEY=value` ones. */
+  const keys = (file: string) => {
+    const lines = readFileSync(path.join(repoRoot, file), 'utf8').split('\n');
+    const pick = (re: RegExp) => new Set(lines.flatMap((line) => re.exec(line)?.slice(1, 2) ?? []));
+    return { set: pick(/^([A-Z][A-Z0-9_]*)=/), commented: pick(/^# ([A-Z][A-Z0-9_]*)=/) };
+  };
+  const copy = keys('.env.example');
+  /** libuv reads it from the process environment at start-up only, so the copy shows it commented out. */
+  const commentedOnly: readonly string[] = ['UV_THREADPOOL_SIZE'];
+
+  it('lists every variable the API reads, so it cannot drift from env.ts', () => {
+    expect(ENV_KEYS).toEqual(expect.arrayContaining(Object.keys(parseEnv(prod()))));
+    const missing = ENV_KEYS.filter(
+      (key) => !(commentedOnly.includes(key) ? copy.commented : copy.set).has(key),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it('names only variables of the API or of the web build (apps/web/.env.example)', () => {
+    const web = keys('apps/web/.env.example');
+    const known = new Set<string>([...ENV_KEYS, ...web.set, ...web.commented]);
+    expect([...copy.set, ...copy.commented].filter((key) => !known.has(key))).toEqual([]);
   });
 });

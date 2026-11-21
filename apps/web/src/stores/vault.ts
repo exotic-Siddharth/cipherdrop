@@ -8,10 +8,12 @@
  * - Auto-lock: startVaultAutoLock() locks after `autoLockMinutes` without user activity. Locking in place never
  *   navigates: pages react to `accountKey === null` (dashboard rows show "Locked", Send shows an inline unlock).
  * - The only redirect to /unlock is the boot case (see shouldRedirectToUnlock).
+ * - "Lock vault" locks every open tab (lockVaultEverywhere, critic-8); lock() itself only affects this tab.
  */
 import type { AutoLockMinutes } from '@cipherdrop/shared';
 import { DEFAULT_AUTO_LOCK_MINUTES } from '@cipherdrop/shared';
 import { create } from 'zustand';
+import { broadcastSessionSignal } from '../lib/sessionChannel';
 
 export type VaultLockReason = 'idle' | 'manual' | 'logout';
 
@@ -84,6 +86,15 @@ export const useVault = create<VaultState>()((set, get) => ({
 
   setAutoLockMinutes: (minutes) => set({ autoLockMinutes: minutes }),
 }));
+
+/**
+ * The user's "Lock vault": lock this tab and tell every other open tab of this browser to lock too. Only the
+ * signal crosses tabs, never key material (see lib/sessionChannel.ts and startSessionSync in stores/auth.ts).
+ */
+export function lockVaultEverywhere(): void {
+  useVault.getState().lock('manual');
+  broadcastSessionSignal({ type: 'lock' });
+}
 
 /** True when the vault holds the account key. */
 export function isVaultUnlocked(state: Pick<VaultState, 'accountKey'> = useVault.getState()) {

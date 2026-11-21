@@ -6,7 +6,7 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router/dom';
 import { AppProviders } from './components/AppProviders';
 import { createAppRouter } from './router';
-import { useAuth } from './stores/auth';
+import { startSessionSync, useAuth } from './stores/auth';
 import { useServerConfig } from './stores/serverConfig';
 import { startThemeSync } from './stores/theme';
 import { startVaultAutoLock } from './stores/vault';
@@ -18,6 +18,8 @@ void useAuth.getState().refresh();
 void useServerConfig.getState().load();
 startVaultAutoLock();
 startThemeSync();
+// Lock vault and sign-out apply to every open tab of this browser (critic-8).
+startSessionSync();
 
 const container = document.getElementById('root');
 if (!container) throw new Error('index.html is missing <div id="root">');

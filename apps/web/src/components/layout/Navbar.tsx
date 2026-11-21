@@ -20,7 +20,7 @@ import { cn } from '../../lib/cn';
 import { unlockPath } from '../../lib/paths';
 import { useAuth, type AuthStatus } from '../../stores/auth';
 import { useServerConfig } from '../../stores/serverConfig';
-import { useVault } from '../../stores/vault';
+import { lockVaultEverywhere, useVault } from '../../stores/vault';
 import { Button, ButtonLink } from '../ui/Button';
 import { DropdownMenu, type DropdownMenuEntry } from '../ui/DropdownMenu';
 import { Skeleton } from '../ui/Skeleton';
@@ -60,13 +60,12 @@ function Avatar({ email }: { email: string }) {
 /** Lock state of the vault (the in-memory account key) with a one-click lock / unlock. */
 function VaultStatus() {
   const unlocked = useVault((s) => s.accountKey !== null);
-  const lock = useVault((s) => s.lock);
   const { pathname, search } = useLocation();
 
   if (unlocked) {
     return (
       <Tooltip
-        content="Vault unlocked in this tab: your file names are readable here. Locking applies to this tab only."
+        content="Vault unlocked in this tab: your file names are readable here. Locking locks every open tab."
         side="bottom"
       >
         <Button
@@ -76,9 +75,9 @@ function VaultStatus() {
           aria-label="Lock vault"
           className="text-primary-ink"
           onClick={() => {
-            lock('manual');
+            lockVaultEverywhere();
             toast.success('Vault locked', {
-              description: 'Your account key was removed from this tab.',
+              description: 'Your account key was removed from every open tab.',
             });
           }}
         >
@@ -106,7 +105,6 @@ function VaultStatus() {
 function AccountMenu({ user }: { user: Me }) {
   const signOut = useSignOut();
   const unlocked = useVault((s) => s.accountKey !== null);
-  const lock = useVault((s) => s.lock);
   const items: DropdownMenuEntry[] = [
     { label: 'Dashboard', icon: LayoutDashboard, to: '/dashboard' },
     { label: 'Settings', icon: Settings, to: '/settings' },
@@ -114,7 +112,7 @@ function AccountMenu({ user }: { user: Me }) {
   if (user.role === 'ADMIN')
     items.push({ label: 'Admin console', icon: ShieldCheck, to: '/admin' });
   items.push({ type: 'separator' });
-  if (unlocked) items.push({ label: 'Lock vault', icon: Lock, onSelect: () => lock('manual') });
+  if (unlocked) items.push({ label: 'Lock vault', icon: Lock, onSelect: lockVaultEverywhere });
   items.push({ label: 'Sign out', icon: LogOut, tone: 'danger', onSelect: () => void signOut() });
   return (
     <DropdownMenu

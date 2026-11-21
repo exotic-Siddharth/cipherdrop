@@ -21,6 +21,8 @@ COPY apps/web apps/web
 COPY docs/SECURITY.md docs/SECURITY.md
 # The contact and policy of /.well-known/security.txt (apps/web/securityTxt.ts; empty = the CipherDrop project's own).
 # docker-compose.prod.yml passes them from .env.production. The build fails on a value that is not a valid URI.
+# The build step also writes security.txt's Expires (build date + 180 days). A changed argument or source reruns it;
+# an unchanged rebuild is a cache hit that keeps the old date, so renew it with `docker build --no-cache`.
 ARG SECURITY_TXT_CONTACT=
 ARG SECURITY_TXT_POLICY=
 RUN npm run build -w @cipherdrop/web

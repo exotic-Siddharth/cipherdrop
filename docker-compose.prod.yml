@@ -180,8 +180,9 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-      # Written into /.well-known/security.txt at build time (rebuild to change them, and at least every 180 days,
-      # when its Expires passes). Unset: the CipherDrop project's private vulnerability reporting on GitHub.
+      # Written into /.well-known/security.txt at build time (`up -d --build web` after changing them). Its Expires is
+      # the build date plus 180 days; renew it with `build --no-cache web`, because an unchanged rebuild reuses the
+      # cached build step and its date. Unset: the CipherDrop project's private vulnerability reporting on GitHub.
       args:
         SECURITY_TXT_CONTACT: ${SECURITY_TXT_CONTACT:-}
         SECURITY_TXT_POLICY: ${SECURITY_TXT_POLICY:-}

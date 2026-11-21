@@ -88,8 +88,13 @@ test.describe('nginx', () => {
     const text = await res.text();
     expect(text).toMatch(/^Contact: (?:mailto:|tel:|https:\/\/)\S+$/m);
     const expires = Date.parse(/^Expires: (\S+)$/m.exec(text)?.[1] ?? '');
-    expect(expires).toBeGreaterThan(Date.now());
     expect(expires - Date.now()).toBeLessThan(365 * 86_400_000);
+    // Run against a live instance, this is also the reminder to renew: the build date plus 180 days, so a month is
+    // left at the latest five months after a build (an unchanged rebuild keeps the date; renew with --no-cache).
+    expect(
+      expires - Date.now(),
+      'security.txt expires within 30 days: rebuild the web image with `build --no-cache web`',
+    ).toBeGreaterThan(30 * 86_400_000);
     for (const url of ['/.well-known/', '/.well-known/change-password', '/.well-known/x.txt']) {
       const other = await request.get(url);
       expect(other.status(), url).toBe(404);

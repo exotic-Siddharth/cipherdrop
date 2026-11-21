@@ -67,6 +67,8 @@ export interface AccountActions {
   revokeSession(sessionId: string, password: string, code?: string): Promise<void>;
   /** Sign out every other session; `code` when 2FA is enabled. */
   revokeOtherSessions(password: string, code?: string): Promise<void>;
+  /** Re-authenticate this session (server-3): admin keys and review grants need a recent sign-in. */
+  stepUp(password: string, code?: string): Promise<void>;
   /** DELETE /me, then leaves for the home page and ends the session with reason 'account-deleted'. */
   deleteAccount(password: string, code?: string): Promise<void>;
   /** Navigates home first, then revokes the session and locks the vault. */
@@ -362,6 +364,11 @@ export function useAccountActions(): AccountActions {
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() });
         void queryClient.invalidateQueries({ queryKey: queryKeys.audit() });
+      },
+
+      async stepUp(password, code) {
+        const authKey = await verifiedAuthKey(password);
+        await api.post('/auth/step-up', { authKey, ...codeField(code) }, { skipRefresh: true });
       },
 
       async deleteAccount(password, code) {

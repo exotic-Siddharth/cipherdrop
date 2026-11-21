@@ -69,9 +69,9 @@ enum AuditAction {
 }
 
 model User {
-  id                        String    @id @default(cuid())
-  email                     String    @unique // lower-case
-  role                      Role      @default(USER)
+  id                        String       @id @default(cuid())
+  email                     String       @unique // lower-case
+  role                      Role         @default(USER)
   authKeyHash               String
   kdfSalt                   String
   kdfMemoryKiB              Int
@@ -84,16 +84,16 @@ model User {
   totpPendingSecretEnc      String?
   totpEnabledAt             DateTime?
   totpLastStep              Int?
-  autoLockMinutes           Int       @default(15)
+  autoLockMinutes           Int          @default(15)
   storageQuotaBytes         BigInt
-  storageUsedBytes          BigInt    @default(0)
+  storageUsedBytes          BigInt       @default(0)
   // New-account probation (server-1): until then the quota is at most NEW_ACCOUNT_QUOTA_BYTES. Set at
   // registration, cleared by an admin's quota edit; null = no probation.
   quotaProbationEndsAt      DateTime?
-  failedLoginCount          Int       @default(0)
+  failedLoginCount          Int          @default(0)
   lockedUntil               DateTime?
-  createdAt                 DateTime  @default(now())
-  updatedAt                 DateTime  @updatedAt
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
   sessions                  Session[]
   backupCodes               BackupCode[]
   drops                     Drop[]
@@ -102,16 +102,18 @@ model User {
 
 // one per login ("token family")
 model Session {
-  id         String         @id @default(cuid())
-  userId     String
-  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userAgent  String?
-  ipPrefix   String?
-  createdAt  DateTime       @default(now())
-  lastUsedAt DateTime       @default(now())
-  expiresAt  DateTime
-  revokedAt  DateTime?
-  tokens     RefreshToken[]
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent       String?
+  ipPrefix        String?
+  createdAt       DateTime       @default(now())
+  lastUsedAt      DateTime       @default(now())
+  /// Last time this session proved the password (and 2FA when on): sign-in or POST /auth/step-up. Refresh keeps it.
+  authenticatedAt DateTime       @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  tokens          RefreshToken[]
 
   @@index([userId])
   @@index([expiresAt])

@@ -19,6 +19,9 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 
 ### Security
 
+- Admin step-up: reporters' decryption keys (`GET /admin/reports`) and review grants need a sign-in or
+  `POST /auth/step-up` (password plus a 2FA code) within `ADMIN_STEP_UP_MINUTES` (default 15). Sessions record
+  `authenticatedAt`, which refreshes never move; the console asks for the step-up.
 - Lock vault and sign-out apply to every open tab of the browser (a `BroadcastChannel`, with a `storage`-event
   fallback; only the signal crosses tabs, never key material). Before, another unlocked tab kept the account key.
 - Admin routes require two-step verification on the account (403 `MFA_REQUIRED` otherwise), because the console can

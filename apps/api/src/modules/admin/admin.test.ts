@@ -49,6 +49,17 @@ describe('admin API', () => {
   const as = (user: { id: string; role: 'USER' | 'ADMIN' }) => ({
     Authorization: authHeader(user),
   });
+  /** An admin token whose session authenticated just now (server-3 step-up: keys and grants need it). */
+  async function steppedUp(user: { id: string; role: 'USER' | 'ADMIN' }) {
+    const session = await t.prisma.session.create({
+      data: {
+        userId: user.id,
+        authenticatedAt: clock.now(),
+        expiresAt: new Date(clock.now().getTime() + DAY),
+      },
+    });
+    return { Authorization: authHeader(user, session.id) };
+  }
 
   async function report(dropId: string, body: Record<string, unknown> = { reason: 'MALWARE' }) {
     const res = await request(t.app).post(`/api/drops/${dropId}/report`).send(body);
@@ -199,6 +210,7 @@ describe('admin API', () => {
   describe('reports', () => {
     it('lists reports with the decryption key (admins only), newest first, filtered by status', async () => {
       const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
       const owner = await createUserRecord(t.prisma);
       const drop = await createReadyDrop(t.app, {
         body: { ownerWrappedKey: fakeWrappedKey() },
@@ -213,7 +225,7 @@ describe('admin API', () => {
         data: { createdAt: new Date(T0.getTime() - 1000) },
       });
 
-      const res = await request(t.app).get('/api/admin/reports').set(as(admin));
+      const res = await request(t.app).get('/api/admin/reports').set(fresh);
       expect(res.status).toBe(200);
       expect(res.body.total).toBe(2);
       expect(res.body.page).toBe(1);
@@ -240,15 +252,33 @@ describe('admin API', () => {
       });
 
       await t.prisma.report.update({ where: { id: first }, data: { status: 'DISMISSED' } });
-      const open = await request(t.app).get('/api/admin/reports?status=OPEN').set(as(admin));
+      const open = await request(t.app).get('/api/admin/reports?status=OPEN').set(fresh);
       expect(open.body.items.map((r: { id: string }) => r.id)).toEqual([second]);
-      const paged = await request(t.app).get('/api/admin/reports?page=2&pageSize=1').set(as(admin));
+      const paged = await request(t.app).get('/api/admin/reports?page=2&pageSize=1').set(fresh);
       expect(paged.body).toMatchObject({ total: 2, page: 2, pageSize: 1 });
       expect(paged.body.items).toHaveLength(1);
 
       // The key never leaves through recipient endpoints.
       const meta = await request(t.app).get(`/api/drops/${drop.dropId}`);
       expect(JSON.stringify(meta.body)).not.toContain(key);
+    });
+
+    it('withholds every key without a recent step-up, keeping hasKey (server-3)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      const key = token32();
+      await report(drop.dropId, { reason: 'MALWARE', decryptionKey: key });
+      const fresh = await steppedUp(admin);
+      const ok = await request(t.app).get('/api/admin/reports').set(fresh);
+      expect(ok.body.items[0]).toMatchObject({ hasKey: true, decryptionKey: key });
+
+      clock.advance(15 * 60_000 + 1000);
+      for (const headers of [fresh, as(admin)]) {
+        const res = await request(t.app).get('/api/admin/reports').set(headers);
+        expect(res.status).toBe(200);
+        expect(res.body.items[0]).toMatchObject({ hasKey: true, decryptionKey: null });
+        expect(JSON.stringify(res.body)).not.toContain(key);
+      }
     });
 
     it('DISABLE_DROP disables the drop, deletes its blobs, resolves its reports and answers 410 to recipients', async () => {
@@ -402,13 +432,34 @@ describe('admin API', () => {
   });
 
   describe('POST /admin/drops/:id/grant', () => {
+    it('needs a recent step-up: an older or unknown session gets 403 STEP_UP_REQUIRED (server-3)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      const fresh = await steppedUp(admin);
+      clock.advance(15 * 60_000 + 1000);
+      for (const headers of [fresh, as(admin)]) {
+        const res = await request(t.app).post(`/api/admin/drops/${drop.dropId}/grant`).set(headers);
+        expect(res.status).toBe(403);
+        expect(res.body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          details: { reason: 'STEP_UP_REQUIRED' },
+        });
+      }
+      expect(await t.prisma.auditEvent.count({ where: { action: 'ADMIN_REVIEW_GRANT' } })).toBe(0);
+      const again = await steppedUp(admin);
+      expect(
+        (await request(t.app).post(`/api/admin/drops/${drop.dropId}/grant`).set(again)).status,
+      ).toBe(200);
+    });
+
     it('issues a non-consuming, audited review grant that can download chunks', async () => {
       const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
       const drop = await createReadyDrop(t.app, { body: { maxDownloads: 1 } });
       const row0 = await t.prisma.drop.findUniqueOrThrow({ where: { id: drop.dropId } });
       const res = await request(t.app)
         .post(`/api/admin/drops/${drop.dropId}/grant`)
-        .set(as(admin))
+        .set(fresh)
         .set('X-Forwarded-For', '198.51.100.4')
         .send();
       expect(res.status).toBe(200);
@@ -448,11 +499,11 @@ describe('admin API', () => {
 
     it('works for an EXHAUSTED drop whose blobs are kept, refuses gone and unknown drops', async () => {
       const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
       const exhausted = await createReadyDrop(t.app, { body: { maxDownloads: 1 } });
       await request(t.app).post(`/api/drops/${exhausted.dropId}/open`).send({});
       expect(
-        (await request(t.app).post(`/api/admin/drops/${exhausted.dropId}/grant`).set(as(admin)))
-          .status,
+        (await request(t.app).post(`/api/admin/drops/${exhausted.dropId}/grant`).set(fresh)).status,
       ).toBe(200);
 
       const disabled = await createReadyDrop(t.app);
@@ -462,17 +513,16 @@ describe('admin API', () => {
       });
       const gone = await request(t.app)
         .post(`/api/admin/drops/${disabled.dropId}/grant`)
-        .set(as(admin));
+        .set(fresh);
       expect(gone.status).toBe(410);
       expect(gone.body.error.details.reason).toBe('DISABLED');
 
       const uploading = await createDropOk(t.app, createBody([testFile(3)]));
       expect(
-        (await request(t.app).post(`/api/admin/drops/${uploading.dropId}/grant`).set(as(admin)))
-          .status,
+        (await request(t.app).post(`/api/admin/drops/${uploading.dropId}/grant`).set(fresh)).status,
       ).toBe(404);
       expect(
-        (await request(t.app).post('/api/admin/drops/AAAAAAAAAAAAAAAAAAAAAA/grant').set(as(admin)))
+        (await request(t.app).post('/api/admin/drops/AAAAAAAAAAAAAAAAAAAAAA/grant').set(fresh))
           .status,
       ).toBe(404);
     });
@@ -677,6 +727,53 @@ describe('admin sessions opened before two-step verification was turned on', () 
   });
   afterAll(async () => {
     await t.close();
+  });
+
+  it('POST /auth/step-up renews the session for keys and grants; a wrong proof changes nothing (server-3)', async () => {
+    const admin = await registerViaApi(t.app);
+    const { backupCodes } = await enableTotpViaApi(t.app, {
+      accessToken: admin.accessToken,
+      authKey: admin.authKey,
+    });
+    await t.prisma.user.update({ where: { id: admin.user.id }, data: { role: 'ADMIN' } });
+    const session = await t.prisma.session.findFirstOrThrow({
+      where: { userId: admin.user.id, revokedAt: null },
+    });
+    const headers = { Authorization: authHeader({ id: admin.user.id, role: 'ADMIN' }, session.id) };
+    const drop = await createReadyDrop(t.app);
+    const key = token32();
+    expect(
+      (
+        await request(t.app)
+          .post(`/api/drops/${drop.dropId}/report`)
+          .send({ reason: 'MALWARE', decryptionKey: key })
+      ).status,
+    ).toBe(201);
+    const stale = new Date(Date.now() - 20 * 60_000);
+    await t.prisma.session.update({ where: { id: session.id }, data: { authenticatedAt: stale } });
+    const keyOf = async () =>
+      (await request(t.app).get('/api/admin/reports').set(headers)).body.items[0].decryptionKey;
+    expect(await keyOf()).toBeNull();
+
+    const wrong = await request(t.app)
+      .post('/api/auth/step-up')
+      .set(headers)
+      .send({ authKey: Buffer.alloc(32, 0xee).toString('base64url'), code: backupCodes[0] });
+    expect(wrong.status).toBe(403);
+    expect(
+      (await t.prisma.session.findUniqueOrThrow({ where: { id: session.id } })).authenticatedAt,
+    ).toEqual(stale);
+    expect(await keyOf()).toBeNull();
+
+    const ok = await request(t.app)
+      .post('/api/auth/step-up')
+      .set(headers)
+      .send({ authKey: admin.authKey, code: backupCodes[1] });
+    expect(ok.status).toBe(204);
+    expect(await keyOf()).toBe(key);
+    expect(
+      (await request(t.app).post(`/api/admin/drops/${drop.dropId}/grant`).set(headers)).status,
+    ).toBe(200);
   });
 
   it('a password-only session from before enrolment cannot reach the admin routes afterwards', async () => {

@@ -710,6 +710,11 @@ able to choose its address, or break `up`, a build or a sidecar.
 - **Admin API fields:** `AdminUser.storageQuotaBytes` is the stored quota, and the new `effectiveQuotaBytes` is the
   one that applies now; `Me` and `AdminUser` gain `quotaProbationEndsAt`. A `PATCH /admin/users/:id` with
   `storageQuotaBytes` ends an account's probation.
+- **Admin step-up (batch 2):** `GET /admin/reports` withholds every reporter's key (`decryptionKey: null`, `hasKey`
+  unchanged) and `POST /admin/drops/:id/grant` answers 403 `STEP_UP_REQUIRED` unless the admin's session signed in,
+  or passed `POST /auth/step-up` (password plus a 2FA code), within `ADMIN_STEP_UP_MINUTES` (15). The console asks
+  for it. Migration `20261122200100_session_authenticated_at` adds `Session.authenticatedAt`, set to each existing
+  session's creation time.
 
 ### Recommended
 

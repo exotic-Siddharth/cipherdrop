@@ -214,3 +214,6 @@ export const SessionIdParamsSchema = z.object({ id: IdSchema });
 /* DELETE /auth/sessions/:id and POST /auth/sessions/revoke-others -> 204 */
 export const SessionRevokeRequestSchema = AccountProofSchema;
 export type SessionRevokeRequest = z.infer<typeof SessionRevokeRequestSchema>;
+/** POST /auth/step-up (server-3): re-authenticate this session for admin actions that need a recent sign-in. */
+export const StepUpRequestSchema = AccountProofSchema;
+export type StepUpRequest = z.infer<typeof StepUpRequestSchema>;

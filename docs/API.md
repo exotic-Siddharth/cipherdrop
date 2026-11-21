@@ -151,6 +151,7 @@ Paths are relative to `/api`. Request and response fields are in the OpenAPI doc
 | `POST /auth/mfa/backup-codes` | bearer | `{authKey, code}` with a TOTP code (a backup code cannot mint more); regenerates the 10 codes |
 | `GET /auth/sessions` | bearer | list sessions |
 | `DELETE /auth/sessions/:id`, `POST /auth/sessions/revoke-others` | bearer | `{authKey, code?}`; revoke one session, or every other one |
+| `POST /auth/step-up` | bearer | `{authKey, code?}`; 204. This session counts as just authenticated, for the admin actions that need it (`ADMIN_STEP_UP_MINUTES`) |
 
 ### The signed-in user (`/me`)
 
@@ -193,7 +194,7 @@ A send is `create`, then one PUT per chunk, then `complete`. A receive is `GET /
 | `GET /admin/stats` | totals and uploads per day for 14 days |
 | `GET /admin/reports?status` | abuse reports; the reporter's key is returned only for OPEN reports |
 | `POST /admin/reports/:id/resolve` | `DISABLE_DROP` (blobs deleted) or `DISMISS` |
-| `POST /admin/drops/:id/grant` | review grant that consumes no download; audited as `ADMIN_REVIEW_GRANT` |
+| `POST /admin/drops/:id/grant` | review grant that consumes no download; audited as `ADMIN_REVIEW_GRANT`. Needs a sign-in or step-up within `ADMIN_STEP_UP_MINUTES` (403 `STEP_UP_REQUIRED`; `GET /admin/reports` withholds the keys then) |
 | `GET /admin/users?search`, `PATCH /admin/users/:id` | list users; change role or storage quota. `storageQuotaBytes` is the stored quota and `effectiveQuotaBytes` the one that applies now; a PATCH with `storageQuotaBytes` ends the probation, a role-only PATCH does not; promoting an account without 2FA answers 409 |
 | `POST /admin/users/:id/clear-lock` | clear the sign-in lockout (failed-login counter and `lockedUntil`); audited as `ACCOUNT_LOCK_CLEARED` on the account (`{byAdmin: true}`) and on the admin |
 

@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "hash-wasm": "^4.13.0",
-    "zod": "^3.25.76"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@node-rs/argon2": "^2.2.2",

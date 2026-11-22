@@ -19,6 +19,14 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 
 ### Security
 
+- A download grant serves at most `DOWNLOAD_GRANT_BYTE_FACTOR` (default 3) times the drop's ciphertext size, so
+  one consumed download can no longer be replayed without limit for 24 hours; resumes and retries fit.
+- Admin step-up: reporters' decryption keys (`GET /admin/reports`), review grants and promotions to admin
+  (`PATCH /admin/users/:id`, so a stale session cannot promote an account of its own and sign in to it) need a
+  sign-in or `POST /auth/step-up` (password plus a 2FA code) within `ADMIN_STEP_UP_MINUTES` (default 15). Sessions
+  record `authenticatedAt`, which refreshes never move; the console asks for the step-up.
+- Lock vault and sign-out apply to every open tab of the browser (a `BroadcastChannel`, with a `storage`-event
+  fallback; only the signal crosses tabs, never key material). Before, another unlocked tab kept the account key.
 - Admin routes require two-step verification on the account (403 `MFA_REQUIRED` otherwise), because the console can
   return reporters' decryption keys. Only accounts with 2FA can be promoted, admins cannot turn 2FA off, and turning
   2FA on signs out every other session of the account.
@@ -87,6 +95,10 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 - The receive page says what a sender with an account sees of an open (time, network prefix, browser), and that
   the server's short-lived request logs keep the network prefix either way. A recipient's download grant no longer
   stores the network prefix (nothing read it).
+- **Settings**, **Security**, **Test recovery key**: checks a typed recovery key in the browser and changes
+  nothing (`GET /auth/vault/recovery` returns only the recovery-wrapped account key).
+- Admin console: Clear lock for a locked-out account (`POST /api/admin/users/:id/clear-lock`), audited as
+  `ACCOUNT_LOCK_CLEARED` on the account and as the admin action `ADMIN_LOCK_CLEARED` in the admin audit log. SECURITY.md section 7 records the lockout trade-off.
 
 - `/.well-known/security.txt` (RFC 9116), generated at build time from `SECURITY_TXT_CONTACT` and
   `SECURITY_TXT_POLICY`, and a vulnerability disclosure policy in `.github/SECURITY.md` (GitHub private

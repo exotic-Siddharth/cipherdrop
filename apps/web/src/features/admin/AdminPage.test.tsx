@@ -135,7 +135,12 @@ interface Call {
 }
 
 function mockApi(
-  overrides: { reportItems?: AdminReport[]; userItems?: AdminUser[]; mfaRequired?: boolean } = {},
+  overrides: {
+    reportItems?: AdminReport[];
+    userItems?: AdminUser[];
+    mfaRequired?: boolean;
+    stepUpRequired?: boolean;
+  } = {},
 ) {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -205,9 +210,23 @@ function mockApi(
     if (method === 'POST' && url.pathname.startsWith('/api/admin/drops/')) {
       return new Response(null, { status: 204 });
     }
+    if (method === 'POST' && url.pathname.endsWith('/clear-lock')) {
+      const id = decodeURIComponent(url.pathname.split('/').at(-2) ?? '');
+      const user = (overrides.userItems ?? users()).find((u) => u.id === id)!;
+      return json({ user: { ...user, lockedUntil: null } });
+    }
     if (method === 'PATCH' && url.pathname.startsWith('/api/admin/users/')) {
       const id = decodeURIComponent(url.pathname.split('/').pop() ?? '');
       const user = users().find((u) => u.id === id)!;
+      // Like the API: a promotion needs a recent sign-in or step-up of the admin's session.
+      if (overrides.stepUpRequired && (body as { role?: string }).role === 'ADMIN') {
+        const error = {
+          code: 'FORBIDDEN',
+          message: 'Confirm your password and a two-factor code to continue.',
+          details: { reason: 'STEP_UP_REQUIRED' },
+        };
+        return json({ error }, 403);
+      }
       // Like the API: only accounts with two-step verification can become admins.
       if ((body as { role?: string }).role === 'ADMIN' && !user.totpEnabled) {
         const message =
@@ -320,6 +339,20 @@ describe('AdminPage reports', () => {
     ).toBeDisabled();
     // Reporter text is rendered as text, never as markup.
     expect(screen.getByText('Contains a trojan <b>dropper</b>')).toBeVisible();
+  });
+
+  it('asks for a step-up when the API withholds the key (server-3)', async () => {
+    const reportItems = reports().map((r) => (r.hasKey ? { ...r, decryptionKey: null } : r));
+    mockApi({ reportItems });
+    renderAdmin();
+    const confirm = await screen.findByRole('button', {
+      name: `Review drop ${dropId(1)} (confirm it's you first)`,
+    });
+    expect(screen.queryByRole('link', { name: `Review drop ${dropId(1)}` })).toBeNull();
+    await userEvent.click(confirm);
+    const dialog = await screen.findByRole('dialog', { name: "Confirm it's you" });
+    expect(within(dialog).getByLabelText('Your password')).toBeVisible();
+    expect(within(dialog).getByLabelText('Two-factor or backup code')).toBeVisible();
   });
 
   it('Disable asks for confirmation, then resolves with DISABLE_DROP', async () => {
@@ -486,6 +519,28 @@ describe('AdminPage users', () => {
     expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
 
+  it('clears the sign-in lock of a locked-out account (server-2)', async () => {
+    const userItems = users().map((u) =>
+      u.email === 'bob@example.com' ? { ...u, lockedUntil: iso(10 * 60_000) } : u,
+    );
+    const calls = mockApi({ userItems });
+    renderAdmin();
+    expect(await screen.findByText('Locked out')).toBeVisible();
+    // Only the locked account offers it.
+    expect(screen.getAllByRole('button', { name: /^Clear sign-in lock of / })).toHaveLength(1);
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Clear sign-in lock of bob@example.com' }),
+    );
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/admin/users/ckuser000000000000000002/clear-lock',
+        }),
+      ),
+    );
+  });
+
   it('saves a valid quota in bytes and a role change', async () => {
     const calls = mockApi();
     renderAdmin();
@@ -507,6 +562,25 @@ describe('AdminPage users', () => {
       ),
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('asks for a step-up when a promotion answers STEP_UP_REQUIRED, keeping the edit open (server-3)', async () => {
+    const calls = mockApi({ stepUpRequired: true });
+    renderAdmin();
+    const dialog = await openEdit('carol@example.com');
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    const confirm = await screen.findByRole('dialog', { name: "Confirm it's you" });
+    expect(within(confirm).getByLabelText('Your password')).toBeVisible();
+    expect(within(confirm).getByLabelText('Two-factor or backup code')).toBeVisible();
+    // The refusal is not shown as a failure, and the edit waits behind the prompt.
+    expect(within(dialog).queryByText(/Confirm your password and a two-factor code/)).toBeNull();
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: "Confirm it's you" })).toBeNull(),
+    );
+    expect(screen.getByRole('dialog', { name: 'Edit user' })).toBeVisible();
   });
 
   it('warns that an account without two-step verification cannot be an admin, and shows the refusal', async () => {

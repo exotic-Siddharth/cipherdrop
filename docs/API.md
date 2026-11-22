@@ -72,7 +72,7 @@ Every error has the same shape:
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | body, query or path fails its schema; malformed JSON |
 | 401 | `UNAUTHORIZED` | missing or expired token; wrong authKey (always generic for login and recovery) |
-| 403 | `FORBIDDEN` | not the owner, not an admin, or an admin without two-step verification (`details.reason` `MFA_REQUIRED`); a wrong password or code on a re-authenticating route |
+| 403 | `FORBIDDEN` | not the owner, not an admin, or an admin without two-step verification (`details.reason` `MFA_REQUIRED`); a review grant or a promotion to admin without a recent sign-in or step-up (`details.reason` `STEP_UP_REQUIRED`); a wrong password or code on a re-authenticating route |
 | 403 | `FEATURE_DISABLED` | the operator switched anonymous uploads or registration off; `details.feature` is `anonymousUploads` or `registration` |
 | 404 | `NOT_FOUND` | unknown id; a drop still uploading is also reported as unknown to recipients |
 | 409 | `CONFLICT` | email already registered; `complete` with missing chunks (`details.missing`); promoting an account without two-step verification; an admin turning two-step verification off |
@@ -142,6 +142,7 @@ Paths are relative to `/api`. Request and response fields are in the OpenAPI doc
 | `POST /auth/refresh` | cookie | rotate the refresh cookie, new access token; a reused token revokes the session, except a replay within 30 s of its rotation while the successor is unused (lost response), which replaces the successor |
 | `POST /auth/logout` | cookie | revoke the current session |
 | `GET /auth/vault` | bearer | wrapped account key and KDF params, for unlocking the vault in the browser |
+| `GET /auth/vault/recovery` | bearer | `{wrappedAccountKeyRecovery}`, for the local "Test recovery key" check; changes nothing |
 | `POST /auth/password` | bearer | change password: the current authKey, a `code` when 2FA is on, the new authKey and the re-wrapped account key; other sessions are revoked |
 | `POST /auth/recovery/start`, `/complete` | none | recovery with the recovery key; complete rotates the recovery key and revokes every session |
 | `POST /auth/recovery/rotate` | bearer | replace the recovery key while signed in (`{authKey, code?}` plus the new recovery wrap and hash) |
@@ -151,6 +152,7 @@ Paths are relative to `/api`. Request and response fields are in the OpenAPI doc
 | `POST /auth/mfa/backup-codes` | bearer | `{authKey, code}` with a TOTP code (a backup code cannot mint more); regenerates the 10 codes |
 | `GET /auth/sessions` | bearer | list sessions |
 | `DELETE /auth/sessions/:id`, `POST /auth/sessions/revoke-others` | bearer | `{authKey, code?}`; revoke one session, or every other one |
+| `POST /auth/step-up` | bearer | `{authKey, code?}`; 204. This session counts as just authenticated, for the admin actions that need it (`ADMIN_STEP_UP_MINUTES`) |
 
 ### The signed-in user (`/me`)
 
@@ -193,8 +195,9 @@ A send is `create`, then one PUT per chunk, then `complete`. A receive is `GET /
 | `GET /admin/stats` | totals and uploads per day for 14 days |
 | `GET /admin/reports?status` | abuse reports; the reporter's key is returned only for OPEN reports |
 | `POST /admin/reports/:id/resolve` | `DISABLE_DROP` (blobs deleted) or `DISMISS` |
-| `POST /admin/drops/:id/grant` | review grant that consumes no download; audited as `ADMIN_REVIEW_GRANT` |
-| `GET /admin/users?search`, `PATCH /admin/users/:id` | list users; change role or storage quota. `storageQuotaBytes` is the stored quota and `effectiveQuotaBytes` the one that applies now; a PATCH with `storageQuotaBytes` ends the probation, a role-only PATCH does not; promoting an account without 2FA answers 409 |
+| `POST /admin/drops/:id/grant` | review grant that consumes no download; audited as `ADMIN_REVIEW_GRANT`. Needs a sign-in or step-up within `ADMIN_STEP_UP_MINUTES` (403 `STEP_UP_REQUIRED`; `GET /admin/reports` withholds the keys then) |
+| `GET /admin/users?search`, `PATCH /admin/users/:id` | list users; change role or storage quota. `storageQuotaBytes` is the stored quota and `effectiveQuotaBytes` the one that applies now; a PATCH with `storageQuotaBytes` ends the probation, a role-only PATCH does not; promoting an account without 2FA answers 409, and a promotion without a sign-in or step-up within `ADMIN_STEP_UP_MINUTES` answers 403 `STEP_UP_REQUIRED` |
+| `POST /admin/users/:id/clear-lock` | clear the sign-in lockout (failed-login counter and `lockedUntil`); audited as `ACCOUNT_LOCK_CLEARED` on the account (`{byAdmin: true}`, with no admin id, IP prefix or User-Agent) and as the admin action `ADMIN_LOCK_CLEARED` (acting admin, target, listed by `GET /admin/audit`) |
 
 ### Operations (no `/api` prefix)
 

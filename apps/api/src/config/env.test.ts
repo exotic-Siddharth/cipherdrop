@@ -278,6 +278,24 @@ describe('session lifetime settings (server-3)', () => {
     });
   });
 
+  it('defaults the per-grant byte budget to 3x the drop size and bounds it (1 to 100)', () => {
+    expect(parseEnv(prod()).DOWNLOAD_GRANT_BYTE_FACTOR).toBe(3);
+    expect(() => parseEnv({ ...prod(), DOWNLOAD_GRANT_BYTE_FACTOR: '0' })).toThrow(
+      /DOWNLOAD_GRANT_BYTE_FACTOR/,
+    );
+  });
+
+  it('defaults the admin step-up window to 15 minutes and bounds it (1 to 1440)', () => {
+    expect(parseEnv(prod()).ADMIN_STEP_UP_MINUTES).toBe(15);
+    expect(parseEnv({ ...prod(), ADMIN_STEP_UP_MINUTES: '5' }).ADMIN_STEP_UP_MINUTES).toBe(5);
+    expect(() => parseEnv({ ...prod(), ADMIN_STEP_UP_MINUTES: '0' })).toThrow(
+      /ADMIN_STEP_UP_MINUTES/,
+    );
+    expect(() => parseEnv({ ...prod(), ADMIN_STEP_UP_MINUTES: '1441' })).toThrow(
+      /ADMIN_STEP_UP_MINUTES/,
+    );
+  });
+
   it('refuses an absolute lifetime shorter than the idle one, in every environment', () => {
     expect(() => parseEnv({ ...prod(), SESSION_MAX_LIFETIME_DAYS: '7' })).toThrow(
       /SESSION_MAX_LIFETIME_DAYS/,

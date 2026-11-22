@@ -7,6 +7,8 @@
  *   server would treat as token reuse and revoke the session).
  * - A refresh rejected by the server ends the session with reason 'session-expired' (Review Focus 5).
  * - A session epoch guards against stale results: a refresh that started before a login/logout is ignored.
+ * - A sign-out, an expired session or a deleted account ends the session in every open tab of this browser
+ *   (startSessionSync, critic-8).
  * - This store only holds state. The account crypto flows (W1) call setSession() after login/register and
  *   put the account key into the vault store themselves.
  */
@@ -17,6 +19,7 @@ import { create } from 'zustand';
 import { resetKdfWorker } from '../crypto/kdfClient';
 import { takeResumeRecordNotOwnedBy } from '../features/send/resumeRecord';
 import { apiUrl } from '../lib/http';
+import { broadcastSessionSignal, onSessionSignal } from '../lib/sessionChannel';
 import { queryClient } from '../lib/queryClient';
 import { useVault } from './vault';
 
@@ -48,6 +51,8 @@ export interface AuthState {
   refresh: () => Promise<RefreshResult>;
   /** End the session locally (vault locked, query cache cleared); 'user' also revokes it server-side. */
   logout: (reason?: LogoutReason) => Promise<void>;
+  /** Another tab ended the session: end it here too, without telling the server or the other tabs again. */
+  endSessionFromOtherTab: (reason: LogoutReason) => void;
 }
 
 /** Default access-token lifetime when a token cannot be decoded (ACCESS_TOKEN_TTL_SEC default). */
@@ -142,8 +147,11 @@ function forgetResumeNotOwnedBy(ownerId: string | null) {
 }
 
 export const useAuth = create<AuthState>()((set, get) => {
-  /** Local part of every logout: forget the token, lock the vault, drop cached (decrypted) data. */
-  const endSession = (reason: LogoutReason) => {
+  /**
+   * Local part of every logout: forget the token, lock the vault, drop cached (decrypted) data. `broadcast`
+   * also ends the session in the other open tabs (false when this tab is the one receiving the signal).
+   */
+  const endSession = (reason: LogoutReason, broadcast = true) => {
     epoch += 1;
     set({
       status: 'anonymous',
@@ -157,6 +165,7 @@ export const useAuth = create<AuthState>()((set, get) => {
     // A derivation still running would otherwise hand its key to the vault after sign-out.
     resetKdfWorker();
     queryClient.clear();
+    if (broadcast) broadcastSessionSignal({ type: 'logout', reason });
   };
 
   return {
@@ -246,5 +255,34 @@ export const useAuth = create<AuthState>()((set, get) => {
         });
       }
     },
+
+    endSessionFromOtherTab: (reason) => {
+      if (get().status === 'anonymous' && !useVault.getState().accountKey) return;
+      const hadSession = get().status === 'authenticated';
+      endSession(reason, false);
+      if (!hadSession) return;
+      if (reason === 'user') {
+        toast.info('Signed out', {
+          id: 'session-ended',
+          description: 'You signed out in another tab.',
+        });
+      } else {
+        notifySessionEnded(reason);
+      }
+    },
   };
 });
+
+/**
+ * Follow the lock and sign-out signals of the other open tabs (critic-8). Call once at boot; returns a stop
+ * function. A tab never hears its own signals, so the local lock and end below cannot echo back.
+ */
+export function startSessionSync(): () => void {
+  return onSessionSignal((signal) => {
+    if (signal.type === 'lock') {
+      if (useVault.getState().accountKey) useVault.getState().lock('manual');
+      return;
+    }
+    useAuth.getState().endSessionFromOtherTab(signal.reason);
+  });
+}

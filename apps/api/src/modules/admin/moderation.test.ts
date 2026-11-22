@@ -9,6 +9,7 @@ import {
   authHeader,
   createAdminRecord,
   createUserRecord,
+  steppedUpAuthHeader,
   TEST_ACCOUNT,
 } from '../../../test/factories';
 import { bearer, loginViaApi, newSession, registerViaApi } from '../auth/testkit';
@@ -222,7 +223,15 @@ describe('moderation', () => {
       expect((await patch(admin.id, { suspended: true, suspendedReason: 'x' })).status).toBe(400);
       expect((await patch(other.id, { suspended: true, suspendedReason: 'x' })).status).toBe(409);
       expect((await patch(user.id, { suspended: true, suspendedReason: 'x' })).status).toBe(200);
-      expect((await patch(user.id, { role: 'ADMIN' })).status).toBe(409);
+      // A promotion needs a recent step-up first (server-3), so a stale session learns nothing; with one, the
+      // suspension still refuses it.
+      expect((await patch(user.id, { role: 'ADMIN' })).status).toBe(403);
+      const fresh = await steppedUpAuthHeader(t.prisma, admin, clock.now());
+      const promote = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set({ Authorization: fresh })
+        .send({ role: 'ADMIN' });
+      expect(promote.status).toBe(409);
       expect((await t.prisma.user.findUniqueOrThrow({ where: { id: other.id } })).suspendedAt).toBe(
         null,
       );

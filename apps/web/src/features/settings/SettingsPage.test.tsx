@@ -188,6 +188,32 @@ describe('SettingsPage security tab', () => {
     expect(await screen.findByLabelText('Current password')).toHaveValue('');
   });
 
+  it('tests the recovery key locally and changes nothing (critic-5)', async () => {
+    const api = mockApi({
+      'GET /api/auth/vault/recovery': {
+        json: { wrappedAccountKeyRecovery: bundle.wrappedAccountKeyRecovery },
+      },
+    });
+    const user = userEvent.setup();
+    renderRoutes(routes, '/settings');
+    await user.click(screen.getByRole('button', { name: 'Test recovery key' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Test your recovery key' });
+    const input = within(dialog).getByLabelText('Recovery key');
+    await user.type(input, bundle.recoveryKey);
+    await user.click(within(dialog).getByRole('button', { name: 'Test key' }));
+    expect(await within(dialog).findByText(/This recovery key works/)).toBeVisible();
+
+    await user.clear(input);
+    await user.type(input, 'ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ');
+    await user.click(within(dialog).getByRole('button', { name: 'Test key' }));
+    expect(await within(dialog).findByText(/This is not your current recovery key/)).toBeVisible();
+    // Only the wrapped key was fetched: nothing was sent or changed.
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'GET /api/auth/vault/recovery',
+      'GET /api/auth/vault/recovery',
+    ]);
+  });
+
   it('replaces the recovery key and shows the new one on the recovery card', async () => {
     const api = mockApi({
       'GET /api/auth/vault': { json: vaultJson() },

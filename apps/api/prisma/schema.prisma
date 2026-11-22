@@ -71,6 +71,8 @@ enum AuditAction {
   ADMIN_SESSIONS_REVOKED
   ADMIN_REPORT_DISMISSED
   ADMIN_DROP_DISABLED
+  ADMIN_LOCK_CLEARED
+  ACCOUNT_LOCK_CLEARED
 }
 
 model User {
@@ -111,16 +113,18 @@ model User {
 
 // one per login ("token family")
 model Session {
-  id         String         @id @default(cuid())
-  userId     String
-  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userAgent  String?
-  ipPrefix   String?
-  createdAt  DateTime       @default(now())
-  lastUsedAt DateTime       @default(now())
-  expiresAt  DateTime
-  revokedAt  DateTime?
-  tokens     RefreshToken[]
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent       String?
+  ipPrefix        String?
+  createdAt       DateTime       @default(now())
+  lastUsedAt      DateTime       @default(now())
+  /// Last time this session proved the password (and 2FA when on): sign-in or POST /auth/step-up. Refresh keeps it.
+  authenticatedAt DateTime       @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  tokens          RefreshToken[]
 
   @@index([userId])
   @@index([expiresAt])
@@ -216,14 +220,16 @@ model DropChunk {
 }
 
 model DownloadGrant {
-  id        String   @id @default(cuid())
-  dropId    String
-  drop      Drop     @relation(fields: [dropId], references: [id], onDelete: Cascade)
-  tokenHash String   @unique
-  isAdmin   Boolean  @default(false)
-  ipPrefix  String?
-  createdAt DateTime @default(now())
-  expiresAt DateTime
+  id          String   @id @default(cuid())
+  dropId      String
+  drop        Drop     @relation(fields: [dropId], references: [id], onDelete: Cascade)
+  tokenHash   String   @unique
+  isAdmin     Boolean  @default(false)
+  ipPrefix    String?
+  /// Ciphertext bytes served on this grant (critic-2): capped at DOWNLOAD_GRANT_BYTE_FACTOR x the drop's size.
+  servedBytes BigInt   @default(0)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
 
   @@index([dropId, expiresAt])
 }

@@ -295,6 +295,11 @@ Other behaviour worth knowing:
   instance, months on a quiet one. For a time limit, use the `journald` logging driver with `MaxRetentionSec=` in the
   host's `journald.conf` (it applies host-wide), or a log shipper that expires entries. Caddy writes no access log by
   default.
+- **Operator commands** (ops-9): `docker compose --env-file .env.production -f docker-compose.prod.yml exec api
+  node apps/api/dist/cli.js help` lists them. Make the first admin with `admin:promote <email>` (the account must exist and
+  have 2FA). `user:suspend <email> --reason <text>`, `user:unsuspend`, `drop:disable <dropId> --reason <text>`,
+  `sessions:revoke <email>` or `--all` (incident response: also stops access tokens at once) and `audit:tail`. Each
+  is audited as the operator; see [ABUSE.md](ABUSE.md).
 - **Upgrades:** `git pull`, then `up -d --build`. The one-shot `migrate` service applies pending Prisma migrations as
   the owner (`migrate deploy` takes a Postgres advisory lock) and updates `cipherdrop_app`; then the API starts as
   that role. Migrations are forward-only: take a database backup before upgrading, because there is no automatic
@@ -710,6 +715,14 @@ able to choose its address, or break `up`, a build or a sidecar.
 - **Admin API fields:** `AdminUser.storageQuotaBytes` is the stored quota, and the new `effectiveQuotaBytes` is the
   one that applies now; `Me` and `AdminUser` gain `quotaProbationEndsAt`. A `PATCH /admin/users/:id` with
   `storageQuotaBytes` ends an account's probation.
+
+- **Moderation (2026-11-22):** migrations `20261122100000_moderation`, `20261122100100_audit_append_only` and
+  `20261122100200_audit_fk_restrict` (the audit foreign keys no longer cascade an update of a user id) run on
+  the next start; `migrate` then takes UPDATE and DELETE on `AuditEvent` away from `cipherdrop_app`, whose
+  retention runs through `prune_audit_events()`. The first adds `AuditEvent.actorId`,
+  `User.suspendedAt` and `suspendedReason` and new audit actions; no action is needed. Admin-action audit events are
+  kept a year (other events 90 days), and a drop with an open keyed report keeps its blobs past expiry (or its last
+  download) for at most `REPORT_EVIDENCE_HOLD_DAYS` (default 14; set 0 for the old behaviour). A suspended account gets 403 on sign-in.
 
 ### Recommended
 

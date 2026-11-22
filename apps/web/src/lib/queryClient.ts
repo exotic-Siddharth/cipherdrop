@@ -73,4 +73,6 @@ export const queryKeys = {
     params ? (['admin', 'reports', params] as const) : (['admin', 'reports'] as const),
   adminUsers: (params?: PageParams & { search?: string }) =>
     params ? (['admin', 'users', params] as const) : (['admin', 'users'] as const),
+  adminAudit: (params?: PageParams) =>
+    params ? (['admin', 'audit', params] as const) : (['admin', 'audit'] as const),
 } as const;

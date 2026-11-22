@@ -173,6 +173,19 @@ export async function provisionRuntimeRole(
       tx,
       `ALTER DEFAULT PRIVILEGES IN SCHEMA ${schema} GRANT USAGE, SELECT ON SEQUENCES TO ${role}`,
     );
+    // Append-only audit log (server-8): the API adds rows and never changes or removes them; retention runs through
+    // the owner's prune_audit_events() (SECURITY DEFINER, the minimum ages fixed inside it).
+    await ddl(
+      tx,
+      `DO $$ BEGIN
+         IF to_regclass('${opts.schema}."AuditEvent"') IS NOT NULL THEN
+           REVOKE UPDATE, DELETE ON TABLE ${schema}."AuditEvent" FROM ${role};
+         END IF;
+         IF to_regprocedure('${opts.schema}.prune_audit_events(timestamp without time zone)') IS NOT NULL THEN
+           GRANT EXECUTE ON FUNCTION ${schema}.prune_audit_events(timestamp without time zone) TO ${role};
+         END IF;
+       END $$`,
+    );
     // The migration history is the owner's alone. It exists once `migrate deploy` has run, which comes first.
     await ddl(
       tx,

@@ -110,6 +110,16 @@ export function meRoutes(ctx: AppContext): AppRouter {
 
       // Sessions die at once (denylist), then the user row goes with everything that cascades from it.
       await revokeUserSessions(ctx, user.id);
+      // A reported drop outlives the account (server-5): it is detached (ownerless, blobs already gone) so its
+      // reports stay in the admin queue instead of cascading away with the account.
+      await prisma.report.updateMany({
+        where: { drop: { ownerId: user.id }, providedKey: { not: null } },
+        data: { providedKey: null },
+      });
+      await prisma.drop.updateMany({
+        where: { ownerId: user.id, reports: { some: {} } },
+        data: { ownerId: null, blobsDeletedAt: ctx.now() },
+      });
       await prisma.user.delete({ where: { id: user.id } });
       await ctx.audit.record({
         userId: null,

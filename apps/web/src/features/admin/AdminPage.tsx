@@ -9,8 +9,10 @@ import { Skeleton } from '../../components/ui/Skeleton';
 import { api } from '../../lib/api';
 import { isMfaRequired } from '../../lib/errors';
 import { queryKeys } from '../../lib/queryClient';
+import { AuditCard } from './AuditCard';
 import { ReportsCard } from './ReportsCard';
 import { StatsCards } from './StatsCards';
+import { TakedownCard } from './TakedownCard';
 import { UploadsChart } from './UploadsChart';
 import { UsersCard } from './UsersCard';
 
@@ -27,7 +29,10 @@ function StatsSkeleton() {
   );
 }
 
-/** Admin console (spec 10, 11.2): stats + uploads chart, report queue, users. Renders inside AdminLayout. */
+/**
+ * Admin console (spec 10, 11.2): stats + uploads chart, report queue, takedown by id, users, audit log (server-4,
+ * server-6). Renders inside AdminLayout.
+ */
 export function Component() {
   const stats = useQuery({
     queryKey: queryKeys.adminStats(),
@@ -42,7 +47,7 @@ export function Component() {
     <>
       <PageHeader
         title="Admin"
-        description="Statistics, abuse reports and users."
+        description="Statistics, abuse reports, takedowns, users and the audit log."
         icon={ShieldCheck}
         className="mb-0"
       />
@@ -64,7 +69,9 @@ export function Component() {
         </>
       )}
       <ReportsCard />
+      <TakedownCard />
       <UsersCard />
+      <AuditCard />
     </>
   );
 }

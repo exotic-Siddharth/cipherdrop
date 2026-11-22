@@ -25,6 +25,16 @@ export const metrics = {
     labelNames: ['anon'] as const,
     registers: [metricsRegistry],
   }),
+  /**
+   * Drop creates refused by a storage control. labels: reason = "client_budget" | "anon_pool" | "global_cap" |
+   * "disk_floor" (the last two answer clients the same 507 STORAGE_FULL; this tells the operator which).
+   */
+  dropsRefused: new client.Counter({
+    name: 'drops_refused_total',
+    help: 'Drop creates refused by a storage control (per-client budget, anonymous pool, global cap, free-disk floor)',
+    labelNames: ['reason'] as const,
+    registers: [metricsRegistry],
+  }),
   dropOpens: new client.Counter({
     name: 'drop_opens_total',
     help: 'Successful drop opens (downloads consumed)',
@@ -58,6 +68,22 @@ export const metrics = {
   storageBytes: new client.Gauge({
     name: 'storage_bytes',
     help: 'Ciphertext bytes currently stored',
+    registers: [metricsRegistry],
+  }),
+  /** Account authKey Argon2id hashes (lib/argon2Limiter.ts): running, waiting for a slot, refused with 429. */
+  argon2Active: new client.Gauge({
+    name: 'argon2_active',
+    help: 'Server-side Argon2id hashes running',
+    registers: [metricsRegistry],
+  }),
+  argon2Queued: new client.Gauge({
+    name: 'argon2_queued',
+    help: 'Server-side Argon2id hashes waiting for a slot',
+    registers: [metricsRegistry],
+  }),
+  argon2Rejected: new client.Counter({
+    name: 'argon2_rejected_total',
+    help: 'Requests refused with 429 because the Argon2id queue was full',
     registers: [metricsRegistry],
   }),
 };

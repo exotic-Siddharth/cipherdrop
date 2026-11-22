@@ -1,11 +1,19 @@
 /**
  * /api/admin (spec section 10 "Admin", R13): stats, reports, resolve, review grant, users, RBAC.
  */
+import type { Prisma } from '@prisma/client';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
-import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
+import {
+  TEST_ACCOUNT,
+  authHeader,
+  createAdminRecord,
+  createUserRecord,
+} from '../../../test/factories';
+import type { AppContext } from '../../context';
+import { bearer, enableTotpViaApi, newSession, registerViaApi } from '../auth/testkit';
 import {
   chunkBlobFiles,
   createBody,
@@ -18,6 +26,7 @@ import {
   testFile,
   token32,
 } from '../drops/test-utils';
+import { patchUser } from './service';
 
 const T0 = new Date('2026-11-08T15:30:00.000Z');
 const DAY = 24 * HOUR;
@@ -40,6 +49,17 @@ describe('admin API', () => {
   const as = (user: { id: string; role: 'USER' | 'ADMIN' }) => ({
     Authorization: authHeader(user),
   });
+  /** An admin token whose session authenticated just now (server-3 step-up: keys and grants need it). */
+  async function steppedUp(user: { id: string; role: 'USER' | 'ADMIN' }) {
+    const session = await t.prisma.session.create({
+      data: {
+        userId: user.id,
+        authenticatedAt: clock.now(),
+        expiresAt: new Date(clock.now().getTime() + DAY),
+      },
+    });
+    return { Authorization: authHeader(user, session.id) };
+  }
 
   async function report(dropId: string, body: Record<string, unknown> = { reason: 'MALWARE' }) {
     const res = await request(t.app).post(`/api/drops/${dropId}/report`).send(body);
@@ -64,6 +84,9 @@ describe('admin API', () => {
       ['post', (i) => `/api/admin/drops/${i.drop}/grant`],
       ['get', () => '/api/admin/users'],
       ['patch', (i) => `/api/admin/users/${i.user}`, { storageQuotaBytes: 1 }],
+      ['post', (i) => `/api/admin/drops/${i.drop}/disable`, { reason: 'x' }],
+      ['get', () => '/api/admin/audit'],
+      ['post', (i) => `/api/admin/users/${i.user}/clear-lock`],
     ];
 
     it('answers 401 without a token and 403 for regular users on every admin route', async () => {
@@ -76,12 +99,51 @@ describe('admin API', () => {
         const res = await request(t.app)[method](path(ids)).set(as(user)).send(body);
         expect(res.status, `${method} ${path(ids)}`).toBe(403);
         expect(res.body.error.code).toBe('FORBIDDEN');
+        // A regular user learns nothing about what admins need.
+        expect(res.body.error.details).toBeUndefined();
       }
       // Nothing changed.
       expect((await t.prisma.report.findUniqueOrThrow({ where: { id: ids.report } })).status).toBe(
         'OPEN',
       );
       expect(await t.prisma.downloadGrant.count()).toBe(0);
+    });
+
+    it('refuses an admin without two-step verification on every admin route (403 MFA_REQUIRED)', async () => {
+      const admin = await createAdminRecord(t.prisma, { totpEnabledAt: null });
+      const user = await createUserRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      const ids = { drop: drop.dropId, report: await report(drop.dropId), user: user.id };
+      for (const [method, path, body] of routes) {
+        const res = await request(t.app)[method](path(ids)).set(as(admin)).send(body);
+        expect(res.status, `${method} ${path(ids)}`).toBe(403);
+        expect(res.body.error).toEqual({
+          code: 'FORBIDDEN',
+          message: expect.stringMatching(/two-step verification/),
+          details: { reason: 'MFA_REQUIRED' },
+        });
+      }
+      // Nothing changed: no review grant, the report is still open, the user keeps their quota.
+      expect(await t.prisma.downloadGrant.count()).toBe(0);
+      expect((await t.prisma.report.findUniqueOrThrow({ where: { id: ids.report } })).status).toBe(
+        'OPEN',
+      );
+      expect(
+        (await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).storageQuotaBytes,
+      ).toBe(user.storageQuotaBytes);
+      expect(await t.prisma.auditEvent.count({ where: { action: 'ADMIN_REVIEW_GRANT' } })).toBe(0);
+    });
+
+    it('checks two-step verification in the database on every request (turning it off closes the console)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const header = as(admin);
+      expect((await request(t.app).get('/api/admin/stats').set(header)).status).toBe(200);
+      await t.prisma.user.update({ where: { id: admin.id }, data: { totpEnabledAt: null } });
+      const refused = await request(t.app).get('/api/admin/stats').set(header);
+      expect(refused.status).toBe(403);
+      expect(refused.body.error.details).toEqual({ reason: 'MFA_REQUIRED' });
+      await t.prisma.user.update({ where: { id: admin.id }, data: { totpEnabledAt: T0 } });
+      expect((await request(t.app).get('/api/admin/stats').set(header)).status).toBe(200);
     });
 
     it('re-checks the role in the database (a demoted admin is refused)', async () => {
@@ -150,6 +212,7 @@ describe('admin API', () => {
   describe('reports', () => {
     it('lists reports with the decryption key (admins only), newest first, filtered by status', async () => {
       const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
       const owner = await createUserRecord(t.prisma);
       const drop = await createReadyDrop(t.app, {
         body: { ownerWrappedKey: fakeWrappedKey() },
@@ -164,7 +227,7 @@ describe('admin API', () => {
         data: { createdAt: new Date(T0.getTime() - 1000) },
       });
 
-      const res = await request(t.app).get('/api/admin/reports').set(as(admin));
+      const res = await request(t.app).get('/api/admin/reports').set(fresh);
       expect(res.status).toBe(200);
       expect(res.body.total).toBe(2);
       expect(res.body.page).toBe(1);
@@ -191,15 +254,33 @@ describe('admin API', () => {
       });
 
       await t.prisma.report.update({ where: { id: first }, data: { status: 'DISMISSED' } });
-      const open = await request(t.app).get('/api/admin/reports?status=OPEN').set(as(admin));
+      const open = await request(t.app).get('/api/admin/reports?status=OPEN').set(fresh);
       expect(open.body.items.map((r: { id: string }) => r.id)).toEqual([second]);
-      const paged = await request(t.app).get('/api/admin/reports?page=2&pageSize=1').set(as(admin));
+      const paged = await request(t.app).get('/api/admin/reports?page=2&pageSize=1').set(fresh);
       expect(paged.body).toMatchObject({ total: 2, page: 2, pageSize: 1 });
       expect(paged.body.items).toHaveLength(1);
 
       // The key never leaves through recipient endpoints.
       const meta = await request(t.app).get(`/api/drops/${drop.dropId}`);
       expect(JSON.stringify(meta.body)).not.toContain(key);
+    });
+
+    it('withholds every key without a recent step-up, keeping hasKey (server-3)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      const key = token32();
+      await report(drop.dropId, { reason: 'MALWARE', decryptionKey: key });
+      const fresh = await steppedUp(admin);
+      const ok = await request(t.app).get('/api/admin/reports').set(fresh);
+      expect(ok.body.items[0]).toMatchObject({ hasKey: true, decryptionKey: key });
+
+      clock.advance(15 * 60_000 + 1000);
+      for (const headers of [fresh, as(admin)]) {
+        const res = await request(t.app).get('/api/admin/reports').set(headers);
+        expect(res.status).toBe(200);
+        expect(res.body.items[0]).toMatchObject({ hasKey: true, decryptionKey: null });
+        expect(JSON.stringify(res.body)).not.toContain(key);
+      }
     });
 
     it('DISABLE_DROP disables the drop, deletes its blobs, resolves its reports and answers 410 to recipients', async () => {
@@ -353,13 +434,34 @@ describe('admin API', () => {
   });
 
   describe('POST /admin/drops/:id/grant', () => {
+    it('needs a recent step-up: an older or unknown session gets 403 STEP_UP_REQUIRED (server-3)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const drop = await createReadyDrop(t.app);
+      const fresh = await steppedUp(admin);
+      clock.advance(15 * 60_000 + 1000);
+      for (const headers of [fresh, as(admin)]) {
+        const res = await request(t.app).post(`/api/admin/drops/${drop.dropId}/grant`).set(headers);
+        expect(res.status).toBe(403);
+        expect(res.body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          details: { reason: 'STEP_UP_REQUIRED' },
+        });
+      }
+      expect(await t.prisma.auditEvent.count({ where: { action: 'ADMIN_REVIEW_GRANT' } })).toBe(0);
+      const again = await steppedUp(admin);
+      expect(
+        (await request(t.app).post(`/api/admin/drops/${drop.dropId}/grant`).set(again)).status,
+      ).toBe(200);
+    });
+
     it('issues a non-consuming, audited review grant that can download chunks', async () => {
       const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
       const drop = await createReadyDrop(t.app, { body: { maxDownloads: 1 } });
       const row0 = await t.prisma.drop.findUniqueOrThrow({ where: { id: drop.dropId } });
       const res = await request(t.app)
         .post(`/api/admin/drops/${drop.dropId}/grant`)
-        .set(as(admin))
+        .set(fresh)
         .set('X-Forwarded-For', '198.51.100.4')
         .send();
       expect(res.status).toBe(200);
@@ -375,9 +477,11 @@ describe('admin API', () => {
         where: { dropId: drop.dropId },
       });
       expect(grant.isAdmin).toBe(true);
+      // An admin action: the admin is the actor, and it is in nobody's own (cascade-deleted) log.
       const ev = await t.prisma.auditEvent.findFirstOrThrow({
-        where: { userId: admin.id, dropId: drop.dropId },
+        where: { actorId: admin.id, dropId: drop.dropId },
       });
+      expect(ev.userId).toBeNull();
       expect(ev.action).toBe('ADMIN_REVIEW_GRANT');
       expect(ev.metadata).toMatchObject({ adminReview: true });
       expect(ev.ipPrefix).toBe('198.51.100.0/24');
@@ -399,11 +503,11 @@ describe('admin API', () => {
 
     it('works for an EXHAUSTED drop whose blobs are kept, refuses gone and unknown drops', async () => {
       const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
       const exhausted = await createReadyDrop(t.app, { body: { maxDownloads: 1 } });
       await request(t.app).post(`/api/drops/${exhausted.dropId}/open`).send({});
       expect(
-        (await request(t.app).post(`/api/admin/drops/${exhausted.dropId}/grant`).set(as(admin)))
-          .status,
+        (await request(t.app).post(`/api/admin/drops/${exhausted.dropId}/grant`).set(fresh)).status,
       ).toBe(200);
 
       const disabled = await createReadyDrop(t.app);
@@ -413,17 +517,16 @@ describe('admin API', () => {
       });
       const gone = await request(t.app)
         .post(`/api/admin/drops/${disabled.dropId}/grant`)
-        .set(as(admin));
+        .set(fresh);
       expect(gone.status).toBe(410);
       expect(gone.body.error.details.reason).toBe('DISABLED');
 
       const uploading = await createDropOk(t.app, createBody([testFile(3)]));
       expect(
-        (await request(t.app).post(`/api/admin/drops/${uploading.dropId}/grant`).set(as(admin)))
-          .status,
+        (await request(t.app).post(`/api/admin/drops/${uploading.dropId}/grant`).set(fresh)).status,
       ).toBe(404);
       expect(
-        (await request(t.app).post('/api/admin/drops/AAAAAAAAAAAAAAAAAAAAAA/grant').set(as(admin)))
+        (await request(t.app).post('/api/admin/drops/AAAAAAAAAAAAAAAAAAAAAA/grant').set(fresh))
           .status,
       ).toBe(404);
     });
@@ -456,9 +559,13 @@ describe('admin API', () => {
         role: 'USER',
         totpEnabled: true,
         storageQuotaBytes: 5 * 1024 * 1024 * 1024,
+        effectiveQuotaBytes: 5 * 1024 * 1024 * 1024,
         storageUsedBytes: 1234 + 1016,
+        quotaProbationEndsAt: null,
         dropCount: 1,
         lockedUntil: null,
+        suspendedAt: null,
+        suspendedReason: null,
         createdAt: alice.createdAt.toISOString(),
       });
       expect(JSON.stringify(res.body)).not.toMatch(
@@ -468,10 +575,10 @@ describe('admin API', () => {
 
     it('edits the quota and the role', async () => {
       const admin = await createAdminRecord(t.prisma);
-      const user = await createUserRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, { totpEnabledAt: T0 });
       const res = await request(t.app)
         .patch(`/api/admin/users/${user.id}`)
-        .set(as(admin))
+        .set(await steppedUp(admin))
         .send({ storageQuotaBytes: 1000, role: 'ADMIN' });
       expect(res.status).toBe(200);
       expect(res.body.user).toMatchObject({ id: user.id, role: 'ADMIN', storageQuotaBytes: 1000 });
@@ -479,13 +586,8 @@ describe('admin API', () => {
       expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe(
         'ADMIN',
       );
-      expect(
-        (
-          await request(t.app)
-            .get('/api/admin/stats')
-            .set(as({ id: user.id, role: 'ADMIN' }))
-        ).status,
-      ).toBe(200);
+      const promoted = as({ id: user.id, role: 'ADMIN' });
+      expect((await request(t.app).get('/api/admin/stats').set(promoted)).status).toBe(200);
       // And the quota is enforced on create.
       const over = await request(t.app)
         .post('/api/drops')
@@ -493,6 +595,196 @@ describe('admin API', () => {
         .send(createBody([testFile(2000)], { ownerWrappedKey: fakeWrappedKey() }));
       expect(over.status).toBe(413);
       expect(over.body.error.code).toBe('QUOTA_EXCEEDED');
+    });
+
+    it('promotes only accounts with two-step verification (409 otherwise, nothing changed)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const fresh = await steppedUp(admin);
+      const user = await createUserRecord(t.prisma);
+      const refused = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(fresh)
+        .send({ storageQuotaBytes: 1000, role: 'ADMIN' });
+      expect(refused.status).toBe(409);
+      expect(refused.body.error).toEqual({
+        code: 'CONFLICT',
+        message: expect.stringMatching(/needs two-step verification before it can be an admin/),
+      });
+      // Not even the quota half of the patch was applied.
+      const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(row.role).toBe('USER');
+      expect(row.storageQuotaBytes).toBe(user.storageQuotaBytes);
+      // Other edits of an account without 2FA still work, and so does a demotion to USER.
+      const quota = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(as(admin))
+        .send({ storageQuotaBytes: 2000, role: 'USER' });
+      expect(quota.status).toBe(200);
+      expect(quota.body.user).toMatchObject({ role: 'USER', storageQuotaBytes: 2000 });
+      // Once its owner turns 2FA on, the same promotion goes through.
+      await t.prisma.user.update({ where: { id: user.id }, data: { totpEnabledAt: T0 } });
+      const promoted = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(fresh)
+        .send({ role: 'ADMIN' });
+      expect(promoted.status).toBe(200);
+      expect(promoted.body.user).toMatchObject({ role: 'ADMIN', totpEnabled: true });
+    });
+
+    it('a promotion needs a recent step-up: a stale or unknown session gets 403 STEP_UP_REQUIRED (server-3)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, { totpEnabledAt: T0 });
+      const fresh = await steppedUp(admin);
+      clock.advance(15 * 60_000 + 1000);
+      const promote = (headers: Record<string, string>) =>
+        request(t.app)
+          .patch(`/api/admin/users/${user.id}`)
+          .set(headers)
+          .send({ role: 'ADMIN', storageQuotaBytes: 1000 });
+      for (const headers of [fresh, as(admin)]) {
+        const res = await promote(headers);
+        expect(res.status).toBe(403);
+        expect(res.body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          details: { reason: 'STEP_UP_REQUIRED' },
+        });
+      }
+      // Nothing changed, not even the quota half of the patch.
+      const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(row.role).toBe('USER');
+      expect(row.storageQuotaBytes).toBe(user.storageQuotaBytes);
+      // Quota edits and demotions need no step-up, nor does a patch that keeps an admin an admin.
+      const quota = await request(t.app)
+        .patch(`/api/admin/users/${user.id}`)
+        .set(as(admin))
+        .send({ storageQuotaBytes: 2000, role: 'USER' });
+      expect(quota.status).toBe(200);
+      const other = await createAdminRecord(t.prisma);
+      const keep = await request(t.app)
+        .patch(`/api/admin/users/${other.id}`)
+        .set(as(admin))
+        .send({ role: 'ADMIN', storageQuotaBytes: 3000 });
+      expect(keep.status).toBe(200);
+
+      const ok = await promote(await steppedUp(admin));
+      expect(ok.status).toBe(200);
+      expect(ok.body.user).toMatchObject({ role: 'ADMIN', storageQuotaBytes: 1000 });
+    });
+
+    it('the promotion write is conditional: 2FA turned off after the check still refuses it', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma);
+      const session = await t.prisma.session.create({
+        data: { userId: admin.id, authenticatedAt: T0, expiresAt: new Date(T0.getTime() + DAY) },
+      });
+      // The read sees 2FA on (it was turned off right after): only the conditional update stands in the way.
+      const prisma = {
+        session: t.prisma.session,
+        user: {
+          findUnique: async () => ({
+            id: user.id,
+            role: 'USER',
+            totpEnabledAt: T0,
+            storageQuotaBytes: 0n,
+            suspendedAt: null,
+          }),
+          updateMany: (args: Prisma.UserUpdateManyArgs) => t.prisma.user.updateMany(args),
+          findUniqueOrThrow: (args: Prisma.UserFindUniqueOrThrowArgs) =>
+            t.prisma.user.findUniqueOrThrow(args),
+        },
+      };
+      const racing = { ...t.ctx, prisma } as unknown as AppContext;
+      await expect(
+        patchUser(
+          racing,
+          user.id,
+          { role: 'ADMIN' },
+          { id: admin.id, role: 'ADMIN', sid: session.id },
+        ),
+      ).rejects.toMatchObject({ status: 409, code: 'CONFLICT' });
+      expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe('USER');
+    });
+
+    it('a demotion racing a patch that keeps an admin an admin does not let it promote without a step-up', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, { totpEnabledAt: T0 });
+      // The read still sees the account as an admin (it was demoted right after), and this session is stale.
+      const prisma = {
+        session: t.prisma.session,
+        user: {
+          findUnique: async () => ({
+            id: user.id,
+            role: 'ADMIN',
+            totpEnabledAt: T0,
+            storageQuotaBytes: 0n,
+            suspendedAt: null,
+          }),
+          updateMany: (args: Prisma.UserUpdateManyArgs) => t.prisma.user.updateMany(args),
+          findUniqueOrThrow: (args: Prisma.UserFindUniqueOrThrowArgs) =>
+            t.prisma.user.findUniqueOrThrow(args),
+        },
+      };
+      const racing = { ...t.ctx, prisma } as unknown as AppContext;
+      await expect(
+        patchUser(racing, user.id, { role: 'ADMIN' }, { id: admin.id, role: 'ADMIN', sid: 's' }),
+      ).rejects.toMatchObject({ status: 409, code: 'CONFLICT' });
+      expect((await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).role).toBe('USER');
+    });
+
+    it('clears a sign-in lockout, audited on the account and on the admin (server-2)', async () => {
+      const admin = await createAdminRecord(t.prisma);
+      const user = await createUserRecord(t.prisma, {
+        failedLoginCount: 3,
+        lockedUntil: new Date(T0.getTime() + 10 * 60_000),
+      });
+      const login = () =>
+        request(t.app)
+          .post('/api/auth/login')
+          .send({ email: user.email, authKey: TEST_ACCOUNT.authKey });
+      // While locked, even the right password is refused.
+      expect((await login()).status).toBe(401);
+
+      const res = await request(t.app)
+        .post(`/api/admin/users/${user.id}/clear-lock`)
+        .set(as(admin))
+        .set('X-Forwarded-For', '198.51.100.4')
+        .set('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0');
+      expect(res.status).toBe(200);
+      expect(res.body.user).toMatchObject({ id: user.id, lockedUntil: null });
+      const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(row).toMatchObject({ lockedUntil: null, failedLoginCount: 0 });
+      expect((await login()).status).toBe(200);
+
+      const owned = await t.prisma.auditEvent.findMany({
+        where: { userId: user.id, action: 'ACCOUNT_LOCK_CLEARED' },
+      });
+      expect(owned).toHaveLength(1);
+      // The owner sees that an admin cleared it, not which admin: no admin id, nor the admin's network or browser.
+      expect(owned[0]?.metadata).toEqual({ byAdmin: true, wasLocked: true, failedLogins: 3 });
+      expect(owned[0]).toMatchObject({ ipPrefix: null, userAgent: null });
+      // The admin's side is an admin action: it names the acting admin and is listed by GET /admin/audit.
+      const mine = await t.prisma.auditEvent.findMany({
+        where: { actorId: admin.id, action: 'ADMIN_LOCK_CLEARED' },
+      });
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toMatchObject({ userId: null, ipPrefix: '198.51.100.0/24' });
+      expect(mine[0]?.metadata).toMatchObject({
+        targetUserId: user.id,
+        wasLocked: true,
+        failedLogins: 3,
+      });
+      const listed = await request(t.app).get('/api/admin/audit').set(as(admin));
+      expect(listed.status).toBe(200);
+      expect(listed.body.items.map((e: { action: string }) => e.action)).toContain(
+        'ADMIN_LOCK_CLEARED',
+      );
+      expect(listed.body.items.map((e: { action: string }) => e.action)).not.toContain(
+        'ACCOUNT_LOCK_CLEARED',
+      );
+
+      expect(
+        (await request(t.app).post('/api/admin/users/unknownid/clear-lock').set(as(admin))).status,
+      ).toBe(404);
     });
 
     it('validates the patch, answers 404 for unknown users and refuses self-demotion', async () => {
@@ -526,5 +818,92 @@ describe('admin API', () => {
         'ADMIN',
       );
     });
+  });
+});
+
+/**
+ * The admin 2FA gate is per account, so it must not let through sessions opened before the second factor existed
+ * (review of server-3). Real clock here: TOTP codes are checked against ctx.now().
+ */
+describe('admin sessions opened before two-step verification was turned on', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('POST /auth/step-up renews the session for keys and grants; a wrong proof changes nothing (server-3)', async () => {
+    const admin = await registerViaApi(t.app);
+    const { backupCodes } = await enableTotpViaApi(t.app, {
+      accessToken: admin.accessToken,
+      authKey: admin.authKey,
+    });
+    await t.prisma.user.update({ where: { id: admin.user.id }, data: { role: 'ADMIN' } });
+    const session = await t.prisma.session.findFirstOrThrow({
+      where: { userId: admin.user.id, revokedAt: null },
+    });
+    const headers = { Authorization: authHeader({ id: admin.user.id, role: 'ADMIN' }, session.id) };
+    const drop = await createReadyDrop(t.app);
+    const key = token32();
+    expect(
+      (
+        await request(t.app)
+          .post(`/api/drops/${drop.dropId}/report`)
+          .send({ reason: 'MALWARE', decryptionKey: key })
+      ).status,
+    ).toBe(201);
+    const stale = new Date(Date.now() - 20 * 60_000);
+    await t.prisma.session.update({ where: { id: session.id }, data: { authenticatedAt: stale } });
+    const keyOf = async () =>
+      (await request(t.app).get('/api/admin/reports').set(headers)).body.items[0].decryptionKey;
+    expect(await keyOf()).toBeNull();
+
+    const wrong = await request(t.app)
+      .post('/api/auth/step-up')
+      .set(headers)
+      .send({ authKey: Buffer.alloc(32, 0xee).toString('base64url'), code: backupCodes[0] });
+    expect(wrong.status).toBe(403);
+    expect(
+      (await t.prisma.session.findUniqueOrThrow({ where: { id: session.id } })).authenticatedAt,
+    ).toEqual(stale);
+    expect(await keyOf()).toBeNull();
+
+    const ok = await request(t.app)
+      .post('/api/auth/step-up')
+      .set(headers)
+      .send({ authKey: admin.authKey, code: backupCodes[1] });
+    expect(ok.status).toBe(204);
+    expect(await keyOf()).toBe(key);
+    expect(
+      (await request(t.app).post(`/api/admin/drops/${drop.dropId}/grant`).set(headers)).status,
+    ).toBe(200);
+  });
+
+  it('a password-only session from before enrolment cannot reach the admin routes afterwards', async () => {
+    const admin = await registerViaApi(t.app);
+    // An admin without TOTP (the seeded dev admin, or one promoted before admins needed it).
+    await t.prisma.user.update({ where: { id: admin.user.id }, data: { role: 'ADMIN' } });
+    const attacker = await newSession(t.app, admin); // the password alone, while no second factor existed
+    const owner = await newSession(t.app, admin);
+    await enableTotpViaApi(t.app, { accessToken: owner.accessToken, authKey: admin.authKey });
+
+    const reports = await request(t.app)
+      .get('/api/admin/reports?status=OPEN')
+      .set('Authorization', bearer(attacker.accessToken));
+    expect(reports.status).toBe(401);
+    expect(
+      (await request(t.app).post('/api/auth/refresh').set('Cookie', attacker.cookie)).status,
+    ).toBe(401);
+    // The owner, who passed the second factor on this session, opens the console.
+    expect(
+      (
+        await request(t.app)
+          .get('/api/admin/reports?status=OPEN')
+          .set('Authorization', bearer(owner.accessToken))
+      ).status,
+    ).toBe(200);
   });
 });

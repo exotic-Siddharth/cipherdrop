@@ -13,10 +13,12 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UploadWorkerJob } from '../../workers/upload.worker';
 import { kdfClient } from '../../crypto/kdfClient';
+import { formatDate } from '../../lib/format';
 import { queryClient } from '../../lib/queryClient';
 import { routes } from '../../router';
 import { useAuth } from '../../stores/auth';
 import { readDeviceDrops, useDeviceDrops } from '../../stores/deviceDrops';
+import { useServerConfig } from '../../stores/serverConfig';
 import { useVault } from '../../stores/vault';
 import {
   readResumeRecord,
@@ -145,6 +147,7 @@ const user: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 5 * 1024 ** 3,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: '2026-11-07T10:00:00.000Z',
 };
 
@@ -1240,5 +1243,183 @@ describe('SendPage', () => {
     );
     expect(screen.queryByText(/interrupted|Ready to resume/)).toBeNull();
     expect(readResumeRecord()).toBeNull();
+  });
+});
+
+describe('SendPage hosting-abuse controls (server-1, ops-3)', () => {
+  afterEach(() => {
+    useServerConfig.setState(useServerConfig.getInitialState(), true);
+  });
+
+  const notice = () =>
+    screen.getByText('Sign in to send files').closest('[role="status"]') as HTMLElement;
+  const errorText = async () =>
+    (await screen.findByText('The upload did not finish')).closest('[role="alert"]')!.textContent;
+
+  it('anonymous uploads switched off: explains it, offers log in and sign up, and blocks the upload', async () => {
+    const { calls } = mockApi();
+    useServerConfig.setState({ config: { anonymousUploads: false, registration: true } });
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    expect(notice()).toHaveTextContent('This server accepts uploads from signed-in users only.');
+    expect(within(notice()).getByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/login',
+    );
+    expect(within(notice()).getByRole('link', { name: 'Create an account' })).toHaveAttribute(
+      'href',
+      '/register',
+    );
+    const send = screen.getByRole('button', { name: 'Encrypt & upload' });
+    expect(send).toBeDisabled();
+    await userEvent.click(send);
+    expect(calls.some((c) => c.path === '/api/drops')).toBe(false);
+  });
+
+  it('anonymous uploads switched off: an interrupted drop created before still resumes', async () => {
+    const dropId = generateFileId();
+    const fileId = generateFileId();
+    const file = new File(['resume me'], 'r.txt', { lastModified: 1234 });
+    writeResumeRecord({
+      dropId,
+      uploadToken: token(),
+      dk: b64urlEncode(randomBytes(32)),
+      files: [{ id: fileId, size: file.size, lastModified: 1234, chunkCount: 1 }],
+      ownerToken: token(),
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      maxDownloads: 1,
+      passwordProtected: false,
+      anonymous: true,
+      ownerId: null,
+      expiresInHours: 24,
+      hasNote: false,
+    });
+    const { calls } = mockApi((path, method) =>
+      method === 'GET' && path === `/api/drops/${dropId}/upload-status`
+        ? json({ files: [{ id: fileId, chunkCount: 1, received: [] }] })
+        : undefined,
+    );
+    useServerConfig.setState({ config: { anonymousUploads: false, registration: true } });
+    renderSend();
+    await addFile(file);
+    expect(await screen.findByText('Ready to resume your upload')).toBeVisible();
+    expect(notice()).toHaveTextContent('An upload started before can still finish.');
+    const resume = screen.getByRole('button', { name: 'Resume upload' });
+    expect(resume).toBeEnabled();
+    await userEvent.click(resume);
+    expect(
+      await screen.findByRole('heading', { name: 'Your encrypted link is ready' }),
+    ).toBeVisible();
+    // The stored drop: its chunks (the worker) and complete, and no new drop.
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/api/drops')).toBe(false);
+    expect(vi.mocked(runUploadInWorker).mock.calls[0]![0].dropId).toBe(dropId);
+    expect(
+      calls.some((c) => c.method === 'POST' && c.path === `/api/drops/${dropId}/complete`),
+    ).toBe(true);
+  });
+
+  it('does not offer sign-up when registration is switched off too', async () => {
+    mockApi();
+    useServerConfig.setState({ config: { anonymousUploads: false, registration: false } });
+    renderSend();
+    await screen.findByText('Sign in to send files');
+    expect(within(notice()).getByRole('link', { name: 'Log in' })).toBeVisible();
+    expect(within(notice()).queryByRole('link', { name: 'Create an account' })).toBeNull();
+  });
+
+  it('signed-in senders see no notice when only anonymous uploads are off', async () => {
+    mockApi();
+    useServerConfig.setState({ config: { anonymousUploads: false, registration: true } });
+    useAuth.setState({ status: 'authenticated', user, accessToken: 'access' });
+    useVault.getState().setAccountKey(await importAesKey(randomBytes(32)));
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    expect(screen.queryByText('Sign in to send files')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Encrypt & upload' })).toBeEnabled();
+  });
+
+  it('a 403 FEATURE_DISABLED from the create explains it and turns the notice on', async () => {
+    mockApi((path, method) =>
+      method === 'POST' && path === '/api/drops'
+        ? json(
+            {
+              error: {
+                code: 'FEATURE_DISABLED',
+                message: 'off',
+                details: { feature: 'anonymousUploads' },
+              },
+            },
+            403,
+          )
+        : undefined,
+    );
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    expect(await errorText()).toContain(
+      'This server accepts uploads from signed-in users only. Log in to send files.',
+    );
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeDisabled();
+    expect(useServerConfig.getState().config?.anonymousUploads).toBe(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(notice()).toBeVisible();
+  });
+
+  it('the anonymous byte budget: says how much, how long to wait, and that signing in helps', async () => {
+    mockApi((path, method) =>
+      method === 'POST' && path === '/api/drops'
+        ? new Response(
+            JSON.stringify({
+              error: {
+                code: 'UPLOAD_BUDGET_EXCEEDED',
+                message: 'x',
+                details: { limitBytes: 1024 ** 3, windowHours: 24 },
+              },
+            }),
+            {
+              status: 429,
+              headers: { 'content-type': 'application/json', 'retry-after': '7200' },
+            },
+          )
+        : undefined,
+    );
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    expect(await errorText()).toContain(
+      'Without an account you can send up to 1 GB per 24 hours, and this drop would go over that. Try again in 2 h, or sign in to send more.',
+    );
+  });
+
+  it('a full server (507 STORAGE_FULL) says so', async () => {
+    mockApi((path, method) =>
+      method === 'POST' && path === '/api/drops'
+        ? json({ error: { code: 'STORAGE_FULL', message: 'x' } }, 507)
+        : undefined,
+    );
+    renderSend();
+    await addFile(new File(['x'], 'a.txt'));
+    await userEvent.click(screen.getByRole('button', { name: 'Encrypt & upload' }));
+    expect(await errorText()).toContain(
+      "This server's storage is full, so it is not accepting new uploads right now.",
+    );
+  });
+
+  it('a new account over its probation quota is told why its storage is small and until when', async () => {
+    mockApi();
+    const ends = '2026-11-27T09:00:00.000Z';
+    useAuth.setState({
+      status: 'authenticated',
+      user: { ...user, storageQuotaBytes: 1024, quotaProbationEndsAt: ends },
+      accessToken: 'access',
+    });
+    useVault.getState().setAccountKey(await importAesKey(randomBytes(32)));
+    renderSend();
+    await addFile(new File(['x'.repeat(2048)], 'a.txt'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      `New accounts can store up to 1 KB until ${formatDate(ends)}.`,
+    );
+    expect(screen.getByRole('button', { name: 'Encrypt & upload' })).toBeDisabled();
   });
 });

@@ -10,6 +10,7 @@ import {
   accountMenu,
   downloadFromReady,
   logIn,
+  navTo,
   openLink,
   randomPassword,
   registerAccount,
@@ -46,7 +47,7 @@ test('5. register, send, dashboard names, reload + unlock, enable TOTP, logout, 
   // Send while signed in (owner-wrapped key travels, no names).
   await page.getByRole('link', { name: 'Send', exact: true }).first().click();
   const link = await sendDrop(page, [file], { maxDownloads: 5 });
-  leaks.forbidText('link key', new URL(link).hash.slice(1));
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
 
   // Dashboard shows the decrypted name.
   await page.getByRole('link', { name: 'Dashboard', exact: true }).first().click();
@@ -84,6 +85,8 @@ test('5. register, send, dashboard names, reload + unlock, enable TOTP, logout, 
   expect(secret).toMatch(/^[A-Z2-7]{16,}$/);
   leaks.forbidText('totp secret', secret);
   await expect(page.getByRole('img', { name: 'QR code for your authenticator app' })).toBeVisible();
+  // Turning 2FA on re-authenticates: a stolen session alone cannot enrol someone else's authenticator.
+  await page.getByLabel('Your password').fill(password);
   await page.getByLabel('6-digit code').fill(totpCode(secret));
   await page.getByRole('button', { name: /Turn on|Verify|Enable/ }).click();
   await expect(page.getByText('Save these backup codes now')).toBeVisible({ timeout: 20_000 });
@@ -122,6 +125,43 @@ test('5. register, send, dashboard names, reload + unlock, enable TOTP, logout, 
   await expect(page.getByText(file.name).first()).toBeVisible({ timeout: 20_000 });
 });
 
+// The vault part of test 5 on its own, for every engine (npm run e2e:cross): unlockVault runs Argon2id (hash-wasm,
+// under the CSP's 'wasm-unsafe-eval') in the KDF module worker, which posts a NON-extractable CryptoKey back to the
+// page (structured clone, R7). The dashboard can only show the file name if that key decrypts in the page.
+test('vault: after a reload the password unlocks it, and the key from the worker decrypts names @cross', async ({
+  page,
+  leaks,
+}) => {
+  const email = uniqueEmail('unlock');
+  const password = randomPassword();
+  const wrong = randomPassword();
+  leaks.forbidText('account password', password);
+  leaks.forbidText('wrong unlock password', wrong);
+  const file = textFile('vault-unlock-cross.txt', 'VAULT-UNLOCK-MARKER-5172');
+  leaks.forbidText('file name', file.name);
+  leaks.forbidText('plaintext marker', 'VAULT-UNLOCK-MARKER-5172');
+
+  const { recoveryKey } = await registerAccount(page, email, password);
+  leaks.forbidText('recovery key', recoveryKey);
+  leaks.forbidText('recovery key (compact)', recoveryKey.replaceAll('-', ''));
+  await navTo(page, 'Send');
+  const link = await sendDrop(page, [file], { maxDownloads: 5 });
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
+  await navTo(page, 'Dashboard');
+  await expect(page.getByText(file.name).first()).toBeVisible({ timeout: 20_000 });
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/unlock\?next=%2Fdashboard$/, { timeout: 30_000 });
+  await page.getByLabel('Password', { exact: true }).fill(wrong);
+  await page.getByRole('button', { name: /Unlock/ }).click();
+  await expect(page.getByRole('alert').first()).toBeVisible({ timeout: 20_000 });
+  await expect(page).toHaveURL(/\/unlock/);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByRole('button', { name: /Unlock/ }).click();
+  await waitForDashboard(page);
+  await expect(page.getByText(file.name).first()).toBeVisible({ timeout: 20_000 });
+});
+
 test('6. recovery with the recovery key sets a new password, issues a new key, old password dies', async ({
   page,
   newContext,
@@ -139,7 +179,9 @@ test('6. recovery with the recovery key sets a new password, issues a new key, o
   leaks.forbidText('recovery key', recoveryKey);
   leaks.forbidText('recovery key (compact)', recoveryKey.replaceAll('-', ''));
   await page.getByRole('link', { name: 'Send', exact: true }).first().click();
-  await sendDrop(page, [file]);
+  // The recovery re-wraps the account key: the drop key must not ride along.
+  const link = await sendDrop(page, [file]);
+  leaks.forbidKey('link key', new URL(link).hash.slice(1));
 
   // A second device recovers the account.
   const device = await (await newContext()).newPage();

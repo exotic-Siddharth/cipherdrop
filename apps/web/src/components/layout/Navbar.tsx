@@ -19,7 +19,8 @@ import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { unlockPath } from '../../lib/paths';
 import { useAuth, type AuthStatus } from '../../stores/auth';
-import { useVault } from '../../stores/vault';
+import { useServerConfig } from '../../stores/serverConfig';
+import { lockVaultEverywhere, useVault } from '../../stores/vault';
 import { Button, ButtonLink } from '../ui/Button';
 import { DropdownMenu, type DropdownMenuEntry } from '../ui/DropdownMenu';
 import { Skeleton } from '../ui/Skeleton';
@@ -59,12 +60,14 @@ function Avatar({ email }: { email: string }) {
 /** Lock state of the vault (the in-memory account key) with a one-click lock / unlock. */
 function VaultStatus() {
   const unlocked = useVault((s) => s.accountKey !== null);
-  const lock = useVault((s) => s.lock);
   const { pathname, search } = useLocation();
 
   if (unlocked) {
     return (
-      <Tooltip content="Vault unlocked: your file names are readable on this device." side="bottom">
+      <Tooltip
+        content="Vault unlocked in this tab: your file names are readable here. Locking locks every open tab."
+        side="bottom"
+      >
         <Button
           variant="ghost"
           size="sm"
@@ -72,9 +75,9 @@ function VaultStatus() {
           aria-label="Lock vault"
           className="text-primary-ink"
           onClick={() => {
-            lock('manual');
+            lockVaultEverywhere();
             toast.success('Vault locked', {
-              description: 'Your account key was removed from this tab.',
+              description: 'Your account key was removed from every open tab.',
             });
           }}
         >
@@ -102,7 +105,6 @@ function VaultStatus() {
 function AccountMenu({ user }: { user: Me }) {
   const signOut = useSignOut();
   const unlocked = useVault((s) => s.accountKey !== null);
-  const lock = useVault((s) => s.lock);
   const items: DropdownMenuEntry[] = [
     { label: 'Dashboard', icon: LayoutDashboard, to: '/dashboard' },
     { label: 'Settings', icon: Settings, to: '/settings' },
@@ -110,7 +112,7 @@ function AccountMenu({ user }: { user: Me }) {
   if (user.role === 'ADMIN')
     items.push({ label: 'Admin console', icon: ShieldCheck, to: '/admin' });
   items.push({ type: 'separator' });
-  if (unlocked) items.push({ label: 'Lock vault', icon: Lock, onSelect: () => lock('manual') });
+  if (unlocked) items.push({ label: 'Lock vault', icon: Lock, onSelect: lockVaultEverywhere });
   items.push({ label: 'Sign out', icon: LogOut, tone: 'danger', onSelect: () => void signOut() });
   return (
     <DropdownMenu
@@ -149,6 +151,9 @@ const mobileLinkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? 'bg-primary/10 text-primary-ink' : 'text-foreground hover:bg-surface-2',
   );
 
+/** Sign up is offered unless the operator closed registration (ops-3); unknown config counts as open. */
+const useRegistrationOpen = () => useServerConfig((s) => s.config?.registration !== false);
+
 function MobileNav({
   id,
   items,
@@ -160,6 +165,7 @@ function MobileNav({
   user: Me | null;
   status: AuthStatus;
 }) {
+  const registrationOpen = useRegistrationOpen();
   const signOut = useSignOut();
   return (
     <div id={id} className="border-t border-border bg-background md:hidden">
@@ -196,11 +202,11 @@ function MobileNav({
               </Button>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2">
+            <div className={cn('grid gap-2', registrationOpen && 'grid-cols-2')}>
               <ButtonLink to="/login" variant="outline">
                 Log in
               </ButtonLink>
-              <ButtonLink to="/register">Sign up</ButtonLink>
+              {registrationOpen ? <ButtonLink to="/register">Sign up</ButtonLink> : null}
             </div>
           )}
         </div>
@@ -214,6 +220,7 @@ export function Navbar() {
   const status = useAuth((s) => s.status);
   const user = useAuth((s) => s.user);
   const items = navItems(user);
+  const registrationOpen = useRegistrationOpen();
   const [menuOpen, setMenuOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const { pathname } = useLocation();
@@ -268,9 +275,11 @@ export function Navbar() {
                 <ButtonLink to="/login" variant="ghost" size="sm">
                   Log in
                 </ButtonLink>
-                <ButtonLink to="/register" size="sm">
-                  Sign up
-                </ButtonLink>
+                {registrationOpen ? (
+                  <ButtonLink to="/register" size="sm">
+                    Sign up
+                  </ButtonLink>
+                ) : null}
               </>
             )}
           </div>

@@ -34,12 +34,12 @@ test('dashboard: names, filters, copy link, delete, lock mid-use and unlock', as
   await registerAccount(page, email, password);
   await page.getByRole('link', { name: 'Send', exact: true }).first().click();
   const keyLink = await sendDrop(page, [keyFile], { maxDownloads: 5, expiryHours: 168 });
-  leaks.forbidText('key link key', new URL(keyLink).hash.slice(1));
+  leaks.forbidKey('key link key', new URL(keyLink).hash.slice(1));
   await page.getByRole('button', { name: 'Send another' }).click();
   const pwLink = await sendDrop(page, [pwFile], { maxDownloads: 3, password: dropPassword });
   await page.getByRole('button', { name: 'Send another' }).click();
   const goneLink = await sendDrop(page, [goneFile], { maxDownloads: 1 });
-  leaks.forbidText('gone link key', new URL(goneLink).hash.slice(1));
+  leaks.forbidKey('gone link key', new URL(goneLink).hash.slice(1));
 
   // A signed-in sender gets the long expiries and the owner-wrapped key.
   await accountMenu(page, 'Dashboard');

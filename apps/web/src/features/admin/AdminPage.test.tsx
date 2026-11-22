@@ -1,4 +1,5 @@
 import type {
+  AdminAuditPage,
   AdminReport,
   AdminReportPage,
   AdminStats,
@@ -11,6 +12,7 @@ import { configure, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { formatDate } from '../../lib/format';
 import { queryClient } from '../../lib/queryClient';
 import { routes } from '../../router';
 import { useAuth } from '../../stores/auth';
@@ -31,6 +33,7 @@ const admin: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 5 * GIB,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: iso(-30 * 86_400_000),
 };
 
@@ -96,13 +99,24 @@ function users(): AdminUser[] {
     totpEnabled: false,
     dropCount: 3,
     lockedUntil: null,
+    suspendedAt: null,
+    suspendedReason: null,
     createdAt: iso(-10 * 86_400_000),
     storageQuotaBytes: 5 * GIB,
+    effectiveQuotaBytes: 5 * GIB,
     storageUsedBytes: 2 * GIB,
+    quotaProbationEndsAt: null,
   };
   return [
     { ...base, id: admin.id, email: admin.email, role: 'ADMIN', totpEnabled: true },
     { ...base, id: 'ckuser000000000000000002', email: 'bob@example.com', role: 'USER' },
+    {
+      ...base,
+      id: 'ckuser000000000000000003',
+      email: 'carol@example.com',
+      role: 'USER',
+      totpEnabled: true,
+    },
   ];
 }
 
@@ -120,13 +134,28 @@ interface Call {
   body?: unknown;
 }
 
-function mockApi(overrides: { reportItems?: AdminReport[] } = {}) {
+function mockApi(
+  overrides: {
+    reportItems?: AdminReport[];
+    userItems?: AdminUser[];
+    mfaRequired?: boolean;
+    stepUpRequired?: boolean;
+  } = {},
+) {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), 'http://localhost');
     const method = init.method ?? 'GET';
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
     calls.push({ method, path: url.pathname, search: url.searchParams, body });
+    if (overrides.mfaRequired && url.pathname.startsWith('/api/admin/')) {
+      const error = {
+        code: 'FORBIDDEN',
+        message: 'Admin access needs two-step verification.',
+        details: { reason: 'MFA_REQUIRED' },
+      };
+      return json({ error }, 403);
+    }
     if (method === 'GET' && url.pathname === '/api/admin/stats') return json(stats());
     if (method === 'GET' && url.pathname === '/api/admin/reports') {
       const items = overrides.reportItems ?? reports();
@@ -135,16 +164,75 @@ function mockApi(overrides: { reportItems?: AdminReport[] } = {}) {
     }
     if (method === 'GET' && url.pathname === '/api/admin/users') {
       const search = url.searchParams.get('search')?.toLowerCase();
-      const items = users().filter((u) => !search || u.email.includes(search));
+      const items = (overrides.userItems ?? users()).filter(
+        (u) => !search || u.email.includes(search),
+      );
       const page: AdminUserPage = { items, total: items.length, page: 1, pageSize: 10 };
+      return json(page);
+    }
+    if (method === 'GET' && url.pathname === '/api/admin/audit') {
+      const page: AdminAuditPage = {
+        items: [
+          {
+            id: 'ckaudit000000000000000001',
+            action: 'ADMIN_USER_SUSPENDED',
+            createdAt: iso(-60_000),
+            actor: { id: admin.id, email: admin.email },
+            byOperator: false,
+            subject: { id: 'ckuser000000000000000002', email: 'bob@example.com' },
+            dropId: null,
+            ipPrefix: '198.51.100.0/24',
+            userAgent: 'Firefox on Linux',
+            metadata: { reason: 'Repeat malware', revokedSessions: 2 },
+          },
+          {
+            id: 'ckaudit000000000000000002',
+            action: 'ADMIN_DROP_DISABLED',
+            createdAt: iso(-120_000),
+            actor: null,
+            byOperator: true,
+            subject: null,
+            dropId: dropId(2),
+            ipPrefix: null,
+            userAgent: null,
+            metadata: { reason: 'Notice 42' },
+          },
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 10,
+      };
       return json(page);
     }
     if (method === 'POST' && url.pathname.startsWith('/api/admin/reports/')) {
       return new Response(null, { status: 204 });
     }
+    if (method === 'POST' && url.pathname.startsWith('/api/admin/drops/')) {
+      return new Response(null, { status: 204 });
+    }
+    if (method === 'POST' && url.pathname.endsWith('/clear-lock')) {
+      const id = decodeURIComponent(url.pathname.split('/').at(-2) ?? '');
+      const user = (overrides.userItems ?? users()).find((u) => u.id === id)!;
+      return json({ user: { ...user, lockedUntil: null } });
+    }
     if (method === 'PATCH' && url.pathname.startsWith('/api/admin/users/')) {
       const id = decodeURIComponent(url.pathname.split('/').pop() ?? '');
       const user = users().find((u) => u.id === id)!;
+      // Like the API: a promotion needs a recent sign-in or step-up of the admin's session.
+      if (overrides.stepUpRequired && (body as { role?: string }).role === 'ADMIN') {
+        const error = {
+          code: 'FORBIDDEN',
+          message: 'Confirm your password and a two-factor code to continue.',
+          details: { reason: 'STEP_UP_REQUIRED' },
+        };
+        return json({ error }, 403);
+      }
+      // Like the API: only accounts with two-step verification can become admins.
+      if ((body as { role?: string }).role === 'ADMIN' && !user.totpEnabled) {
+        const message =
+          'This account needs two-step verification before it can be an admin. Ask its owner to turn it on in Settings, Security.';
+        return json({ error: { code: 'CONFLICT', message } }, 409);
+      }
       return json({ user: { ...user, ...(body as object) } });
     }
     return json({ error: { code: 'NOT_FOUND', message: 'no' } }, 404);
@@ -217,6 +305,29 @@ describe('AdminPage stats and chart', () => {
   });
 });
 
+describe('AdminPage without two-step verification', () => {
+  it('shows the 2FA notice when the API answers MFA_REQUIRED (2FA turned off elsewhere)', async () => {
+    mockApi({ mfaRequired: true });
+    renderAdmin();
+    expect(
+      await screen.findByRole('heading', { name: 'Turn on two-step verification' }),
+    ).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open security settings' })).toBeVisible();
+    expect(screen.queryByRole('list', { name: 'Statistics' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Abuse reports' })).toBeNull();
+  });
+
+  it('the route guard shows it before any admin request when the session says 2FA is off', async () => {
+    const calls = mockApi();
+    useAuth.setState({ user: { ...admin, totpEnabled: false } });
+    renderAdmin();
+    expect(
+      await screen.findByRole('heading', { name: 'Turn on two-step verification' }),
+    ).toBeVisible();
+    expect(calls.filter((c) => c.path.startsWith('/api/admin/'))).toEqual([]);
+  });
+});
+
 describe('AdminPage reports', () => {
   it('Review opens /d/:id?review=1#<key> only when the report has a key', async () => {
     mockApi();
@@ -228,6 +339,20 @@ describe('AdminPage reports', () => {
     ).toBeDisabled();
     // Reporter text is rendered as text, never as markup.
     expect(screen.getByText('Contains a trojan <b>dropper</b>')).toBeVisible();
+  });
+
+  it('asks for a step-up when the API withholds the key (server-3)', async () => {
+    const reportItems = reports().map((r) => (r.hasKey ? { ...r, decryptionKey: null } : r));
+    mockApi({ reportItems });
+    renderAdmin();
+    const confirm = await screen.findByRole('button', {
+      name: `Review drop ${dropId(1)} (confirm it's you first)`,
+    });
+    expect(screen.queryByRole('link', { name: `Review drop ${dropId(1)}` })).toBeNull();
+    await userEvent.click(confirm);
+    const dialog = await screen.findByRole('dialog', { name: "Confirm it's you" });
+    expect(within(dialog).getByLabelText('Your password')).toBeVisible();
+    expect(within(dialog).getByLabelText('Two-factor or backup code')).toBeVisible();
   });
 
   it('Disable asks for confirmation, then resolves with DISABLE_DROP', async () => {
@@ -295,6 +420,69 @@ describe('AdminPage users', () => {
     return screen.findByRole('dialog', { name: 'Edit user' });
   }
 
+  /** bob on probation: 5 GB stored, `effective` applies until `ends`. */
+  const onProbation = (effective: number, ends: string) =>
+    users().map((u) =>
+      u.email === 'bob@example.com'
+        ? { ...u, storageUsedBytes: 0, effectiveQuotaBytes: effective, quotaProbationEndsAt: ends }
+        : u,
+    );
+
+  it('marks a new account whose probation quota still applies (server-1)', async () => {
+    const ends = iso(5 * 86_400_000);
+    mockApi({ userItems: onProbation(256 * 1024 ** 2, ends) });
+    renderAdmin();
+    expect(
+      await screen.findByText(
+        `New account: limited until ${formatDate(ends)}, then 5 GB. Editing the quota ends it.`,
+      ),
+    ).toBeVisible();
+    expect(screen.getAllByText(/New account: limited until/)).toHaveLength(1);
+    // The bar shows the quota that applies now.
+    expect(screen.getByText('0 B of 256 MB used')).toBeVisible();
+  });
+
+  it('edits the stored quota of an account on probation: a role-only edit leaves quota and probation alone', async () => {
+    const ends = iso(5 * 86_400_000);
+    // 100 MiB is not a whole 0.01 GB: shown as "0.1", it would read back as 107374182 bytes.
+    const calls = mockApi({ userItems: onProbation(100 * 1024 ** 2, ends) });
+    renderAdmin();
+    const dialog = await openEdit('bob@example.com');
+    expect(within(dialog).getByLabelText('Storage quota')).toHaveValue('5');
+    expect(
+      within(dialog).getByText(
+        `New account: limited to 100 MB until ${formatDate(ends)}, then this quota applies. Saving a new quota ends the limit at once.`,
+      ),
+    ).toBeVisible();
+    const save = within(dialog).getByRole('button', { name: 'Save changes' });
+    expect(save).toBeDisabled();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ role: 'ADMIN' }),
+    );
+  });
+
+  it('does not count a stored quota that is not a whole 0.01 GB as changed', async () => {
+    const calls = mockApi({
+      userItems: users().map((u) =>
+        u.email === 'bob@example.com'
+          ? { ...u, storageQuotaBytes: 100 * 1024 ** 2, effectiveQuotaBytes: 100 * 1024 ** 2 }
+          : u,
+      ),
+    });
+    renderAdmin();
+    const dialog = await openEdit('bob@example.com');
+    expect(within(dialog).getByLabelText('Storage quota')).toHaveValue('0.1');
+    const save = within(dialog).getByRole('button', { name: 'Save changes' });
+    expect(save).toBeDisabled();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ role: 'ADMIN' }),
+    );
+  });
+
   it('searches by email (debounced)', async () => {
     const calls = mockApi();
     renderAdmin();
@@ -331,25 +519,86 @@ describe('AdminPage users', () => {
     expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
 
+  it('clears the sign-in lock of a locked-out account (server-2)', async () => {
+    const userItems = users().map((u) =>
+      u.email === 'bob@example.com' ? { ...u, lockedUntil: iso(10 * 60_000) } : u,
+    );
+    const calls = mockApi({ userItems });
+    renderAdmin();
+    expect(await screen.findByText('Locked out')).toBeVisible();
+    // Only the locked account offers it.
+    expect(screen.getAllByRole('button', { name: /^Clear sign-in lock of / })).toHaveLength(1);
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Clear sign-in lock of bob@example.com' }),
+    );
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/admin/users/ckuser000000000000000002/clear-lock',
+        }),
+      ),
+    );
+  });
+
   it('saves a valid quota in bytes and a role change', async () => {
     const calls = mockApi();
     renderAdmin();
-    const dialog = await openEdit('bob@example.com');
+    const dialog = await openEdit('carol@example.com');
     const input = within(dialog).getByLabelText('Storage quota');
     await userEvent.clear(input);
     await userEvent.type(input, '2.5');
     await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    // Carol has two-step verification: no warning.
+    expect(within(dialog).queryByText(/cannot be an admin yet/)).toBeNull();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
     await waitFor(() =>
       expect(calls).toContainEqual(
         expect.objectContaining({
           method: 'PATCH',
-          path: '/api/admin/users/ckuser000000000000000002',
+          path: '/api/admin/users/ckuser000000000000000003',
           body: { role: 'ADMIN', storageQuotaBytes: 2.5 * GIB },
         }),
       ),
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('asks for a step-up when a promotion answers STEP_UP_REQUIRED, keeping the edit open (server-3)', async () => {
+    const calls = mockApi({ stepUpRequired: true });
+    renderAdmin();
+    const dialog = await openEdit('carol@example.com');
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    const confirm = await screen.findByRole('dialog', { name: "Confirm it's you" });
+    expect(within(confirm).getByLabelText('Your password')).toBeVisible();
+    expect(within(confirm).getByLabelText('Two-factor or backup code')).toBeVisible();
+    // The refusal is not shown as a failure, and the edit waits behind the prompt.
+    expect(within(dialog).queryByText(/Confirm your password and a two-factor code/)).toBeNull();
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: "Confirm it's you" })).toBeNull(),
+    );
+    expect(screen.getByRole('dialog', { name: 'Edit user' })).toBeVisible();
+  });
+
+  it('warns that an account without two-step verification cannot be an admin, and shows the refusal', async () => {
+    const calls = mockApi();
+    renderAdmin();
+    const dialog = await openEdit('bob@example.com');
+    expect(within(dialog).queryByText(/cannot be an admin yet/)).toBeNull();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
+    expect(
+      within(dialog).getByText(/no two-step verification, so it cannot be an admin yet/),
+    ).toBeVisible();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    // The server decides (its view of 2FA may be newer than this list): its refusal keeps the dialog open.
+    expect(
+      await within(dialog).findByText(/needs two-step verification before it can be an admin/),
+    ).toBeVisible();
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Edit user' })).toBeVisible();
   });
 
   it('sends only what changed, warns below usage, and locks your own role', async () => {
@@ -371,5 +620,75 @@ describe('AdminPage users', () => {
     dialog = await openEdit('root@example.com');
     expect(within(dialog).getByLabelText('Role')).toBeDisabled();
     expect(within(dialog).getByText('You cannot change your own role.')).toBeVisible();
+  });
+
+  describe('moderation (server-4, server-6)', () => {
+    it('lists the audit log with the acting admin, the operator and the reason', async () => {
+      const calls = mockApi();
+      renderAdmin();
+      const list = await screen.findByRole('list', { name: 'Audit events' });
+      expect(within(list).getByText('Admin suspended an account')).toBeInTheDocument();
+      expect(
+        within(list).getByText(`By ${admin.email} · Account bob@example.com`),
+      ).toBeInTheDocument();
+      expect(
+        within(list).getByText('Reason: Repeat malware · 2 sessions signed out'),
+      ).toBeInTheDocument();
+      expect(within(list).getByText(/By Operator \(command line\)/)).toBeInTheDocument();
+      // Admin actions only: no picker for every account's own activity, and no scope sent.
+      expect(screen.queryByLabelText('Show')).toBeNull();
+      expect(calls.find((c) => c.path === '/api/admin/audit')?.search.has('scope')).toBe(false);
+    });
+
+    it('suspends with a reason (required), and never offers it for admins', async () => {
+      const calls = mockApi();
+      renderAdmin();
+      expect(
+        await screen.findByRole('button', { name: 'Suspend bob@example.com' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: `Suspend ${admin.email}` })).toBeNull();
+      await userEvent.click(screen.getByRole('button', { name: 'Suspend bob@example.com' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Suspend account' });
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Suspend' }));
+      expect(within(dialog).getByText('Give a reason.')).toBeInTheDocument();
+      expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+      await userEvent.type(within(dialog).getByLabelText('Reason'), 'Spam');
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Suspend' }));
+      await waitFor(() =>
+        expect(calls).toContainEqual(
+          expect.objectContaining({
+            method: 'PATCH',
+            path: '/api/admin/users/ckuser000000000000000002',
+            body: { suspended: true, suspendedReason: 'Spam' },
+          }),
+        ),
+      );
+    });
+
+    it('takes a drop down from a pasted link without ever sending its key', async () => {
+      const calls = mockApi();
+      renderAdmin();
+      const card = (await screen.findByRole('heading', { name: 'Take a drop down' })).closest(
+        'section',
+      )!;
+      await userEvent.type(
+        within(card as HTMLElement).getByLabelText('Drop link or id'),
+        `https://drop.example/d/${dropId(1)}#${KEY}`,
+      );
+      await userEvent.type(within(card as HTMLElement).getByLabelText('Reason'), 'Notice 7');
+      await userEvent.click(within(card as HTMLElement).getByRole('button', { name: 'Take down' }));
+      await waitFor(() =>
+        expect(calls).toContainEqual(
+          expect.objectContaining({
+            method: 'POST',
+            path: `/api/admin/drops/${dropId(1)}/disable`,
+            body: { reason: 'Notice 7' },
+          }),
+        ),
+      );
+      expect(JSON.stringify(calls.map((c) => [c.path, c.search.toString(), c.body]))).not.toContain(
+        KEY,
+      );
+    });
   });
 });

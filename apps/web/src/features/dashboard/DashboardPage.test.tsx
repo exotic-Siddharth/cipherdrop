@@ -32,6 +32,7 @@ const me: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 1024 ** 3,
   storageUsedBytes: 300 * 1024 ** 2,
+  quotaProbationEndsAt: null,
   createdAt: new Date('2026-10-01T00:00:00Z').toISOString(),
 };
 

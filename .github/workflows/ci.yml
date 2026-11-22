@@ -1,14 +1,29 @@
 # CI (docs/DESIGN.md section 14): lint + typecheck + unit; integration with Postgres and Redis services plus MinIO
-# for the S3 driver; Playwright e2e with the report uploaded on failure; a build-only check of the production images.
+# for the S3 driver; Playwright e2e (every spec in Chromium, the @cross subset in Firefox, WebKit and two emulated
+# phones) with the report uploaded on failure; the production stack built from the Dockerfiles, booted and
+# smoke-tested, with a Trivy scan and an SBOM of both images.
 #
 # The services are published on the SAME host ports as docker-compose.yml (Postgres 55433, Redis 56380, MinIO 59000)
 # so the test and e2e configs run unchanged: their defaults and playwright.config.ts point at those ports.
+# The Postgres and Redis service images (and the MinIO image) carry the same reference as docker-compose.prod.yml, so
+# the tests run against the bytes production runs. Dependabot moves only the compose file: scripts/image-pins.test.mjs
+# (test:scripts in audit.yml) fails until these references are moved with it.
+#
+# Supply chain: every action is pinned to a full commit SHA (the comment names its release; Dependabot,
+# .github/dependabot.yml, proposes the bumps), checkout does not leave the token in .git/config, and every
+# install runs with --ignore-scripts, like the Dockerfiles. The lockfile's install scripts are the API's postinstall
+# (prisma generate, run explicitly below), @prisma/client's (the same generate), @prisma/engines' (the engine
+# download, which prisma generate also does), prisma's preinstall (a Node >= 18.18 check, which the pinned Node 22
+# makes moot), esbuild's (a binary check; the binary comes from its @esbuild/<platform> package), fsevents (macOS
+# only) and @scarf/scarf (install telemetry, deliberately never run).
+# The dependency audit gate is a separate workflow, audit.yml, so its weekly run does not start this matrix.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,6 +35,8 @@ concurrency:
 env:
   CI: 'true'
   NODE_VERSION: '22'
+  # No Prisma CLI update check (it reports usage), as in the API image.
+  CHECKPOINT_DISABLE: '1'
 
 jobs:
   static:
@@ -27,13 +44,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      # The API's typecheck needs the generated Prisma client types (the postinstall that --ignore-scripts skips).
+      - run: npm run db:generate -w @cipherdrop/api
       - run: npm run lint
+      # The security bans in eslint.config.js (Math.random, unsafe raw SQL, HTML sinks, cross-origin requests) fire.
+      - run: npm run test:lint
       - run: npm run format:check
       - run: npm run typecheck
       # Unit tests that need no services: the crypto and shared packages and the SPA (jsdom).
@@ -45,7 +68,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         env:
           POSTGRES_USER: cipherdrop
           POSTGRES_PASSWORD: cipherdrop
@@ -58,7 +81,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 56380:6379
         options: >-
@@ -67,15 +90,25 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      # The Prisma client, plus the query and schema engines that the test setup's `prisma migrate deploy` uses.
+      - run: npm run db:generate -w @cipherdrop/api
       # The test setup creates cipherdrop_test and applies every migration itself.
       - name: API integration tests (real Postgres and Redis, local storage)
         run: npm test -w @cipherdrop/api
+      # Schema drift: the migrations, replayed into a scratch database, must build exactly schema.prisma (indexes,
+      # constraints, defaults and FK rules included). Exit code 2 prints the SQL of the missing migration.
+      - name: Migrations match schema.prisma (prisma migrate diff)
+        env:
+          SHADOW_DATABASE_URL: postgresql://cipherdrop:cipherdrop@localhost:55433/cipherdrop_shadow
+        run: npm run db:check -w @cipherdrop/api
       # MinIO is not a service container: its image needs a command (server /data), which `services:` cannot pass.
       - name: Start MinIO
         run: |
@@ -98,7 +131,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         env:
           POSTGRES_USER: cipherdrop
           POSTGRES_PASSWORD: cipherdrop
@@ -111,7 +144,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 56380:6379
         options: >-
@@ -120,12 +153,17 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      # The e2e API process (e2e/support/start-api.ts) imports @prisma/client and runs `prisma migrate deploy`.
+      - run: npm run db:generate -w @cipherdrop/api
+      # Playwright has no install script: its browser comes only from this explicit step.
       - run: npm run e2e:install -w @cipherdrop/web -- --with-deps
       # The e2e API is a real process: it reads apps/api/.env like a fresh clone does (the example holds
       # dev-only values; the unit and integration jobs use their test defaults).
@@ -138,7 +176,7 @@ jobs:
       - run: npm run e2e
       - name: Upload the Playwright report and traces
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
           path: |
@@ -147,22 +185,217 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-  images:
-    name: production images build
+  e2e-cross:
+    # The receive side in the other engines (apps/web/playwright.cross.config.ts): the tests tagged @cross, one
+    # project per runner, each installing only its own browser. WebKit is Playwright's Linux build of the engine,
+    # not Safari, and the mobile projects emulate a phone (viewport, user agent, touch) on a desktop engine.
+    name: e2e cross-engine (${{ matrix.project }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      # Every engine reports, even when another one fails.
+      fail-fast: false
+      matrix:
+        include:
+          - project: firefox
+            browser: firefox
+          - project: webkit
+            browser: webkit
+          - project: mobile-chromium
+            browser: chromium
+          - project: mobile-webkit
+            browser: webkit
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
+        env:
+          POSTGRES_USER: cipherdrop
+          POSTGRES_PASSWORD: cipherdrop
+          POSTGRES_DB: cipherdrop
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U cipherdrop -d cipherdrop"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+        ports:
+          - 56380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build the api image
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          context: .
-          file: apps/api/Dockerfile
-          push: false
-      - name: Build the web image
-        uses: docker/build-push-action@v6
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          context: .
-          file: apps/web/Dockerfile
-          push: false
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run db:generate -w @cipherdrop/api
+      - name: Install the browser and its system dependencies
+        working-directory: apps/web
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npx playwright install --with-deps "$BROWSER"
+      - name: Use the example environment
+        run: |
+          cp apps/api/.env.example apps/api/.env
+          cp apps/web/.env.example apps/web/.env
+      - name: Cross-engine e2e (@cross)
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: npm run e2e:cross -w @cipherdrop/web -- --project="$PROJECT"
+      - name: Upload the Playwright report and traces
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-${{ matrix.project }}
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  secrets:
+    name: secret scan (gitleaks, full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Every commit, not just the tip: a secret that was committed and later deleted is still in the history.
+          fetch-depth: 0
+          persist-credentials: false
+      # gitleaks 8.30.1, the MIT-licensed CLI (gitleaks-action needs a license key for organisations), pinned by its
+      # image index digest; Dependabot does not track an image inside a run: step, so bump tag and digest together.
+      # The default rules plus .gitleaks.toml (exceptions by exact value, each with its reason). --redact keeps a
+      # finding's value out of the log; --verbose prints where it is. The checkout is mounted read-only.
+      - name: gitleaks
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git --no-banner --redact --verbose --config /repo/.gitleaks.toml /repo
+
+  workflows:
+    name: workflow lint (actionlint, zizmor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # actionlint 1.7.12 (it bundles shellcheck for the run: scripts), pinned by its image index digest. Dependabot
+      # does not track an image inside a run: step: bump the tag and digest together, by hand.
+      - name: actionlint
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo
+          rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+      # zizmor: the security audits (template injection, credential persistence, unpinned actions and images,
+      # excessive permissions, ...) with the pedantic persona, over every workflow and dependabot.yml. Installed in a
+      # venv from .github/zizmor-requirements.txt (exact version, wheel hashes). --offline: the audits that need the
+      # GitHub API are skipped, so no token is handed to the tool and the result depends only on the files.
+      - name: zizmor
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install --quiet --require-hashes --only-binary :all: \
+            -r .github/zizmor-requirements.txt
+          "$RUNNER_TEMP/zizmor/bin/zizmor" --offline --persona=pedantic --format=github .
+
+  prod-stack:
+    # The deployable artefacts as an operator runs them (docs/DEPLOYMENT.md), on every push: both images built by
+    # `docker compose build` from apps/api/Dockerfile and apps/web/Dockerfile, docker-compose.prod.yml booted with
+    # freshly generated secrets (the real entrypoint, `prisma migrate deploy`, the production config guard, nginx and
+    # its config), the production smoke test through nginx (apps/web/deploy-checks), then a Trivy scan and a
+    # CycloneDX SBOM of each image (scripts/image-scan.mjs: a fixable CRITICAL fails, HIGH is reported).
+    name: production stack (build, boot, smoke, scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      COMPOSE_FILE: docker-compose.prod.yml
+      COMPOSE_ENV_FILES: .env.production
+      IMAGE_TAG: ci
+      WEB_PORT: '8080'
+      SMOKE_BASE_URL: http://127.0.0.1:8080
+      # The smoke test also reads nginx's access log with `docker logs` (the privacy format: IP prefixes, no query
+      # string or fragment); compose names the container after the file's project name, cipherdrop-prod.
+      SMOKE_WEB_CONTAINER: cipherdrop-prod-web-1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      # The smoke runner (Playwright and the shared e2e helpers); the stack itself is built from the Dockerfiles.
+      - run: npm ci --ignore-scripts
+      - run: npm run e2e:install -w @cipherdrop/web -- --with-deps
+      # .env.production.example with every REQUIRED value replaced: secrets from openssl rand (masked in the log),
+      # the origin the smoke test uses. Everything else (COOKIE_SECURE=true, TRUST_PROXY=1, local storage) stays as
+      # shipped, so the template itself is what gets tested.
+      - name: Generate .env.production with fresh secrets
+        run: |
+          umask 077
+          postgres_password="$(openssl rand -hex 24)"
+          postgres_app_password="$(openssl rand -hex 24)"
+          redis_password="$(openssl rand -hex 32)"
+          jwt_access_secret="$(openssl rand -hex 32)"
+          prelogin_secret="$(openssl rand -hex 32)"
+          totp_enc_key="$(openssl rand -base64 32)"
+          for secret in "$postgres_password" "$postgres_app_password" "$redis_password" "$jwt_access_secret" \
+            "$prelogin_secret" "$totp_enc_key"; do
+            echo "::add-mask::$secret"
+          done
+          grep -vE '^(WEB_ORIGIN|WEB_PORT|POSTGRES_PASSWORD|POSTGRES_APP_PASSWORD|REDIS_PASSWORD|JWT_ACCESS_SECRET|PRELOGIN_SECRET|TOTP_ENC_KEY)=' \
+            .env.production.example > .env.production
+          {
+            echo "WEB_ORIGIN=$SMOKE_BASE_URL"
+            echo "WEB_PORT=$WEB_PORT"
+            echo "POSTGRES_PASSWORD=$postgres_password"
+            echo "POSTGRES_APP_PASSWORD=$postgres_app_password"
+            echo "REDIS_PASSWORD=$redis_password"
+            echo "JWT_ACCESS_SECRET=$jwt_access_secret"
+            echo "PRELOGIN_SECRET=$prelogin_secret"
+            echo "TOTP_ENC_KEY=$totp_enc_key"
+          } >> .env.production
+      - name: Build both images from their Dockerfiles
+        id: build
+        run: docker compose build --pull
+      - name: Boot the stack (every service healthy)
+        run: docker compose up -d --wait --wait-timeout 300
+      - name: Production smoke through nginx
+        run: npm run smoke:prod -w @cipherdrop/web
+      # Runs when the images were built, even if the boot or the smoke failed: the scan does not need the stack.
+      - name: Scan both images (Trivy) and write their SBOMs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node scripts/image-scan.mjs --out image-scan "cipherdrop-api:$IMAGE_TAG" "cipherdrop-web:$IMAGE_TAG"
+      - name: Upload the SBOMs and vulnerability reports
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-sbom-and-scan
+          path: image-scan/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Collect the stack's state and logs
+        if: failure()
+        run: |
+          docker compose ps --all > compose-ps.txt 2>&1 || true
+          docker compose logs --no-color --timestamps > compose-logs.txt 2>&1 || true
+      - name: Upload the stack logs and the smoke report
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prod-stack-logs
+          path: |
+            compose-ps.txt
+            compose-logs.txt
+            apps/web/test-results/prod-smoke/
+          retention-days: 14
+          if-no-files-found: ignore

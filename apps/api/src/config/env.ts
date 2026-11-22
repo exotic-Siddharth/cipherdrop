@@ -13,6 +13,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { apiRoot } from './paths';
 
+const MiB = 1024 * 1024;
 const TRUE = new Set(['true', '1', 'yes', 'on']);
 const FALSE = new Set(['false', '0', 'no', 'off']);
 
@@ -47,6 +48,18 @@ const base64Key32 = z
 
 const secret = z.string().min(32, 'must be at least 32 characters');
 
+/** What marks a development, test or template value: refused in production (secrets and connection passwords). */
+const PLACEHOLDER = /dev-only|test-only|change-me/i;
+
+/** The decoded password of a connection URL, or '' when it has none or does not parse. */
+function urlPassword(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).password);
+  } catch {
+    return '';
+  }
+}
+
 const EnvSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -66,7 +79,22 @@ const EnvSchema = z
 
     JWT_ACCESS_SECRET: secret,
     ACCESS_TOKEN_TTL_SEC: int(900, 60, 86_400),
+    /** Idle limit: a refresh token (and its session) expires this long after its last rotation. */
     REFRESH_TOKEN_TTL_DAYS: int(30, 1, 365),
+    /**
+     * Absolute limit (review server-3): a session ends this long after its sign-in however often it is refreshed,
+     * and the user signs in again (password, and the 2FA code when it is on). 30 days follows NIST SP 800-63B's
+     * reauthentication period for AAL1 ("at least once per 30 days ... regardless of user activity"); 2FA is
+     * optional here, so AAL1 is the baseline. With the default idle limit of 30 days, every session is simply 30
+     * days from sign-in. It must be at least REFRESH_TOKEN_TTL_DAYS.
+     */
+    SESSION_MAX_LIFETIME_DAYS: int(30, 1, 365),
+    /**
+     * Admin step-up (server-3): GET /admin/reports returns reporters' decryption keys, and POST
+     * /admin/drops/:id/grant mints a review grant, only within this many minutes of the session's last
+     * authentication (sign-in, or POST /auth/step-up with the password and a 2FA code).
+     */
+    ADMIN_STEP_UP_MINUTES: int(15, 1, 1440),
     COOKIE_SECURE: bool(false),
     /** 32 bytes, base64: AES-256-GCM key for TOTP secrets at rest. */
     TOTP_ENC_KEY: base64Key32,
@@ -86,10 +114,29 @@ const EnvSchema = z
     S3_ACCESS_KEY_ID: z.string().min(1).optional(),
     S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     S3_FORCE_PATH_STYLE: bool(true),
+    /**
+     * For a bucket with versioning: delete every version and delete marker by its VersionId (ListObjectVersions +
+     * DeleteObjects), so a delete is final. Off, the S3 driver refuses to start on a versioned bucket, where a
+     * plain delete only adds a delete marker (storage/s3.ts). It never accepts a bucket with Object Lock.
+     */
+    S3_DELETE_ALL_VERSIONS: bool(false),
 
     ANON_MAX_DROP_BYTES: int(104_857_600, 1),
     USER_MAX_DROP_BYTES: int(2_147_483_648, 1),
     USER_DEFAULT_QUOTA_BYTES: int(5_368_709_120, 0),
+    /**
+     * Probation for new accounts (sign-up is free and unverified): for their first NEW_ACCOUNT_PROBATION_DAYS
+     * (default 7; 0 = none) their quota is at most NEW_ACCOUNT_QUOTA_BYTES (default 256 MiB). The end date is
+     * fixed at registration; an admin's quota edit ends the probation at once (lib/quota.ts).
+     */
+    NEW_ACCOUNT_QUOTA_BYTES: int(268_435_456, 0),
+    NEW_ACCOUNT_PROBATION_DAYS: int(7, 0, 365),
+    /**
+     * Evidence hold (server-5): while a report that carries the drop key is OPEN, cleanup does not delete the
+     * blobs of the expired or exhausted drop, so an admin can still review it. At most this many days after the
+     * report (default 14; 0 = no hold). Owner deletes and takedowns are never held.
+     */
+    REPORT_EVIDENCE_HOLD_DAYS: int(14, 0, 90),
     ANON_MAX_EXPIRY_HOURS: int(72, 1, 720),
     USER_MAX_EXPIRY_HOURS: int(720, 1, 720),
     MAX_FILES_PER_DROP: int(20, 1, 20),
@@ -107,6 +154,12 @@ const EnvSchema = z
      * at a time).
      */
     MAX_CHUNK_DOWNLOADS_PER_GRANT: int(8, 1, 10_000),
+    /**
+     * Byte budget of one download grant (critic-2): chunk GETs on a grant may serve at most this many times the
+     * drop's ciphertext size, so a consumed download cannot be replayed without limit for 24 h. 3 leaves room for
+     * resumes and retries (an aborted chunk counts in full).
+     */
+    DOWNLOAD_GRANT_BYTE_FACTOR: int(3, 1, 100),
     MAX_CHUNK_DOWNLOADS_PER_IP: int(32, 1, 10_000),
     /** Chunk PUTs in flight per API process (each buffers up to 4 MiB); more get 429 + Retry-After. */
     MAX_CONCURRENT_CHUNK_UPLOADS: int(64, 1, 10_000),
@@ -123,8 +176,53 @@ const EnvSchema = z
      * or about 42 KB/s (0.34 Mbit/s) for the web uploader's 3 parallel PUTs.
      */
     CHUNK_UPLOAD_MIN_BYTES_PER_SEC: int(4096, 1, 1_048_576),
-    /** Ceiling on the ciphertext bytes of anonymous drops whose blobs are not purged yet (0 = no ceiling). */
-    ANON_TOTAL_PENDING_BYTES: int(0, 0),
+    /**
+     * Operator switches (ops-3). false: POST /drops without a session, or POST /auth/register, answers 403
+     * FEATURE_DISABLED; GET /api/config tells the SPA. Drops already created finish and stay downloadable.
+     */
+    ALLOW_ANONYMOUS_UPLOADS: bool(true),
+    ALLOW_REGISTRATION: bool(true),
+    /**
+     * Ceiling on the ciphertext bytes of all anonymous drops whose blobs are not purged yet, any status
+     * (default 10 GiB; 0 = no ceiling, an explicit opt-out). On by default: anonymous, end-to-end encrypted
+     * drops are free file hosting, and the server cannot scan ciphertext.
+     */
+    ANON_TOTAL_PENDING_BYTES: int(10_737_418_240, 0),
+    /**
+     * Rolling per-client budget for anonymous drops: at most this many declared ciphertext bytes per IPv4
+     * address or IPv6 /48 in any ANON_BYTES_WINDOW_HOURS (default 1 GiB per 24 h; 0 = off). Beyond it the
+     * create gets 429 UPLOAD_BUDGET_EXCEEDED with Retry-After. Kept in Redis, so it holds across API processes,
+     * and one client can no longer fill ANON_TOTAL_PENDING_BYTES and lock every other anonymous sender out.
+     * Counted in whole MiB per hour (lib/byteBudget.ts), so it must hold one ANON_MAX_DROP_BYTES drop rounded
+     * up to a MiB.
+     */
+    ANON_BYTES_PER_CLIENT: int(1_073_741_824, 0),
+    ANON_BYTES_WINDOW_HOURS: int(24, 1, 720),
+    /**
+     * Ceiling on the ciphertext bytes of ALL drops, anonymous and signed in, whose blobs are not purged yet
+     * (0 = off, the default). Beyond it a new drop gets 507 STORAGE_FULL. Size it to the disk or the bucket
+     * budget: quotas are per account and free accounts are cheap.
+     */
+    GLOBAL_STORAGE_CAP_BYTES: int(0, 0),
+    /**
+     * Local storage only: a new drop gets 507 STORAGE_FULL when the blob volume's free space, minus the
+     * declared bytes of every active upload in progress (created or stored a chunk in the last 10 minutes,
+     * drops/service.ts UPLOAD_ACTIVE_MS) and of this drop, would fall below this (default 1 GiB; 0 = off).
+     * The blobs share the host disk with Postgres, and a full disk takes the database down.
+     */
+    STORAGE_MIN_FREE_BYTES: int(1_073_741_824, 0),
+    /**
+     * Server-side Argon2id of account auth keys (lib/argon2Limiter.ts, which explains the sizing): hashes running
+     * at once per process, and how many more may wait before a request is refused with 429 + Retry-After.
+     */
+    ARGON2_MAX_CONCURRENT: int(2, 1, 64),
+    ARGON2_MAX_QUEUE: int(32, 0, 10_000),
+    /**
+     * Read by libuv, not by the app: the size of Node's threadpool (default 4), which Argon2id shares with fs,
+     * dns.lookup and async crypto. Parsed here only so that ARGON2_MAX_CONCURRENT can be checked against it; the
+     * API image sets 8 (apps/api/Dockerfile). It takes effect only from the process environment at start-up.
+     */
+    UV_THREADPOOL_SIZE: int(4, 1, 1024),
 
     TRUST_PROXY: hopCount,
     RATE_LIMITS_ENABLED: bool(true),
@@ -132,17 +230,61 @@ const EnvSchema = z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
     LOG_PRETTY: bool(false),
+    /**
+     * Serve Swagger UI at /api/docs. Off unless set (the dev .env.example turns it on) and refused in production:
+     * the API shares its origin with the SPA, which holds the vault key, drop keys and the refresh cookie, and
+     * Swagger UI is a large third-party script bundle. /api/openapi.json (plain JSON) is always served.
+     */
+    API_DOCS_UI: bool(false),
 
     SEED_ADMIN_PASSWORD: z.string().min(1).optional(),
     SEED_DEMO_PASSWORD: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
+    // A budget below the largest anonymous drop would refuse every drop of that size for ever. The budget
+    // counts whole MiB, so the largest drop is rounded up first. Upgrades: raising ANON_MAX_DROP_BYTES above
+    // 1 GiB now needs ANON_BYTES_PER_CLIENT raised too (or set to 0), and the message says so.
+    const largestAnonDrop = Math.ceil(env.ANON_MAX_DROP_BYTES / MiB) * MiB;
+    if (env.ANON_BYTES_PER_CLIENT > 0 && env.ANON_BYTES_PER_CLIENT < largestAnonDrop) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ANON_BYTES_PER_CLIENT'],
+        // Names only, like every message here (values are never printed).
+        message:
+          'must be 0 (off) or at least ANON_MAX_DROP_BYTES rounded up to a whole MiB: raise it ' +
+          'together with ANON_MAX_DROP_BYTES',
+      });
+    }
+    if (env.SESSION_MAX_LIFETIME_DAYS < env.REFRESH_TOKEN_TTL_DAYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SESSION_MAX_LIFETIME_DAYS'],
+        message:
+          'must be at least REFRESH_TOKEN_TTL_DAYS (the absolute session lifetime cannot be shorter than the idle one)',
+      });
+    }
+    if (env.ARGON2_MAX_CONCURRENT >= env.UV_THREADPOOL_SIZE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ARGON2_MAX_CONCURRENT'],
+        message:
+          'must be below UV_THREADPOOL_SIZE (default 4), so Argon2id never takes every libuv thread from file I/O',
+      });
+    }
     if (env.NODE_ENV !== 'production') return;
     if (!env.RATE_LIMITS_ENABLED) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['RATE_LIMITS_ENABLED'],
         message: 'rate limits cannot be disabled in production',
+      });
+    }
+    if (env.API_DOCS_UI) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['API_DOCS_UI'],
+        message:
+          'Swagger UI cannot run in production: it would share the origin that holds the keys (publish /api/openapi.json elsewhere instead)',
       });
     }
     if (!env.COOKIE_SECURE) {
@@ -164,7 +306,7 @@ const EnvSchema = z
       const value = env[key];
       const decoded =
         key === 'TOTP_ENC_KEY' ? Buffer.from(value, 'base64').toString('latin1') : value;
-      if (/dev-only|test-only|change-me/i.test(decoded)) {
+      if (PLACEHOLDER.test(decoded)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: [key],
@@ -172,9 +314,22 @@ const EnvSchema = z
         });
       }
     }
+    // The template's POSTGRES_APP_PASSWORD and REDIS_PASSWORD reach these URLs through docker-compose.prod.yml.
+    for (const key of ['DATABASE_URL', 'REDIS_URL'] as const) {
+      if (PLACEHOLDER.test(urlPassword(env[key]))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: 'its password is a development/test placeholder',
+        });
+      }
+    }
   });
 
 export type Env = z.infer<typeof EnvSchema>;
+
+/** The name of every variable the schema reads (the repo root's .env.example, a documentation copy, lists them all). */
+export const ENV_KEYS = Object.keys(EnvSchema.innerType().shape) as (keyof Env)[];
 
 /** Variables that have a local-dev default in the schema and so must be stated in production. */
 const EXPLICIT_IN_PRODUCTION = [

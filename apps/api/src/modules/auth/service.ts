@@ -20,12 +20,13 @@ import {
   type Me,
 } from '@cipherdrop/shared';
 import type { Session, User } from '@prisma/client';
-import type { Request, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 import type { AppContext } from '../../context';
 import { forbidden, unauthorized, validationError } from '../../lib/errors';
 import { decodeB64url, sha256B64url, timingSafeEqualStr } from '../../lib/hash';
-import { ipPrefix } from '../../lib/ip';
+import { ipKey, ipPrefix } from '../../lib/ip';
 import { signAccessToken } from '../../lib/jwt';
+import { effectiveQuotaBytes, probationEndsAt } from '../../lib/quota';
 import { denylistSid } from '../../lib/redis';
 import { randomToken } from '../../lib/tokens';
 import { verifyTotp } from '../../lib/totp';
@@ -43,16 +44,18 @@ type Req = Pick<Request, 'ip' | 'headers'>;
 
 const DAY_MS = 86_400_000;
 
-/** Me DTO (spec section 10). */
-export function toMe(user: User): Me {
+/** Me DTO (spec section 10). The quota is the one that applies now (new-account probation, lib/quota.ts). */
+export function toMe(user: User, ctx: Pick<AppContext, 'env' | 'now'>): Me {
+  const now = ctx.now();
   return {
     id: user.id,
     email: user.email,
     role: user.role,
     totpEnabled: user.totpEnabledAt !== null,
     autoLockMinutes: user.autoLockMinutes as AutoLockMinutes,
-    storageQuotaBytes: Number(user.storageQuotaBytes),
+    storageQuotaBytes: Number(effectiveQuotaBytes(user, ctx.env, now)),
     storageUsedBytes: Number(user.storageUsedBytes),
+    quotaProbationEndsAt: probationEndsAt(user, now)?.toISOString() ?? null,
     createdAt: user.createdAt.toISOString(),
   };
 }
@@ -83,8 +86,22 @@ const userAgentOf = (req: Req) => {
   return summarizeUserAgent(Array.isArray(ua) ? ua[0] : ua);
 };
 
-const refreshExpiry = (ctx: AppContext, from: Date) =>
-  new Date(from.getTime() + ctx.env.REFRESH_TOKEN_TTL_DAYS * DAY_MS);
+/**
+ * Session lifetime (review server-3). Each refresh slides the idle expiry to now + REFRESH_TOKEN_TTL_DAYS, but never
+ * past the session's absolute end, createdAt + SESSION_MAX_LIFETIME_DAYS: after that the refresh fails and the user
+ * signs in again. The refresh cookie, the Session row and the last access token all end with it.
+ */
+export const sessionDeadline = (ctx: AppContext, createdAt: Date) =>
+  new Date(createdAt.getTime() + ctx.env.SESSION_MAX_LIFETIME_DAYS * DAY_MS);
+
+const refreshExpiry = (ctx: AppContext, from: Date, deadline: Date) =>
+  new Date(Math.min(from.getTime() + ctx.env.REFRESH_TOKEN_TTL_DAYS * DAY_MS, deadline.getTime()));
+
+/** An access token for the session that does not outlive its absolute end. */
+const accessTokenFor = (user: User, sessionId: string, now: Date, deadline: Date) =>
+  signAccessToken(user, sessionId, {
+    maxTtlSec: Math.floor((deadline.getTime() - now.getTime()) / 1000),
+  });
 
 export interface IssuedSession {
   session: Session;
@@ -97,7 +114,8 @@ export interface IssuedSession {
 export async function createSession(ctx: AppContext, user: User, req: Req): Promise<IssuedSession> {
   const now = ctx.now();
   const refreshToken = randomToken();
-  const refreshExpiresAt = refreshExpiry(ctx, now);
+  const deadline = sessionDeadline(ctx, now);
+  const refreshExpiresAt = refreshExpiry(ctx, now, deadline);
   const session = await ctx.prisma.session.create({
     data: {
       userId: user.id,
@@ -105,6 +123,7 @@ export async function createSession(ctx: AppContext, user: User, req: Req): Prom
       ipPrefix: ipPrefix(req.ip),
       createdAt: now,
       lastUsedAt: now,
+      authenticatedAt: now,
       expiresAt: refreshExpiresAt,
       tokens: {
         create: {
@@ -117,7 +136,7 @@ export async function createSession(ctx: AppContext, user: User, req: Req): Prom
   });
   return {
     session,
-    accessToken: signAccessToken(user, session.id),
+    accessToken: accessTokenFor(user, session.id, now, deadline),
     refreshToken,
     refreshExpiresAt,
   };
@@ -226,11 +245,15 @@ export async function rotateRefresh(
   const { session } = found;
   const now = ctx.now();
   if (found.usedAt && !inGraceWindow(found.usedAt, now)) return handleReuse(ctx, session, req);
-  if (session.revokedAt || session.expiresAt <= now || found.expiresAt <= now) {
+  // The absolute end is checked from createdAt too, so sessions whose expiry slid before the limit existed end.
+  const deadline = sessionDeadline(ctx, session.createdAt);
+  if (session.revokedAt || session.expiresAt <= now || found.expiresAt <= now || deadline <= now) {
     throw unauthorized();
   }
+  // Suspension revokes the sessions too; this also covers a refresh racing the suspension (server-6).
+  if (session.user.suspendedAt) throw unauthorized();
   const refreshToken = randomToken();
-  const refreshExpiresAt = refreshExpiry(ctx, now);
+  const refreshExpiresAt = refreshExpiry(ctx, now, deadline);
   // Claim the token and issue its successor in ONE transaction: a failure rolls the claim back, so a
   // retry is not mistaken for reuse (C-28). A token that is already claimed is a replay: inside the grace
   // window, and only while its successor is unused, that successor is retired and replaced (same session);
@@ -272,7 +295,7 @@ export async function rotateRefresh(
   if (!claimed) return handleReuse(ctx, session, req);
   return {
     user: session.user,
-    accessToken: signAccessToken(session.user, session.id),
+    accessToken: accessTokenFor(session.user, session.id, now, deadline),
     refreshToken,
     refreshExpiresAt,
   };
@@ -401,8 +424,34 @@ export async function loadUser(ctx: AppContext, userId: string): Promise<User> {
 }
 
 /**
- * Re-authentication on signed-in routes: the current authKey, plus a TOTP or backup code when TOTP is on.
- * Wrong proofs are 403 (not 401) so the SPA does not treat them as an expired session.
+ * The `reauth` limiter (RATE_LIMIT_RULES.reauth) of every route that calls requireAccountProof, in the auth and me
+ * modules alike: one Redis bucket per SESSION (user id + sid), shared by those routes. Per session, not per user
+ * (review of server-3): a thief holding one stolen session could otherwise spend the whole account's budget with
+ * wrong proofs and stop the owner, on their own session, from signing that session out or changing the password.
+ * A new session needs the password (and the second factor), so a token thief still gets 10 guesses per window.
+ * Successful proofs count too: each one runs a server-side Argon2id. A 429 from a full Argon2id queue does not.
+ */
+export function reauthLimit(ctx: Pick<AppContext, 'rateLimit'>): RequestHandler {
+  return ctx.rateLimit({
+    name: 'reauth',
+    key: (req) =>
+      req.user ? `session|${req.user.id}|${req.user.sid}` : `anonymous|${ipKey(req.ip)}`,
+    refundServerBusy: true,
+  });
+}
+
+export interface AccountProofOptions {
+  /** Body field that carries the authKey, for the 400 issue path (default `authKey`). */
+  field?: string;
+  /** Accept a backup code as the second factor (default true; backup-code regeneration needs TOTP). */
+  allowBackup?: boolean;
+}
+
+/**
+ * Re-authentication on signed-in routes (review server-3), the one rule for every sensitive action: the current
+ * authKey, plus a TOTP or backup code when TOTP is on. Used by password change, recovery-key rotation, TOTP enable
+ * and disable, backup-code regeneration, session revocation and account deletion, so a stolen access token alone
+ * can do none of them. Wrong proofs are 403 (not 401) so the SPA does not treat them as an expired session.
  */
 export async function requireAccountProof(
   ctx: AppContext,
@@ -410,9 +459,11 @@ export async function requireAccountProof(
   proof: { authKey: string; code?: string },
   req: Req,
   context: string,
+  options: AccountProofOptions = {},
 ): Promise<void> {
-  const bytes = keyBytes(proof.authKey, 'authKey');
-  if (!(await verifyAccountAuthKey(user.authKeyHash, bytes))) throw forbidden('Incorrect password');
+  const bytes = keyBytes(proof.authKey, options.field ?? 'authKey');
+  if (!(await verifyAccountAuthKey(ctx, user.authKeyHash, bytes)))
+    throw forbidden('Incorrect password');
   if (!user.totpEnabledAt) return;
   if (!proof.code) {
     throw validationError('A two-factor code is required', {
@@ -420,8 +471,26 @@ export async function requireAccountProof(
     });
   }
   const factor = await verifySecondFactor(ctx, user, proof.code, req, {
-    allowBackup: true,
+    allowBackup: options.allowBackup ?? true,
     context,
   });
   if (!factor) throw forbidden('Invalid two-factor code');
+}
+
+/**
+ * True when the caller's session proved the password (and 2FA when on) within `minutes`: at sign-in or with
+ * POST /auth/step-up (server-3). Refreshes never count, so a long-lived session cannot reach the admin keys on its
+ * access token alone.
+ */
+export async function isRecentlyAuthenticated(
+  ctx: Pick<AppContext, 'prisma' | 'now'>,
+  caller: { id: string; sid: string },
+  minutes: number,
+): Promise<boolean> {
+  const session = await ctx.prisma.session.findUnique({
+    where: { id: caller.sid },
+    select: { userId: true, authenticatedAt: true, revokedAt: true },
+  });
+  if (!session || session.userId !== caller.id || session.revokedAt) return false;
+  return ctx.now().getTime() - session.authenticatedAt.getTime() <= minutes * 60_000;
 }

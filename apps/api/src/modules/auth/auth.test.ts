@@ -327,7 +327,8 @@ describe('POST /auth/refresh and /auth/logout', () => {
     expect((await vault(b.accessToken)).status).toBe(200);
     const del = await request(t.app)
       .delete(`/api/auth/sessions/${b.sid}`)
-      .set('Authorization', bearer(a.accessToken));
+      .set('Authorization', bearer(a.accessToken))
+      .send({ authKey: u.authKey });
     expect(del.status).toBe(204);
     expect((await vault(b.accessToken)).status).toBe(401);
     expect((await refresh(b.cookie)).status).toBe(401);
@@ -360,6 +361,21 @@ describe('GET /auth/vault', () => {
     const ak = await unwrapAccountKey(u.password, u.accessToken);
     expect(Buffer.from(ak).equals(Buffer.from(u.bundle.accountKey))).toBe(true);
     expect((await request(t.app).get('/api/auth/vault')).status).toBe(401);
+  });
+});
+
+describe('GET /auth/vault/recovery (critic-5)', () => {
+  it('returns the recovery-wrapped account key for a local check, and changes nothing', async () => {
+    const u = await registerViaApi(t.app);
+    const before = await t.prisma.user.findUniqueOrThrow({ where: { id: u.user.id } });
+    const res = await request(t.app)
+      .get('/api/auth/vault/recovery')
+      .set('Authorization', bearer(u.accessToken));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ wrappedAccountKeyRecovery: u.bundle.wrappedAccountKeyRecovery });
+    const after = await t.prisma.user.findUniqueOrThrow({ where: { id: u.user.id } });
+    expect(after).toEqual(before);
+    expect((await request(t.app).get('/api/auth/vault/recovery')).status).toBe(401);
   });
 });
 
@@ -607,17 +623,20 @@ describe('sessions', () => {
     const s = await newSession(t.app, u);
     const foreign = await request(t.app)
       .delete(`/api/auth/sessions/${sidOf(stranger.accessToken)}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(foreign.status).toBe(404);
     expect((await vault(stranger.accessToken)).status).toBe(200);
 
     const del = await request(t.app)
       .delete(`/api/auth/sessions/${s.sid}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(del.status).toBe(204);
     const again = await request(t.app)
       .delete(`/api/auth/sessions/${s.sid}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(again.status).toBe(404);
     expect(await actionsOf(u.user.id)).toContain('SESSION_REVOKED');
   });
@@ -628,7 +647,8 @@ describe('sessions', () => {
     const b = await newSession(t.app, u);
     const res = await request(t.app)
       .post('/api/auth/sessions/revoke-others')
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(res.status).toBe(204);
     for (const s of [a, b]) {
       expect((await vault(s.accessToken)).status).toBe(401);
@@ -818,10 +838,112 @@ describe('POST /auth/refresh after a lost rotation response (grace window)', () 
     expect((await gRefresh(s.cookie)).status).toBe(200);
     const del = await request(g.app)
       .delete(`/api/auth/sessions/${s.sid}`)
-      .set('Authorization', bearer(u.accessToken));
+      .set('Authorization', bearer(u.accessToken))
+      .send({ authKey: u.authKey });
     expect(del.status).toBe(204);
     advance(1_000);
     expect((await gRefresh(s.cookie)).status).toBe(401);
     expect(await liveTokens(s.sid)).toHaveLength(1);
+  });
+});
+
+describe('absolute session lifetime (SESSION_MAX_LIFETIME_DAYS)', () => {
+  const DAY = 86_400_000;
+  const T0 = new Date('2026-11-20T09:00:00.000Z');
+  let clock = T0;
+  let a: TestApp;
+  let u: RegisteredUser;
+
+  beforeAll(async () => {
+    a = await createTestApp({
+      now: () => clock,
+      env: { REFRESH_TOKEN_TTL_DAYS: 7, SESSION_MAX_LIFETIME_DAYS: 20 },
+    });
+    u = await registerViaApi(a.app);
+  });
+  afterAll(async () => {
+    await a.close();
+  });
+
+  const at = (days: number, ms = 0) => {
+    clock = new Date(T0.getTime() + days * DAY + ms);
+  };
+  const aRefresh = (cookie: string) =>
+    request(a.app).post('/api/auth/refresh').set('Cookie', cookie);
+  const cookieExpiry = (res: request.Response) =>
+    new Date(/Expires=([^;]+)/.exec(refreshSetCookie(res) ?? '')?.[1] ?? '').getTime();
+  const sessionExpiry = async (sid: string) =>
+    (await a.prisma.session.findUniqueOrThrow({ where: { id: sid } })).expiresAt.getTime();
+  const ttlOf = (accessToken: string) => {
+    const claims = JSON.parse(
+      Buffer.from(accessToken.split('.')[1] ?? '', 'base64url').toString(),
+    ) as { iat: number; exp: number };
+    return claims.exp - claims.iat;
+  };
+
+  it('refreshing slides the idle expiry but never past createdAt + the maximum; then the user signs in again', async () => {
+    at(0);
+    const login = await loginViaApi(a.app, u.email, u.password);
+    expect(login.status).toBe(200);
+    const sid = sidOf(login.body.accessToken as string);
+    // Idle limit first: 7 days.
+    expect(await sessionExpiry(sid)).toBe(T0.getTime() + 7 * DAY);
+    expect(cookieExpiry(login)).toBe(T0.getTime() + 7 * DAY);
+
+    let cookie = cookieFrom(login);
+    for (const day of [6, 12]) {
+      at(day);
+      const res = await aRefresh(cookie);
+      expect(res.status, `day ${day}`).toBe(200);
+      expect(await sessionExpiry(sid)).toBe(T0.getTime() + (day + 7) * DAY);
+      cookie = cookieFrom(res);
+    }
+    // Day 18: the idle expiry would be day 25, the absolute end (day 20) wins, for the row and the cookie.
+    at(18);
+    const capped = await aRefresh(cookie);
+    expect(capped.status).toBe(200);
+    expect(await sessionExpiry(sid)).toBe(T0.getTime() + 20 * DAY);
+    expect(cookieExpiry(capped)).toBe(T0.getTime() + 20 * DAY);
+    expect(ttlOf(capped.body.accessToken as string)).toBe(900);
+    cookie = cookieFrom(capped);
+
+    // Five minutes before the end: the new access token lives five minutes, not fifteen.
+    at(20, -5 * 60_000);
+    const last = await aRefresh(cookie);
+    expect(last.status).toBe(200);
+    expect(ttlOf(last.body.accessToken as string)).toBe(300);
+    cookie = cookieFrom(last);
+
+    // At the end the refresh fails and the cookie is cleared, however recently the session was used.
+    at(20);
+    const ended = await aRefresh(cookie);
+    expect(ended.status).toBe(401);
+    expect(refreshSetCookie(ended)).toMatch(/Expires=Thu, 01 Jan 1970/);
+    const list = await request(a.app)
+      .get('/api/auth/sessions')
+      .set('Authorization', bearer(last.body.accessToken as string));
+    expect((list.body as { id: string }[]).map((s) => s.id)).not.toContain(sid);
+
+    // A fresh sign-in starts a new session with a new absolute end.
+    const again = await loginViaApi(a.app, u.email, u.password);
+    expect(again.status).toBe(200);
+    const sid2 = sidOf(again.body.accessToken as string);
+    expect(sid2).not.toBe(sid);
+    expect(await sessionExpiry(sid2)).toBe(T0.getTime() + 27 * DAY);
+  });
+
+  it('also ends sessions whose expiry slid past the limit before it existed', async () => {
+    at(0);
+    const s = await newSession(a.app, u);
+    // As the old code left it: expiresAt kept sliding, createdAt is more than the maximum ago.
+    await a.prisma.session.update({
+      where: { id: s.sid },
+      data: { createdAt: new Date(T0.getTime() - 25 * DAY) },
+    });
+    expect((await aRefresh(s.cookie)).status).toBe(401);
+    const list = await request(a.app)
+      .get('/api/auth/sessions')
+      .set('Authorization', bearer(s.accessToken));
+    expect((list.body as { id: string }[]).map((x) => x.id)).not.toContain(s.sid);
   });
 });

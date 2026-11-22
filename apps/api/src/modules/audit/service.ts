@@ -12,7 +12,10 @@ import type { Logger } from '../../lib/logger';
 import { summarizeUserAgent } from '../../lib/userAgent';
 
 export interface AuditRecordInput {
+  /** Whose log the event is in. Admin actions leave it empty and name the target in metadata.targetUserId. */
   userId?: string | null;
+  /** The acting admin (server-4); empty for the subject's own actions, jobs and the operator CLI. */
+  actorId?: string | null;
   dropId?: string | null;
   action: AuditAction;
   /** Source of ipPrefix (req.ip, trust-proxy aware) and the UA summary. Omit for background jobs. */
@@ -44,7 +47,7 @@ export async function recordAfterCommit(
     await ctx.audit.record(input);
   } catch (err) {
     ctx.logger.error(
-      { action: input.action, dropId: input.dropId, err: { message: (err as Error).message } },
+      { action: input.action, dropId: input.dropId, err },
       'audit write failed after the change committed',
     );
   }
@@ -57,6 +60,7 @@ export function createAuditService(prisma: PrismaClient): AuditService {
       await prisma.auditEvent.create({
         data: {
           userId: input.userId ?? null,
+          actorId: input.actorId ?? null,
           dropId: input.dropId ?? null,
           action: input.action,
           ipPrefix: input.req ? ipPrefix(input.req.ip) : null,

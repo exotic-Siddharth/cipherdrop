@@ -1,0 +1,41 @@
+# Dependency audit gate (docs/SECURITY.md section 7): `npm audit --omit=dev` must report no high or critical advisory
+# that is missing from scripts/audit-allowlist.json, and no allowlist entry may be stale or past its reviewBy date
+# (scripts/audit-gate.mjs). A separate workflow from ci.yml so the weekly run, which surfaces advisories published
+# without any push, does not start the whole test matrix.
+#
+# npm audit reads package-lock.json, so nothing is installed: no dependency code runs in this job.
+name: audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays 05:23 UTC.
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  npm-audit:
+    name: npm audit gate (production dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      # The scripts' tests (node:test, no dependencies) first: a broken gate must not pass silently. They also check
+      # that ci.yml's service images still equal docker-compose.prod.yml's (scripts/image-pins.test.mjs), so a
+      # Dependabot compose bump fails here until the workflows are moved with it.
+      - run: npm run test:scripts
+      - run: npm run audit:gate

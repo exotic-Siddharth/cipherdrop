@@ -14,7 +14,10 @@ import { createLocalStorage } from './local';
 import { createS3Storage } from './s3';
 
 export interface StorageDriver {
-  /** Prepare the backend at startup (local: mkdir the root; s3: create the bucket if missing). */
+  /**
+   * Prepare the backend at startup (local: mkdir the root; s3: create the bucket if missing, and refuse a bucket
+   * whose versioning or Object Lock would keep deleted ciphertext).
+   */
   init(): Promise<void>;
   /** Store (or overwrite) one ciphertext chunk under (dropId, fileId, index, version). */
   putChunk(
@@ -51,6 +54,7 @@ export type StorageEnv = Pick<
   | 'S3_ACCESS_KEY_ID'
   | 'S3_SECRET_ACCESS_KEY'
   | 'S3_FORCE_PATH_STYLE'
+  | 'S3_DELETE_ALL_VERSIONS'
 >;
 
 /** Drop and file ids are b64url (22 chars); allow up to 64 base64url characters and nothing else. */

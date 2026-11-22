@@ -4,13 +4,14 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { PasswordStrength } from '../../components/PasswordStrength';
 import { Alert } from '../../components/ui/Alert';
-import { Button } from '../../components/ui/Button';
+import { Button, ButtonLink } from '../../components/ui/Button';
 import { Card, CardContent } from '../../components/ui/Card';
 import { Input } from '../../components/ui/Input';
 import { PasswordInput } from '../../components/ui/PasswordInput';
 import { ProgressBar } from '../../components/ui/ProgressBar';
 import type { StrengthScore } from '../../lib/passwordStrength';
 import { safeNextPath } from '../../lib/paths';
+import { noteDisabledFeature, useServerConfig } from '../../stores/serverConfig';
 import { accountErrorMessage } from '../account/accountErrors';
 import { RecoveryKeyCard } from '../account/RecoveryKeyCard';
 import { useAccountActions } from '../account/useAccountActions';
@@ -33,6 +34,9 @@ export function Component() {
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  // Operator switch (ops-3): known from GET /api/config at boot, or from a 403 FEATURE_DISABLED below.
+  const closed = useServerConfig((s) => s.config?.registration === false);
+  const loginLink = next === '/dashboard' ? '/login' : `/login?next=${encodeURIComponent(next)}`;
 
   if (recoveryKey) {
     return (
@@ -71,11 +75,33 @@ export function Component() {
       setConfirm('');
       setRecoveryKey(result.recoveryKey);
     } catch (err) {
-      setFormError(accountErrorMessage(err, 'register'));
+      // Registration switched off: the closed notice below replaces the form.
+      if (!noteDisabledFeature(err)) setFormError(accountErrorMessage(err, 'register'));
     } finally {
       setBusy(false);
     }
   };
+
+  if (closed) {
+    return (
+      <div className="mx-auto max-w-md">
+        <PageHeader title="Create your account" />
+        <Alert
+          tone="info"
+          live="polite"
+          title="This server is not accepting new accounts"
+          action={
+            <ButtonLink to={loginLink} size="sm">
+              Log in
+            </ButtonLink>
+          }
+        >
+          Its operator has turned sign-ups off. If you already have an account, you can still log
+          in, and anyone can open the links they receive.
+        </Alert>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-md">
@@ -155,7 +181,7 @@ export function Component() {
       <p className="mt-6 text-center text-sm text-muted-strong">
         Already have an account?{' '}
         <Link
-          to={next === '/dashboard' ? '/login' : `/login?next=${encodeURIComponent(next)}`}
+          to={loginLink}
           className="font-medium text-primary-ink underline-offset-4 hover:underline"
         >
           Log in

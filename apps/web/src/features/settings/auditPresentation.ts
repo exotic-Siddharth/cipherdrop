@@ -10,6 +10,7 @@ import {
   KeyRound,
   LifeBuoy,
   Lock,
+  LockOpen,
   LogIn,
   LogOut,
   MonitorX,
@@ -58,6 +59,14 @@ export const AUDIT_PRESENTATION: Readonly<Record<AuditAction, AuditPresentation>
   DROP_REPORTED: { icon: Flag, tone: 'warning' },
   DROP_DISABLED: { icon: Ban, tone: 'danger' },
   ADMIN_REVIEW_GRANT: { icon: Eye, tone: 'neutral' },
+  ADMIN_USER_UPDATED: { icon: ShieldCheck, tone: 'neutral' },
+  ADMIN_USER_SUSPENDED: { icon: UserX, tone: 'danger' },
+  ADMIN_USER_UNSUSPENDED: { icon: CircleCheck, tone: 'success' },
+  ADMIN_SESSIONS_REVOKED: { icon: MonitorX, tone: 'warning' },
+  ADMIN_REPORT_DISMISSED: { icon: Flag, tone: 'neutral' },
+  ADMIN_DROP_DISABLED: { icon: Ban, tone: 'danger' },
+  ADMIN_LOCK_CLEARED: { icon: LockOpen, tone: 'neutral' },
+  ACCOUNT_LOCK_CLEARED: { icon: LockOpen, tone: 'neutral' },
 });
 
 export const TONE_CLASSES: Record<AuditPresentation['tone'], string> = {

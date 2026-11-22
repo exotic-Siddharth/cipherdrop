@@ -10,6 +10,7 @@ import {
   resetStores,
 } from '../account/testkit';
 import { useAuth } from '../../stores/auth';
+import { useServerConfig } from '../../stores/serverConfig';
 import { useVault } from '../../stores/vault';
 import { Component as RegisterPage } from './RegisterPage';
 
@@ -100,5 +101,37 @@ describe('RegisterPage', () => {
     expect(screen.queryByText('Save your recovery key')).toBeNull();
     expect(useAuth.getState().status).not.toBe('authenticated');
     vi.restoreAllMocks();
+  }, 30_000);
+
+  it('registration switched off: says so, offers log in and shows no form (ops-3)', async () => {
+    const api = mockApi({});
+    useServerConfig.setState({ config: { anonymousUploads: true, registration: false } });
+    const user = userEvent.setup();
+    renderRoutes(routes, '/register');
+    expect(await screen.findByText('This server is not accepting new accounts')).toBeVisible();
+    expect(screen.queryByLabelText('Email')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create account' })).toBeNull();
+    await user.click(screen.getByRole('link', { name: 'Log in' }));
+    expect(await screen.findByText('login page')).toBeVisible();
+    expect(api.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a 403 FEATURE_DISABLED on submit replaces the form with the same notice (ops-3)', async () => {
+    mockApi({
+      'POST /api/auth/register': {
+        status: 403,
+        json: {
+          error: { code: 'FEATURE_DISABLED', message: 'off', details: { feature: 'registration' } },
+        },
+      },
+    });
+    const user = userEvent.setup();
+    renderRoutes(routes, '/register');
+    await fillAndSubmit(user);
+    expect(
+      await screen.findByText('This server is not accepting new accounts', {}, { timeout: 15_000 }),
+    ).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Create account' })).toBeNull();
+    expect(useAuth.getState().status).not.toBe('authenticated');
   }, 30_000);
 });

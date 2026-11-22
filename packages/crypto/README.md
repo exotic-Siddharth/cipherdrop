@@ -107,17 +107,10 @@ npx tsx packages/crypto/src/bench.ts
 - `kdf.test.ts` holds the Argon2id regression vectors (R20). They are the reference implementation's published KATs (m=65536 and m=262144, t=2, p=1), plus cross-checks of hash-wasm against `@node-rs/argon2` `hashRaw` at KDF_MIN, p=2 and KDF_MAX.
 - The other files cover the spec section 14 cases: chunk roundtrips (0 B to 3 chunks), bit flips, swapped, dropped and replayed chunks, wrong keys, manifest schema rejection, password and recovery flows, KDF bounds and link parsing.
 
-Bench on an i7-1195G7 laptop, Node 22.12, one stream with sequential 4 MiB chunks. The laptop was shared with other jobs, so the table gives the fastest of three runs and the range across them:
-
-| Operation                           | Fastest run | Range over 3 runs |
-| ----------------------------------- | ----------- | ----------------- |
-| STREAM encrypt, 64 MiB              | 864 MiB/s   | 611-864 MiB/s     |
-| STREAM decrypt, 64 MiB              | 791 MiB/s   | 447-791 MiB/s     |
-| SHA-256 of the ciphertext chunks    | 677 MiB/s   | 404-677 MiB/s     |
-| Argon2id at KDF_DEFAULT (hash-wasm) | 319 ms      | 319-516 ms        |
-| Argon2id at KDF_MIN (hash-wasm)     | 73 ms       | 73-95 ms          |
+`bench.ts` encrypts and decrypts 64 MiB in one stream with sequential 4 MiB chunks, hashes the chunks with SHA-256 and times Argon2id at `KDF_DEFAULT` and `KDF_MIN`. The measured results and their load readings are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md) section 3 (medians of three invocations; the machine and the method are in sections 1 and 2); this README keeps no second set of numbers.
 
 ## Limits
 
 - JavaScript cannot guarantee that secrets are wiped from memory, and strings (passwords, the formatted recovery key) cannot be wiped at all. The package zeroes the Argon2id outputs, password bytes and raw recovery keys it creates, and keeps every derived key non-extractable.
 - AES-GCM is not key-committing. That does not help an attacker here: every key that a password protects is released only after a server-side `authKey` check, and the server already holds that `authKey` (or its hash) for offline guessing, which costs Argon2id work per guess.
+- It also means that nothing commits a drop to one drop key. A sender can build one stored ciphertext (manifest and chunks) that decrypts validly to different content under two different keys ("invisible salamanders"), so two links to the same drop id could show different files. The sender chooses the content anyway, so this gives nobody access to anything; the practical effects are that the client cannot tell a wrong key from a modified drop (the receive page says "The key in the link is wrong, or the drop was modified"), and that the server accepts any 32 bytes as a reported key. A fix would be a key commitment, `HKDF-bits(DK, "cipherdrop/v1/key-commitment", 256)`, stored with the drop and compared in constant time before decryption (committing DK commits every key derived from it), plus an explicit format version outside the ciphertext. It is not built (review finding crypto-9, rated nice to have). It would not stop a malicious server from swapping `ownerWrappedKey` and `encryptedManifest` pairs between an owner's drops, because the server would swap the commitment with them; that needs the drop id bound into the owner wrap's AAD.

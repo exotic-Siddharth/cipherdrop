@@ -24,4 +24,9 @@ describe('share links (thin wrappers over @cipherdrop/crypto)', () => {
     expect(readShareKey('')).toBeNull();
     expect(readShareKey('#tooShort')).toBeNull();
   });
+
+  it('readShareKey has no default from window.location.hash, which the receive page empties (crypto-4)', () => {
+    // Function.length stops at the first parameter with a default.
+    expect(readShareKey.length).toBe(1);
+  });
 });

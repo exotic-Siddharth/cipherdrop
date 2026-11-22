@@ -1,5 +1,5 @@
 import { type Manifest, type ManifestFile } from '@cipherdrop/crypto';
-import { DropMetaSchema, OpenResponseSchema } from '@cipherdrop/shared';
+import { DropMetaSchema, LIMITS, OpenResponseSchema } from '@cipherdrop/shared';
 import {
   Download,
   Eye,
@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Timer,
 } from 'lucide-react';
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   Badge,
@@ -20,6 +20,8 @@ import {
   CardContent,
   CardHeader,
   ConfirmDialog,
+  CopyButton,
+  CopyField,
   EmptyState,
   ProgressBar,
 } from '../../../components/ui';
@@ -55,6 +57,19 @@ import { ReportDialog } from './ReportDialog';
 export const INTEGRITY_ERROR_TITLE =
   'This file was modified in transit or storage. Download blocked.';
 
+/**
+ * What "Integrity verified" proves, and what it does not (crypto-5). Every chunk authenticated under a key derived
+ * from this link's key, so the bytes are exactly what someone holding that key encrypted. Anyone can create a
+ * drop and CipherDrop never sees the contents, so it says nothing about who sent the file or whether it is safe.
+ */
+const INTEGRITY_MEANING =
+  "A verified file is exactly what was encrypted with this link's key, unchanged in transit and storage. It does not tell you who sent it or whether it is safe to open: CipherDrop cannot see or scan files.";
+const INTEGRITY_BADGE_HINT =
+  "Exactly what was encrypted with this link's key. Not a check of who sent it or whether it is safe.";
+
+/** LIMITS.BLOB_SAVE_MAX_BYTES as the copy below says it ("256 MiB"): the limit is binary, not 256 MB. */
+const BLOB_LIMIT = `${LIMITS.BLOB_SAVE_MAX_BYTES / (1024 * 1024)} MiB`;
+
 type FileStatus =
   | { status: 'idle' }
   | { status: 'downloading'; written: number }
@@ -74,14 +89,30 @@ export interface ReadyViewProps {
   authKey: string | null;
   /** Admin review (R13): a non-consuming grant and a way to get a fresh one. */
   review: { grant: DownloadGrant; regrant: () => Promise<DownloadGrant> } | null;
+  /**
+   * The link to forward, offered by an explicit "Copy link" (the address bar no longer holds the key, crypto-4);
+   * a password drop's link has no key. Null in review mode.
+   */
+  shareLink: string | null;
+  /** Called once the drop has no downloads left, so the page can drop its reload copy of the key. */
+  onNoDownloadsLeft?: () => void;
 }
 
-export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: ReadyViewProps) {
+export function ReadyView({
+  dropId,
+  dk,
+  manifest,
+  meta,
+  authKey,
+  review,
+  shareLink,
+  onNoDownloadsLeft,
+}: ReadyViewProps) {
   const savedNames = useMemo(
     () => sanitizeFilenames(manifest.files.map((f) => f.name)),
     [manifest],
   );
-  // C-03: a file over 256 MB cannot be saved without the save picker. Decide that from the manifest up
+  // C-03: a file over 256 MiB cannot be saved without the save picker. Decide that from the manifest up
   // front, so the click never spends a download (a burn-after-read link) on a drop this browser can't save.
   const [files, setFiles] = useState<Record<string, FileStatus>>(() =>
     Object.fromEntries(
@@ -101,6 +132,12 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
   const [reopen, setReopen] = useState<{ remaining: number } | null>(null);
   const [windowExpired, setWindowExpired] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  // "Copy link" failed (no clipboard permission, some WebViews): show the link itself, selectable, since the
+  // address bar no longer holds it (crypto-4). Shown only then, so the key is not on screen by default.
+  const [copyFailed, setCopyFailed] = useState(false);
+  useEffect(() => {
+    if (remaining === 0) onNoDownloadsLeft?.();
+  }, [remaining, onNoDownloadsLeft]);
 
   const session = useRef<DownloadSession | null>(null);
   session.current ??= new DownloadSession({
@@ -288,7 +325,7 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
       case 'verified':
         trailing = (
           <>
-            <Badge tone="success" icon={ShieldCheck}>
+            <Badge tone="success" icon={ShieldCheck} title={INTEGRITY_BADGE_HINT}>
               Integrity verified
             </Badge>
             {s.blob ? (
@@ -326,7 +363,7 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
       case 'needs-save':
         detail = (
           <p className="text-xs text-muted">
-            Larger than 256 MB: choose where to save it, then it streams straight to disk.
+            Larger than {BLOB_LIMIT}: choose where to save it, then it streams straight to disk.
           </p>
         );
         trailing = (
@@ -338,8 +375,9 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
       case 'unsupported':
         detail = (
           <p className="text-sm text-warning-ink">
-            This file is larger than 256 MB, and this browser can't save it straight to disk. Open
-            the link in Chrome or Edge on a computer to download it.
+            This file is larger than {BLOB_LIMIT}, and this browser can't save it straight to disk:
+            that needs the File System Access API. Open the link in Chrome or Edge on a computer to
+            download it.
           </p>
         );
         break;
@@ -367,7 +405,12 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
 
       {manifest.note ? (
         <Card>
-          <CardHeader icon={MessageSquareText} title="Note from the sender" titleAs="h2" />
+          <CardHeader
+            icon={MessageSquareText}
+            title="Note from the sender (not verified)"
+            titleAs="h2"
+            description="Text written by whoever created this link. CipherDrop cannot confirm who that is."
+          />
           <CardContent className="pt-0">
             <p className="text-sm break-words whitespace-pre-wrap text-foreground">
               {manifest.note}
@@ -396,7 +439,7 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
           }
           actions={
             allVerified ? (
-              <Badge tone="success" icon={ShieldCheck} size="md">
+              <Badge tone="success" icon={ShieldCheck} size="md" title={INTEGRITY_BADGE_HINT}>
                 Integrity verified
               </Badge>
             ) : undefined
@@ -406,9 +449,9 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
           <FileList items={fileItems} label="Files in this drop" />
           {blockedUpfront ? (
             <Alert tone="warning" title="This browser can't save every file in this drop">
-              A file here is larger than 256 MB and this browser can't stream it straight to disk.
-              Nothing was downloaded and the link still has all its downloads. Open the link in
-              Chrome or Edge on a computer.
+              A file here is larger than {BLOB_LIMIT}, and streaming it straight to disk needs the
+              File System Access API, which this browser lacks. Nothing was downloaded and the link
+              still has all its downloads. Open the link in Chrome or Edge on a computer.
             </Alert>
           ) : null}
           {openError ? (
@@ -436,17 +479,50 @@ export function ReadyView({ dropId, dk, manifest, meta, authKey, review }: Ready
           ) : null}
           <p className="text-center text-xs text-muted">
             Files are decrypted on this device and checked chunk by chunk. Anything modified is
-            blocked, never saved.
+            blocked, never saved. {INTEGRITY_MEANING}
           </p>
+          {review ? null : (
+            <p className="text-center text-xs text-muted">
+              If the sender has an account, they see when this link was opened, from which network
+              (for example 203.0.113.0/24) and in which browser. Without an account, no sender sees
+              any of it. Either way the server keeps the network and time of each request in its
+              short-lived logs.
+            </p>
+          )}
         </CardContent>
       </Card>
 
       {review ? null : (
-        <div className="flex justify-center">
-          <Button variant="ghost" size="sm" icon={Flag} onClick={() => setReportOpen(true)}>
-            Report abuse
-          </Button>
-        </div>
+        <>
+          {shareLink && remaining !== 0 && copyFailed ? (
+            <CopyField
+              label="Link to this drop"
+              value={shareLink}
+              copyLabel="Copy link"
+              autoFocus
+              hint={
+                authKey
+                  ? 'Copying did not work in this browser. Select the link and copy it yourself. Send the password separately.'
+                  : 'Copying did not work in this browser. Select the link and copy it yourself. It contains the key: send it only to people who should get the files.'
+              }
+            />
+          ) : null}
+          <div className="flex flex-wrap justify-center gap-2">
+            {shareLink && remaining !== 0 && !copyFailed ? (
+              <CopyButton
+                value={shareLink}
+                label="Copy link"
+                copiedLabel="Link copied"
+                variant="ghost"
+                size="sm"
+                onFailed={() => setCopyFailed(true)}
+              />
+            ) : null}
+            <Button variant="ghost" size="sm" icon={Flag} onClick={() => setReportOpen(true)}>
+              Report abuse
+            </Button>
+          </div>
+        </>
       )}
 
       <ReportDialog dropId={dropId} dk={dk} open={reportOpen} onOpenChange={setReportOpen} />

@@ -110,7 +110,27 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<AuditAction, string>> = Object
   DROP_REPORTED: 'Drop reported for abuse',
   DROP_DISABLED: 'Drop disabled by a moderator',
   ADMIN_REVIEW_GRANT: 'Reviewed a reported drop',
+  ADMIN_USER_UPDATED: 'Admin changed an account role or quota',
+  ADMIN_USER_SUSPENDED: 'Admin suspended an account',
+  ADMIN_USER_UNSUSPENDED: 'Admin lifted a suspension',
+  ADMIN_SESSIONS_REVOKED: 'Admin signed out sessions',
+  ADMIN_REPORT_DISMISSED: 'Admin dismissed a report',
+  ADMIN_DROP_DISABLED: 'Admin took a drop down',
+  ADMIN_LOCK_CLEARED: 'Admin cleared a sign-in lock',
+  ACCOUNT_LOCK_CLEARED: 'Sign-in lock cleared by an admin',
 });
+
+/** Admin-action audit events (server-4): the only events GET /admin/audit lists, kept for a year. */
+export const ADMIN_AUDIT_ACTIONS = Object.freeze([
+  'ADMIN_REVIEW_GRANT',
+  'ADMIN_USER_UPDATED',
+  'ADMIN_USER_SUSPENDED',
+  'ADMIN_USER_UNSUSPENDED',
+  'ADMIN_SESSIONS_REVOKED',
+  'ADMIN_REPORT_DISMISSED',
+  'ADMIN_DROP_DISABLED',
+  'ADMIN_LOCK_CLEARED',
+] as const satisfies readonly AuditAction[]);
 
 /* ---- Wire details ---- */
 

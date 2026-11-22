@@ -42,7 +42,7 @@ an audit trail, without the means to read what it stores.
 flowchart LR
   B[Browser] -->|HTTPS| T["TLS: Caddy (optional)<br/>or your proxy"]
   T --> W["nginx<br/>SPA files + security headers"]
-  W -->|"/api/* (body max 5 MiB,<br/>400 in-flight requests)"| M
+  W -->|"/api/*: JSON max 1 MiB, buffered;<br/>chunks max 5 MiB, streamed;<br/>64 in flight per client, 400 in total;<br/>credential routes 2 per second per client"| M
   subgraph API process
     M["requestId, pino-http, helmet,<br/>CORS (WEB_ORIGIN), no-store, metrics"] --> G["global rate limit<br/>(chunk routes exempt)"]
     G --> J["cookies, JSON body (1 MiB)"]
@@ -54,12 +54,18 @@ flowchart LR
 
 Every route is registered through one helper (`createRouter` in `apps/api/src/lib/router.ts`) that adds the
 Express route, its OpenAPI entry and its auth middleware together, which is how the OpenAPI document stays
-complete (a test walks the router stack to prove it). Requests are logged with id, method, path without query,
-IP prefix and status only.
+complete (a test walks the router stack to prove it). Requests are logged with id, method, path (cut at the first
+`?`, `#` or `%23`), IP prefix and status only, and nginx's access log keeps the same fields. Prisma's warnings and errors go through the same pino logger (`db/prisma.ts`), and its
+`err` serializer (`lib/logger.ts`) reduces a Prisma error to safe fields, because the message of a failed call can
+carry its arguments ([SECURITY.md](SECURITY.md) section 1).
 
 In development the Vite dev server (port 5174) proxies `/api` to the API (port 4100), so the SPA is always
-same-origin with the API. `vite preview` serves the production build with the production CSP, and the e2e suite
-runs against it.
+same-origin with the API. `vite preview` serves the production build with the production CSP and the Trusted Types
+report-only policy, and the e2e suite runs against it.
+
+In the production stack the API connects to Postgres as `cipherdrop_app`, a role with rights on rows only; a
+one-shot `migrate` service applies the migrations as the owner before the API starts. Postgres, Redis (which needs a
+password) and MinIO sit on an internal network that nginx is not on ([DEPLOYMENT.md](DEPLOYMENT.md) section 1).
 
 ## 3. Upload pipeline
 
@@ -97,7 +103,8 @@ sequenceDiagram
 - Encryption and the PUTs run in a module Worker, so a large upload never blocks the UI. Failed PUTs (network,
   429, 5xx) are retried three times with backoff (0.5 s, 2 s, 8 s), honouring `Retry-After`.
 - The server checks everything that does not need the body (token, status, file, index, hash format, declared
-  length) before reading it, then buffers at most one chunk (4 MiB + 16 bytes).
+  length) before reading it, then buffers at most one chunk (4 MiB + 16 bytes). In production nginx streams chunk
+  bodies through instead of buffering them, so these checks and the API's minimum body rate act on the client itself.
 - Each PUT writes a fresh blob version with no database connection held, then a short transaction re-checks that
   the drop is still uploading and points the chunk row at the new version. A delete, a disable or `complete`
   therefore never races with an in-flight write (review C-04 and C-R2-01).
@@ -113,6 +120,7 @@ sequenceDiagram
   participant A as API
   participant S as Storage
   B->>B: read DK from location.hash (never sent)
+  B->>B: replace the URL without the fragment (kept in history.state for a reload)
   B->>A: GET /drops/:id
   A-->>B: status, sizes, encrypted manifest (or password KDF params)
   opt password drop
@@ -141,6 +149,11 @@ sequenceDiagram
   because opening consumes a download.
 - Files above 256 MiB need `showSaveFilePicker`. Without it the page refuses before calling `/open`, so a
   burn-after-read download is not wasted (review C-03).
+- A saved Blob keeps the declared type only if it is on an inert allowlist (text, CSV, raster images, common audio
+  and video), otherwise `application/octet-stream`, so a browser that navigates to the `blob:` URL never renders the
+  sender's HTML or SVG on this origin. Previews use the declared type only to pick a renderer.
+- The page takes the key out of the address bar once it has read it; forwarding goes through **Copy link**. The
+  browser's own history still holds the full URL ([SECURITY.md](SECURITY.md) section 2.3).
 
 ## 5. Key hierarchy
 
@@ -173,7 +186,7 @@ flowchart TD
 stateDiagram-v2
   [*] --> UPLOADING: POST /drops
   UPLOADING --> READY: complete (every chunk present, sizes match)
-  UPLOADING --> DELETED: older than 24 h, or past expiry (cleanup)
+  UPLOADING --> DELETED: older than 24 h, past expiry, or no chunk 1 h after create (cleanup)
   READY --> EXHAUSTED: open reaches maxDownloads
   READY --> EXPIRED: expiresAt passes (cleanup)
   READY --> DELETED: owner delete
@@ -196,7 +209,13 @@ stateDiagram-v2
   twice. It also prunes sessions and refresh tokens 7 days after expiry or revocation and audit events and closed
   reports after 90 days, and scrubs wrapped keys and verifiers from purged drops.
 - **Quota.** A signed-in create locks the user row (`SELECT ... FOR UPDATE`) and counts used bytes plus the
-  owner's in-progress uploads, so parallel creates cannot overshoot the quota.
+  owner's in-progress uploads, so parallel creates cannot overshoot the quota. By default a new account's quota is
+  capped at 256 MiB for its first 7 days.
+- **Capacity.** In the same transaction (after the user row lock, for a signed-in create), a Postgres advisory lock
+  serialises the instance-wide checks: the anonymous pool (10 GiB by default), the optional global storage cap and,
+  with local storage, the free-disk floor, which counts only uploads active in the last 10 minutes. An anonymous
+  create also spends the client's rolling byte budget in Redis (by default 1 GiB per 24 hours per IPv4 address or
+  IPv6 /48).
 
 ## 7. Sessions
 
@@ -211,7 +230,7 @@ sequenceDiagram
   B->>A: POST /auth/login {email, authKey}
   A-->>B: access JWT (15 min, in memory) + cd_rt cookie (rotating)
   B->>A: GET /auth/vault, then unwrap the account key locally
-  Note over B: vault unlocked; page reload locks it again
+  Note over B: vault unlocked, page reload locks it again
   B->>A: POST /auth/refresh (cookie), 30 s before expiry
   A->>A: mark token used, issue successor (one transaction)
   A-->>B: new JWT + new cookie
@@ -229,6 +248,11 @@ sequenceDiagram
   revoking it; at most one live successor exists (trade-off in [SECURITY.md](SECURITY.md) section 7).
 - After a reload the session refreshes silently but the vault is locked: the user re-enters the password, which is
   checked locally by unwrapping the account key, with no request sent.
+- A session ends 30 days after its last refresh (idle) or 30 days after sign-in (absolute), whichever comes first
+  (`REFRESH_TOKEN_TTL_DAYS`, `SESSION_MAX_LIFETIME_DAYS`).
+- Sensitive actions (password change, recovery-key rotation, 2FA on or off, backup codes, signing sessions out,
+  account deletion) need the password again, plus a code when 2FA is on, with a budget of 10 attempts per 15 minutes
+  per session. Turning 2FA on signs out every other session; admins must have 2FA.
 
 ## 8. Design decisions
 
@@ -250,3 +274,7 @@ sequenceDiagram
 | Same-origin SPA and API | The CSP stays `connect-src 'self'` and the cookie can be `SameSite=Strict`; a split deployment must route `/api` through the SPA's origin ([DEPLOYMENT.md](DEPLOYMENT.md) section 3). |
 | No third-party scripts, fonts or CDNs | Every external origin would be code the threat model has to trust. |
 | Local disk or S3 behind one storage interface | One contract test suite runs against both drivers (S3 against MinIO). |
+| S3 buckets with versioning or Object Lock refused at start-up | A plain delete on a versioned bucket only adds a delete marker, so expiry and burn after reading would delete nothing; `S3_DELETE_ALL_VERSIONS` deletes every version instead. |
+| A DML-only database role for the API, migrations in a one-shot service | An injection or a compromised API process cannot change the schema, and the API holds no owner password. |
+| Swagger UI off in production | It is a large third-party bundle, and the API shares its origin with the SPA, which holds the keys. |
+| Controls on cost and volume against hosting abuse | The server cannot scan ciphertext; per-/48 limits, a byte budget, probation and caps bound what one client can store ([SECURITY.md](SECURITY.md) section 2.7). |

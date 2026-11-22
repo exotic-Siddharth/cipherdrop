@@ -19,6 +19,7 @@ import {
 } from '../../workers/kdf.worker';
 import { queryClient } from '../../lib/queryClient';
 import { useAuth } from '../../stores/auth';
+import { useServerConfig } from '../../stores/serverConfig';
 import { useVault } from '../../stores/vault';
 
 // Argon2id runs for real in these tests and the machine may be busy: be generous with waits.
@@ -58,6 +59,7 @@ export const TEST_ME: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 1_000_000_000,
   storageUsedBytes: 12_345_678,
+  quotaProbationEndsAt: null,
   createdAt: '2026-11-07T10:00:00.000Z',
 };
 
@@ -77,6 +79,7 @@ export function signIn(overrides: Partial<Me> = {}): void {
 export function resetStores(): void {
   useAuth.setState(useAuth.getInitialState(), true);
   useVault.setState(useVault.getInitialState(), true);
+  useServerConfig.setState(useServerConfig.getInitialState(), true);
   queryClient.clear();
 }
 

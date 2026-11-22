@@ -26,6 +26,7 @@ import { runCleanup, runScheduledCleanup, startCleanupScheduler } from './cleanu
 
 const T0 = new Date('2026-11-08T08:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
+const DAY = 24 * HOUR;
 
 describe('cleanup job', () => {
   let t: TestApp;
@@ -210,6 +211,41 @@ describe('cleanup job', () => {
     expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
   });
 
+  it('deletes an upload that stored no chunk an hour after its create; one that stored a chunk stays', async () => {
+    const user = await createUserRecord(t.prisma);
+    const auth = { Authorization: authHeader(user) };
+    const f = testFile(1000);
+    const g = testFile(1000);
+    const empty = await createDropOk(
+      t.app,
+      createBody([f], { ownerWrappedKey: fakeWrappedKey() }),
+      auth,
+    );
+    const started = await createDropOk(
+      t.app,
+      createBody([g], { ownerWrappedKey: fakeWrappedKey() }),
+      auth,
+    );
+    expect(
+      (await putChunk(t.app, started.dropId, started.uploadToken, g.id, 0, chunkData(g, 0))).status,
+    ).toBe(204);
+
+    expect((await runCleanup(at(HOUR - 1000), t.ctx)).staleDeleted).toBe(0);
+    expect((await runCleanup(at(HOUR), t.ctx)).staleDeleted).toBe(1);
+    const status = async (id: string) =>
+      t.prisma.drop.findUniqueOrThrow({
+        where: { id },
+        select: { status: true, deletedAt: true, blobsDeletedAt: true },
+      });
+    // DELETED: no longer counted by the owner's quota, the anonymous pool or the global cap.
+    expect(await status(empty.dropId)).toEqual({
+      status: 'DELETED',
+      deletedAt: at(HOUR),
+      blobsDeletedAt: at(HOUR),
+    });
+    expect((await status(started.dropId)).status).toBe('UPLOADING');
+  });
+
   it('moves UPLOADING drops past their expiry to DELETED and frees their blobs', async () => {
     const f = testFile(1000);
     const user = await createUserRecord(t.prisma);
@@ -249,9 +285,55 @@ describe('cleanup job', () => {
     expect((await metricValue(t.app, 'cleanup_deleted_drops_total')) - deleted).toBe(1);
   });
 
-  describe('retention (C-13)', () => {
-    const DAY = 24 * HOUR;
+  describe('evidence hold (server-5)', () => {
+    const report = (dropId: string, providedKey: string | null, createdAt = T0) =>
+      t.prisma.report.create({ data: { dropId, reason: 'MALWARE', providedKey, createdAt } });
 
+    it('keeps an expired drop with an open keyed report until it is resolved or the hold ends', async () => {
+      const { drop } = await ownedReadyDrop({ expiresInHours: 1 });
+      const plain = await ownedReadyDrop({ expiresInHours: 1 });
+      const r = await report(drop.dropId, 'k'.repeat(43));
+      await report(plain.drop.dropId, null); // no key: nothing to review, no hold
+      await runCleanup(at(2 * HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(true);
+      expect(await blobExists(plain.drop.dropId, plain.drop.files[0]!.id)).toBe(false);
+
+      // Resolving the report (here: dismissing it) ends the hold.
+      await t.prisma.report.update({ where: { id: r.id }, data: { status: 'DISMISSED' } });
+      await runCleanup(at(3 * HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
+    });
+
+    it('ends after REPORT_EVIDENCE_HOLD_DAYS (14) even while the report is open', async () => {
+      const { drop } = await ownedReadyDrop({ expiresInHours: 1 });
+      await report(drop.dropId, 'k'.repeat(43));
+      await runCleanup(at(14 * DAY - HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(true);
+      await runCleanup(at(14 * DAY + HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
+    });
+
+    it('is measured from expiry: a new keyed report on day 13 does not extend it', async () => {
+      const { drop } = await ownedReadyDrop({ expiresInHours: 1 });
+      await report(drop.dropId, 'k'.repeat(43));
+      await report(drop.dropId, 'k'.repeat(43), at(13 * DAY));
+      await runCleanup(at(14 * DAY), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(true);
+      await runCleanup(at(14 * DAY + 2 * HOUR), t.ctx);
+      expect(await blobExists(drop.dropId, drop.files[0]!.id)).toBe(false);
+    });
+
+    it('is measured from the open that exhausted the drop', async () => {
+      const { drop } = await ownedReadyDrop({ maxDownloads: 1, expiresInHours: 24 });
+      expect((await openDrop(t.app, drop.dropId)).status).toBe(200);
+      await report(drop.dropId, 'k'.repeat(43), at(HOUR));
+      await report(drop.dropId, 'k'.repeat(43), at(13 * DAY));
+      expect((await runCleanup(at(14 * DAY - HOUR), t.ctx)).exhaustedBlobsDeleted).toBe(0);
+      expect((await runCleanup(at(14 * DAY + HOUR), t.ctx)).exhaustedBlobsDeleted).toBe(1);
+    });
+  });
+
+  describe('retention (C-13)', () => {
     it('prunes sessions revoked or expired more than 7 days ago (tokens cascade), keeps the rest', async () => {
       const user = await createUserRecord(t.prisma);
       const mk = (expiresAt: Date, revokedAt: Date | null = null) =>
@@ -304,13 +386,16 @@ describe('cleanup job', () => {
       expect(hashes).toEqual(['fresh', 'used']);
     });
 
-    it('ages out audit events after 90 days and closed reports after 90 days; open reports stay', async () => {
+    it('ages out audit events after 90 days (admin actions after a year) and closed reports after 90 days; open reports stay', async () => {
       const user = await createUserRecord(t.prisma);
       const drop = await createReadyDrop(t.app);
       await t.prisma.auditEvent.createMany({
         data: [
           { userId: user.id, action: 'LOGIN_SUCCESS', createdAt: at(-91 * DAY) },
           { userId: user.id, action: 'LOGIN_SUCCESS', createdAt: at(-89 * DAY) },
+          // Admin actions are kept a year (server-4).
+          { action: 'ADMIN_USER_SUSPENDED', createdAt: at(-200 * DAY) },
+          { action: 'ADMIN_DROP_DISABLED', createdAt: at(-366 * DAY) },
         ],
       });
       const rep = (status: 'OPEN' | 'RESOLVED' | 'DISMISSED', resolvedAt: Date | null) =>
@@ -330,6 +415,13 @@ describe('cleanup job', () => {
       expect(
         await t.prisma.auditEvent.count({ where: { userId: user.id, action: 'LOGIN_SUCCESS' } }),
       ).toBe(1);
+      expect(
+        (
+          await t.prisma.auditEvent.findMany({
+            where: { action: { in: ['ADMIN_USER_SUSPENDED', 'ADMIN_DROP_DISABLED'] } },
+          })
+        ).map((e) => e.action),
+      ).toEqual(['ADMIN_USER_SUSPENDED']);
       const ids = (await t.prisma.report.findMany()).map((r) => r.id).sort();
       expect(ids).toEqual([recentClosed.id, oldOpen.id].sort());
       expect(ids).not.toContain(oldClosed.id);

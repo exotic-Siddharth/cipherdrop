@@ -1,10 +1,12 @@
 /**
  * Storage driver contract (spec section 14): the same suite runs against `local` (always) and `s3`
- * (only with S3_TEST=1, against the compose MinIO on 59000; R17).
+ * (only with S3_TEST=1, against the compose MinIO on 59000; R17), the latter twice: on an unversioned bucket, and
+ * on a versioned one with S3_DELETE_ALL_VERSIONS (critic-4; that no version is left is s3.versioning.test.ts).
  */
 import { randomBytes } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createVersionedBucket, rawS3Client, S3_TEST, testS3Env } from '../../test/s3';
 import { removeDir, tempStorageDir } from '../../test/storage';
 import { isAppError } from '../lib/errors';
 import { createStorage, type StorageDriver, type StorageEnv } from './index';
@@ -30,6 +32,8 @@ interface DriverCase {
   name: string;
   enabled: boolean;
   make: () => { env: StorageEnv; cleanup: () => Promise<void> };
+  /** Runs before init() (the versioned case creates its bucket with versioning on). */
+  prepare?: (env: StorageEnv) => Promise<void>;
 }
 
 const baseEnv: StorageEnv = {
@@ -41,6 +45,7 @@ const baseEnv: StorageEnv = {
   S3_ACCESS_KEY_ID: undefined,
   S3_SECRET_ACCESS_KEY: undefined,
   S3_FORCE_PATH_STYLE: true,
+  S3_DELETE_ALL_VERSIONS: false,
 };
 
 const cases: DriverCase[] = [
@@ -71,6 +76,19 @@ const cases: DriverCase[] = [
       cleanup: async () => {},
     }),
   },
+  {
+    name: 's3 versioned, S3_DELETE_ALL_VERSIONS',
+    enabled: S3_TEST,
+    make: () => ({
+      env: testS3Env('-versioned', { S3_DELETE_ALL_VERSIONS: true }),
+      cleanup: async () => {},
+    }),
+    prepare: async (env) => {
+      const raw = rawS3Client(env);
+      await createVersionedBucket(raw, env.S3_BUCKET);
+      raw.destroy();
+    },
+  },
 ];
 
 for (const c of cases) {
@@ -81,6 +99,7 @@ for (const c of cases) {
     beforeAll(async () => {
       const made = c.make();
       cleanup = made.cleanup;
+      await c.prepare?.(made.env);
       storage = createStorage(made.env);
       await storage.init();
       // init() is idempotent (an existing bucket / directory is fine).
@@ -187,7 +206,7 @@ for (const c of cases) {
     });
 
     it('deleteDrop handles more than one listing page', async () => {
-      if (c.name !== 's3') return;
+      if (c.name === 'local') return;
       const dropId = id16();
       const fileId = id16();
       // 1005 objects: more than one DeleteObjects batch (1000 keys max).

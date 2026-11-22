@@ -23,6 +23,7 @@ import { authUser } from '../../middleware/auth';
 import {
   clearRefreshCookie,
   loadUser,
+  reauthLimit,
   requireAccountProof,
   revokeUserSessions,
   toMe,
@@ -39,12 +40,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
   const r = createRouter('/api/me');
   const tags = ['me'];
   const { prisma } = ctx;
-  const reauthLimit = ctx.rateLimit({
-    name: 'reauth',
-    windowMs: 15 * 60_000,
-    limit: 10,
-    key: (req) => `user|${req.user?.id ?? 'anonymous'}`,
-  });
+  const reauth = reauthLimit(ctx);
 
   r.route(
     {
@@ -56,7 +52,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
       responses: { 200: { description: 'Current user', schema: MeResponseSchema } },
     },
     async (req, res) => {
-      res.json({ user: toMe(await loadUser(ctx, authUser(req).id)) });
+      res.json({ user: toMe(await loadUser(ctx, authUser(req).id), ctx) });
     },
   );
 
@@ -76,7 +72,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
         where: { id: user.id },
         data: { autoLockMinutes: req.body.autoLockMinutes },
       });
-      res.json({ user: toMe(updated) });
+      res.json({ user: toMe(updated, ctx) });
     },
   );
 
@@ -93,7 +89,7 @@ export function meRoutes(ctx: AppContext): AppRouter {
         403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
       },
     },
-    reauthLimit,
+    reauth,
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       await requireAccountProof(ctx, user, req.body, req, 'account-deletion');
@@ -114,6 +110,16 @@ export function meRoutes(ctx: AppContext): AppRouter {
 
       // Sessions die at once (denylist), then the user row goes with everything that cascades from it.
       await revokeUserSessions(ctx, user.id);
+      // A reported drop outlives the account (server-5): it is detached (ownerless, blobs already gone) so its
+      // reports stay in the admin queue instead of cascading away with the account.
+      await prisma.report.updateMany({
+        where: { drop: { ownerId: user.id }, providedKey: { not: null } },
+        data: { providedKey: null },
+      });
+      await prisma.drop.updateMany({
+        where: { ownerId: user.id, reports: { some: {} } },
+        data: { ownerId: null, blobsDeletedAt: ctx.now() },
+      });
       await prisma.user.delete({ where: { id: user.id } });
       await ctx.audit.record({
         userId: null,

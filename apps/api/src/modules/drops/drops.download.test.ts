@@ -49,7 +49,8 @@ describe('drop download', () => {
   const clock = testClock(T0);
 
   beforeAll(async () => {
-    t = await createTestApp({ now: clock.now });
+    // The R12 sliding test re-fetches one chunk ~50 times; the byte budget has its own test (critic-2).
+    t = await createTestApp({ now: clock.now, env: { DOWNLOAD_GRANT_BYTE_FACTOR: 100 } });
     await resetTables(t.prisma);
   });
   afterAll(async () => {
@@ -388,10 +389,30 @@ describe('drop download', () => {
       expect(ev.userAgent).toBeTruthy();
       const row = await t.prisma.drop.findUniqueOrThrow({ where: { id: drop.dropId } });
       expect(row.lastOpenedAt?.toISOString()).toBe(T0.toISOString());
+      // The grant keeps no copy of the recipient's network: the owner's event is the only record.
       const grant = await t.prisma.downloadGrant.findFirstOrThrow({
         where: { dropId: drop.dropId },
       });
-      expect(grant.ipPrefix).toBe('2001:db8:abcd::/48');
+      expect(grant.ipPrefix).toBeNull();
+    });
+
+    it('stores neither the IP prefix nor the browser of opens of a drop without an owner (critic-7)', async () => {
+      const drop = await createReadyDrop(t.app);
+      const res = await openDrop(
+        t.app,
+        drop.dropId,
+        {},
+        { 'X-Forwarded-For': '203.0.113.9', 'User-Agent': 'Mozilla/5.0 Firefox/130.0' },
+      );
+      expect(res.status).toBe(200);
+      const ev = await t.prisma.auditEvent.findFirstOrThrow({
+        where: { dropId: drop.dropId, action: 'DROP_OPENED' },
+      });
+      expect(ev).toMatchObject({ userId: null, ipPrefix: null, userAgent: null });
+      const grant = await t.prisma.downloadGrant.findFirstOrThrow({
+        where: { dropId: drop.dropId },
+      });
+      expect(grant.ipPrefix).toBeNull();
     });
 
     it('answers 404 for unknown drops and 410 for expired ones', async () => {

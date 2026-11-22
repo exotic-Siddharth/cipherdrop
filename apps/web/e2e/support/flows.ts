@@ -152,11 +152,53 @@ export function totpCode(secretBase32: string, nextWindow = false): string {
   return totp.generate({ timestamp: Date.now() + (nextWindow ? 30_000 : 0) });
 }
 
+/**
+ * Turn on TOTP from the Settings Security tab (already open), re-authenticating with the account password, confirm
+ * the backup codes and return them with the secret. Uses the current window's code: later sign-ins use
+ * totpCode(secret, true) to stay clear of the replay guard (R23).
+ */
+export async function enableTotpInSettings(
+  page: Page,
+  password: string,
+): Promise<{ secret: string; backupCodes: string[] }> {
+  await page.getByRole('button', { name: 'Set up two-step verification' }).click();
+  const secret = await page.getByLabel('Secret key').inputValue();
+  await page.getByLabel('Your password').fill(password);
+  await page.getByLabel('6-digit code').fill(totpCode(secret));
+  await page.getByRole('button', { name: /Turn on|Verify|Enable/ }).click();
+  await expect(page.getByText('Save these backup codes now')).toBeVisible({ timeout: 20_000 });
+  const backupCodes = await page
+    .getByRole('list', { name: 'Backup codes' })
+    .getByRole('listitem')
+    .allInnerTexts();
+  await page.getByLabel('I saved my backup codes').check();
+  await page.getByRole('button', { name: 'Done' }).click();
+  return { secret, backupCodes };
+}
+
 export async function expectNoHorizontalScroll(page: Page): Promise<void> {
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );
   expect(overflow, 'page has horizontal overflow').toBeLessThanOrEqual(1);
+}
+
+/**
+ * Follow a main navigation link at any viewport: below the md breakpoint (the phone projects of npm run e2e:cross)
+ * the links sit behind the "Open menu" button.
+ */
+export async function navTo(
+  page: Page,
+  label: 'Send' | 'How it works' | 'Dashboard',
+): Promise<void> {
+  const toggle = page.getByRole('button', { name: 'Open menu' });
+  if (await toggle.isVisible()) await toggle.click();
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: label, exact: true })
+    .locator('visible=true')
+    .first()
+    .click();
 }
 
 /** Open the account menu in the navbar and pick an item (desktop viewport). */

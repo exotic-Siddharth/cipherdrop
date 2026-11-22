@@ -16,6 +16,8 @@ export interface CopyButtonProps {
   variant?: ButtonVariant;
   size?: Exclude<ButtonSize, 'icon' | 'icon-sm'>;
   onCopied?: () => void;
+  /** Called when neither the Clipboard API nor the legacy fallback could copy (after the error toast). */
+  onFailed?: () => void;
   className?: string;
 }
 
@@ -28,15 +30,18 @@ export function CopyButton({
   variant = 'outline',
   size = 'md',
   onCopied,
+  onFailed,
   className,
 }: CopyButtonProps) {
   const { copied, copy } = useCopyToClipboard();
   const onClick = async () => {
     if (await copy(value)) onCopied?.();
-    else
+    else {
       toast.error('Copy failed', {
         description: 'Select the text and press Ctrl+C (Cmd+C on a Mac).',
       });
+      onFailed?.();
+    }
   };
   return (
     <>
@@ -66,6 +71,8 @@ export interface CopyFieldProps {
   mono?: boolean;
   copyLabel?: string;
   onCopied?: () => void;
+  /** Focus (and so select) the value when the field appears, e.g. after a copy button failed. */
+  autoFocus?: boolean;
   id?: string;
   className?: string;
 }
@@ -79,6 +86,7 @@ export function CopyField({
   mono = true,
   copyLabel = 'Copy',
   onCopied,
+  autoFocus,
   id: idProp,
   className,
 }: CopyFieldProps) {
@@ -92,6 +100,7 @@ export function CopyField({
           id={id}
           readOnly
           value={value}
+          autoFocus={autoFocus}
           spellCheck={false}
           aria-describedby={describedBy(id, { hint })}
           onFocus={(e) => e.currentTarget.select()}

@@ -10,6 +10,7 @@ import { PasswordInput } from '../../components/ui/PasswordInput';
 import { ProgressBar } from '../../components/ui/ProgressBar';
 import { getDemoCredentials } from '../../lib/demo';
 import { safeNextPath } from '../../lib/paths';
+import { useServerConfig } from '../../stores/serverConfig';
 import { accountErrorMessage } from '../account/accountErrors';
 import { useAccountActions } from '../account/useAccountActions';
 
@@ -21,6 +22,8 @@ export function Component() {
   const [params] = useSearchParams();
   const next = safeNextPath(params.get('next'));
   const demo = getDemoCredentials();
+  // The operator closed sign-ups (ops-3): no link to a page that only says so. Unknown config counts as open.
+  const registrationOpen = useServerConfig((s) => s.config?.registration !== false);
 
   const [step, setStep] = useState<Step>('credentials');
   const [email, setEmail] = useState('');
@@ -231,14 +234,20 @@ export function Component() {
         </CardContent>
       </Card>
       <p className="mt-6 text-center text-sm text-muted-strong">
-        New to CipherDrop?{' '}
-        <Link
-          to={next === '/dashboard' ? '/register' : `/register?next=${encodeURIComponent(next)}`}
-          className="font-medium text-primary-ink underline-offset-4 hover:underline"
-        >
-          Create an account
-        </Link>
-        {' · '}
+        {registrationOpen ? (
+          <>
+            New to CipherDrop?{' '}
+            <Link
+              to={
+                next === '/dashboard' ? '/register' : `/register?next=${encodeURIComponent(next)}`
+              }
+              className="font-medium text-primary-ink underline-offset-4 hover:underline"
+            >
+              Create an account
+            </Link>
+            {' · '}
+          </>
+        ) : null}
         <Link
           to="/recover"
           className="font-medium text-primary-ink underline-offset-4 hover:underline"

@@ -20,10 +20,13 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "test:lint": "node --test eslint.config.test.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test --workspaces --if-present",
     "test:s3": "npm run test:s3 -w @cipherdrop/api",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "audit:gate": "node scripts/audit-gate.mjs",
     "e2e": "npm run e2e -w @cipherdrop/web",
     "db:migrate": "npm run db:migrate -w @cipherdrop/api",
     "db:deploy": "npm run db:deploy -w @cipherdrop/api",
@@ -31,6 +34,9 @@
     "db:reset": "npm run db:reset -w @cipherdrop/api",
     "bench": "npm run bench --workspaces --if-present",
     "smoke": "npm run smoke -w @cipherdrop/api"
+  },
+  "scarfSettings": {
+    "enabled": false
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

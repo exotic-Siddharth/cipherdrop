@@ -9,9 +9,12 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "securityHeaders.ts",
+    "securityTxt.ts",
     "e2e",
     "bench",
     "deploy-checks",
-    "playwright.prod.config.ts"
+    "playwright.prod.config.ts",
+    "playwright.cross.config.ts",
+    "playwright.media.config.ts"
   ]
 }

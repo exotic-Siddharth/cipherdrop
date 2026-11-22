@@ -14,6 +14,7 @@ const user: Me = {
   autoLockMinutes: 15,
   storageQuotaBytes: 100,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: '2026-11-07T10:00:00.000Z',
 };
 
@@ -52,10 +53,10 @@ function renderAt(path: string) {
   return router;
 }
 
-function signIn(role: Me['role'] = 'USER') {
+function signIn(role: Me['role'] = 'USER', overrides: Partial<Me> = {}) {
   useAuth.setState({
     status: 'authenticated',
-    user: { ...user, role },
+    user: { ...user, role, ...overrides },
     accessToken: 'token',
     accessTokenExpiresAt: Date.now() + 600_000,
   });
@@ -142,10 +143,31 @@ describe('RequireAdmin', () => {
     expect(screen.queryByText(/^admin at/)).not.toBeInTheDocument();
   });
 
-  it('renders the admin route for admins', () => {
-    signIn('ADMIN');
+  it('renders the admin route for admins with two-step verification', () => {
+    signIn('ADMIN', { totpEnabled: true });
     renderAt('/admin');
     expect(screen.getByText('admin at /admin')).toBeInTheDocument();
+  });
+
+  it('asks an admin without two-step verification to turn it on, and links to the settings', () => {
+    signIn('ADMIN', { totpEnabled: false });
+    renderAt('/admin');
+    expect(
+      screen.getByRole('heading', { name: 'Turn on two-step verification' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open security settings' })).toHaveAttribute(
+      'href',
+      '/settings',
+    );
+    expect(screen.queryByText(/^admin at/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Admins only' })).not.toBeInTheDocument();
+  });
+
+  it('never shows the two-step hint to non-admins', () => {
+    signIn('USER', { totpEnabled: false });
+    renderAt('/admin');
+    expect(screen.getByRole('heading', { name: 'Admins only' })).toBeInTheDocument();
+    expect(screen.queryByText(/two-step/i)).not.toBeInTheDocument();
   });
 
   it('redirects anonymous visitors to /login', async () => {

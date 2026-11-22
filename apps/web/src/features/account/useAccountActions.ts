@@ -1,6 +1,8 @@
 /**
  * Account flows (spec 7.5, 10): register, login (+ MFA), unlock, password change, recovery, recovery-key
- * rotation, TOTP disable and account deletion. Key derivation always runs in kdf.worker via kdfClient.
+ * rotation, TOTP enable and disable, backup codes, session revocation and account deletion. Every sensitive one
+ * re-authenticates with an authKey derived from the password just typed, plus the 2FA code when it is on. Key
+ * derivation always runs in kdf.worker via kdfClient.
  *
  * Zero-knowledge rules kept here:
  * - the server only ever receives HKDF-derived auth keys and keys wrapped in the browser, never a password;
@@ -47,7 +49,8 @@ export interface AccountActions {
   cancelMfa(): void;
   /** Local unwrap of the account key with the typed password. A wrong password never touches the network. */
   unlock(password: string): Promise<void>;
-  changePassword(currentPassword: string, newPassword: string): Promise<void>;
+  /** `code` is the TOTP/backup code when 2FA is enabled (the server requires it then). */
+  changePassword(currentPassword: string, newPassword: string, code?: string): Promise<void>;
   /** R9: new recovery key for the same AK. `code` is the TOTP/backup code when 2FA is enabled. */
   rotateRecoveryKey(password: string, code?: string): Promise<{ recoveryKey: string }>;
   /** Step 1 of /recover: prove possession of the recovery key. */
@@ -55,9 +58,17 @@ export interface AccountActions {
   /** Step 2 of /recover: set the new password. Returns the replacement recovery key to show once. */
   completeRecovery(newPassword: string, code?: string): Promise<{ newRecoveryKey: string }>;
   setupTotp(): Promise<TotpSetupResponse>;
-  enableTotp(code: string): Promise<BackupCodesResponse>;
-  regenerateBackupCodes(code: string): Promise<BackupCodesResponse>;
+  /** The password re-authenticates; `code` comes from the authenticator being enrolled. */
+  enableTotp(password: string, code: string): Promise<BackupCodesResponse>;
+  /** Password plus a TOTP code (a backup code cannot mint new ones). */
+  regenerateBackupCodes(password: string, code: string): Promise<BackupCodesResponse>;
   disableTotp(password: string, code: string): Promise<void>;
+  /** Sign out one other session; `code` when 2FA is enabled. */
+  revokeSession(sessionId: string, password: string, code?: string): Promise<void>;
+  /** Sign out every other session; `code` when 2FA is enabled. */
+  revokeOtherSessions(password: string, code?: string): Promise<void>;
+  /** Re-authenticate this session (server-3): admin keys and review grants need a recent sign-in. */
+  stepUp(password: string, code?: string): Promise<void>;
   /** DELETE /me, then leaves for the home page and ends the session with reason 'account-deleted'. */
   deleteAccount(password: string, code?: string): Promise<void>;
   /** Navigates home first, then revokes the session and locks the vault. */
@@ -77,6 +88,18 @@ async function authKeyFor(password: string, kdf: KdfParams): Promise<string> {
   const { authKey } = await kdfClient.deriveAccountKeys(password, kdf);
   return b64urlEncode(authKey);
 }
+
+/**
+ * The authKey that re-authenticates a sensitive action, checked locally first: a wrong password fails here with
+ * WRONG_PASSWORD (the wrapped account key does not unwrap) and never reaches the server.
+ */
+async function verifiedAuthKey(password: string): Promise<string> {
+  const vault = await fetchVault();
+  const { authKey } = await kdfClient.unlockVault(password, vault.kdf, vault.wrappedAccountKey);
+  return authKey;
+}
+
+const codeField = (code?: string) => (code?.trim() ? { code: code.trim() } : {});
 
 /** Unwrap AK with encKey and hand it to the vault as a non-extractable key; the raw bytes are zeroed. */
 async function openVault(encKey: CryptoKey, wrappedAccountKey: string): Promise<void> {
@@ -195,7 +218,7 @@ export function useAccountActions(): AccountActions {
         useVault.getState().setAccountKey(res.accountKey);
       },
 
-      async changePassword(currentPassword, newPassword) {
+      async changePassword(currentPassword, newPassword, code) {
         const vault = await fetchVault();
         // A wrong current password fails right here, locally, before anything is sent.
         const res = await kdfClient.changePassword(
@@ -208,6 +231,7 @@ export function useAccountActions(): AccountActions {
           '/auth/password',
           {
             currentAuthKey: res.currentAuthKey,
+            ...codeField(code),
             newAuthKey: res.newAuthKey,
             kdf: res.kdf,
             wrappedAccountKey: res.wrappedAccountKey,
@@ -283,21 +307,25 @@ export function useAccountActions(): AccountActions {
         return api.post('/auth/mfa/totp/setup', undefined, { schema: TotpSetupResponseSchema });
       },
 
-      async enableTotp(code) {
+      async enableTotp(password, code) {
+        const authKey = await verifiedAuthKey(password);
         const res = await api.post(
           '/auth/mfa/totp/enable',
-          { code: code.trim() },
-          { schema: BackupCodesResponseSchema },
+          { authKey, code: code.trim() },
+          { schema: BackupCodesResponseSchema, skipRefresh: true },
         );
         await refreshMe();
+        // The server signed out every other session.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() });
         void queryClient.invalidateQueries({ queryKey: queryKeys.audit() });
         return res;
       },
 
-      async regenerateBackupCodes(code) {
+      async regenerateBackupCodes(password, code) {
+        const authKey = await verifiedAuthKey(password);
         const res = await api.post(
           '/auth/mfa/backup-codes',
-          { code: code.trim() },
+          { authKey, code: code.trim() },
           { schema: BackupCodesResponseSchema, skipRefresh: true },
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.audit() });
@@ -314,6 +342,33 @@ export function useAccountActions(): AccountActions {
         );
         await refreshMe();
         void queryClient.invalidateQueries({ queryKey: queryKeys.audit() });
+      },
+
+      async revokeSession(sessionId, password, code) {
+        const authKey = await verifiedAuthKey(password);
+        await api.delete(
+          `/auth/sessions/${encodeURIComponent(sessionId)}`,
+          { authKey, ...codeField(code) },
+          { skipRefresh: true },
+        );
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.audit() });
+      },
+
+      async revokeOtherSessions(password, code) {
+        const authKey = await verifiedAuthKey(password);
+        await api.post(
+          '/auth/sessions/revoke-others',
+          { authKey, ...codeField(code) },
+          { skipRefresh: true },
+        );
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.audit() });
+      },
+
+      async stepUp(password, code) {
+        const authKey = await verifiedAuthKey(password);
+        await api.post('/auth/step-up', { authKey, ...codeField(code) }, { skipRefresh: true });
       },
 
       async deleteAccount(password, code) {

@@ -12,10 +12,12 @@ const user: Me = {
   id: 'user_1',
   email: 'ada@example.com',
   role: 'ADMIN',
-  totpEnabled: false,
+  // Admins need two-step verification for the console (RouteGuards' AdminMfaRequired otherwise).
+  totpEnabled: true,
   autoLockMinutes: 15,
   storageQuotaBytes: 100,
   storageUsedBytes: 0,
+  quotaProbationEndsAt: null,
   createdAt: '2026-11-07T10:00:00.000Z',
 };
 

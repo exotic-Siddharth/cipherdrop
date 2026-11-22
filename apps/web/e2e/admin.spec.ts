@@ -1,7 +1,11 @@
 /**
  * Report -> moderation flow against the real API (R13): a recipient reports a drop (with and without the
  * key), the admin reviews it through the non-consuming grant, disables it, dismisses another report and edits a
- * user. Also checks that a plain user is refused on /admin.
+ * user. Also checks that a plain user is refused on /admin, and that an admin without two-step verification must
+ * turn it on first (the API refuses admin routes without it): the admin here is promoted in the database before
+ * enrolling, like the seeded dev admin or one promoted before admins needed 2FA, and enrols TOTP through Settings
+ * rather than starting from a seeded secret, so the gate and its notice are exercised too. Promoting from the
+ * console needs 2FA on the promoted account: refused first, accepted once its owner turned it on.
  */
 import { expect, test } from './support/fixtures';
 import {
@@ -14,6 +18,7 @@ import {
 } from './support/db';
 import {
   accountMenu,
+  enableTotpInSettings,
   openLink,
   randomPassword,
   registerAccount,
@@ -48,6 +53,8 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   const link2 = await sendDrop(sender, [dismissed], { maxDownloads: 5 });
   const id1 = dropIdOf(link1);
   const id2 = dropIdOf(link2);
+  // Drop 2 is reported WITHOUT its key: that key must never travel, in any encoding.
+  leaks.forbidKey('key of the drop reported without it', new URL(link2).hash.slice(1));
 
   const reporter = await (await newContext()).newPage();
   const report = async (link: string, reason: string, includeKey: boolean) => {
@@ -92,7 +99,19 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   await userPage.goto('/admin');
   await expect(userPage.getByText('Admins only')).toBeVisible({ timeout: 20_000 });
 
-  // The admin's role comes from a fresh token: reload refreshes the session.
+  // The admin's role comes from a fresh token: reload refreshes the session. Without two-step verification the
+  // console stays closed and says why.
+  await page.goto('/admin');
+  await expect(page.getByRole('heading', { name: 'Turn on two-step verification' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByRole('list', { name: 'Statistics' })).toHaveCount(0);
+  expect(leaks.count('GET', '/admin/')).toBe(0);
+  await page.getByRole('link', { name: 'Open security settings' }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  const { secret } = await enableTotpInSettings(page, password);
+  leaks.forbidText('admin totp secret', secret);
+
   await page.goto('/admin');
   await expect(
     page
@@ -119,10 +138,13 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
 
   // Review: the grant does not consume a download, and the manifest decrypts with the reporter's key.
   const before = await downloadCount(id1);
-  await page.getByRole('link', { name: `Review drop ${id1}` }).click();
-  await expect(page).toHaveURL(new RegExp(`/d/${id1}\\?review=1#`));
+  const reviewLink = page.getByRole('link', { name: `Review drop ${id1}` });
+  await expect(reviewLink).toHaveAttribute('href', new RegExp(`/d/${id1}\\?review=1#`));
+  await reviewLink.click();
   await expect(page.getByText('Review mode')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(reviewed.name)).toBeVisible({ timeout: 20_000 });
+  // The reporter's key opened the drop, then left the address bar (crypto-4); the review query stays.
+  await expect(page).toHaveURL(new RegExp(`/d/${id1}\\?review=1$`));
   expect(await downloadCount(id1)).toBe(before);
   expect(leaks.count('POST', '/admin/drops/')).toBe(1);
   void key1;
@@ -152,7 +174,8 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   await expect(row(id1)).toHaveCount(0, { timeout: 20_000 });
   await expect(row(id2)).toHaveCount(0);
 
-  // Users: search, edit the quota and promote.
+  // Users: search, edit the quota and promote. The user has no two-step verification yet: the console warns,
+  // the API refuses, and nothing changes.
   await page.getByLabel('Search users').fill(userEmail.slice(0, 18));
   await expect(page.getByRole('button', { name: `Edit ${userEmail}` })).toBeVisible({
     timeout: 20_000,
@@ -160,6 +183,17 @@ test('report with key -> admin review (no download consumed) -> disable; dismiss
   await page.getByRole('button', { name: `Edit ${userEmail}` }).click();
   await page.getByLabel('Storage quota').fill('1');
   await page.getByLabel('Role').selectOption('ADMIN');
+  await expect(page.getByText(/so it cannot be an admin yet/)).toBeVisible();
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText(/needs two-step verification before it can be an admin/)).toBeVisible(
+    { timeout: 20_000 },
+  );
+  expect(await userRole(userEmail)).toBe('USER');
+  expect(await userQuotaBytes(userEmail)).not.toBe(1024n ** 3n);
+  // Its owner turns two-step verification on; the same promotion then goes through.
+  await userPage.goto('/settings');
+  const { secret: userSecret } = await enableTotpInSettings(userPage, password);
+  leaks.forbidText('promoted user totp secret', userSecret);
   await page.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByText('User updated')).toBeVisible({ timeout: 20_000 });
   expect(await userRole(userEmail)).toBe('ADMIN');

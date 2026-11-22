@@ -16,7 +16,12 @@ import {
   passwordFixture,
   testFile,
 } from './test-utils';
-import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
+import {
+  authHeader,
+  createAdminRecord,
+  createUserRecord,
+  steppedUpAuthHeader,
+} from '../../../test/factories';
 import { purgeDropBlobs } from './lifecycle';
 import { uploadAll } from './test-utils';
 
@@ -83,7 +88,7 @@ describe('drops hardening', () => {
       const admin = await createAdminRecord(t.prisma);
       const grant = await request(t.app)
         .post(`/api/admin/drops/${d.dropId}/grant`)
-        .set('Authorization', authHeader(admin))
+        .set('Authorization', await steppedUpAuthHeader(t.prisma, admin))
         .send({});
       expect(grant.status).toBe(200);
     });

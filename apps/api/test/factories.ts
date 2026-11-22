@@ -73,11 +73,20 @@ export async function createUserRecord(
   return prisma.user.create({ data });
 }
 
+/**
+ * An admin as the admin routes accept one: role ADMIN with two-step verification on (requireRole checks
+ * totpEnabledAt). Pass `{ totpEnabledAt: null }` for an admin who has not turned it on.
+ */
 export function createAdminRecord(
   prisma: PrismaClient,
   overrides: Partial<Prisma.UserCreateInput> = {},
 ): Promise<User> {
-  return createUserRecord(prisma, { email: uniqueEmail('admin'), role: 'ADMIN', ...overrides });
+  return createUserRecord(prisma, {
+    email: uniqueEmail('admin'),
+    role: 'ADMIN',
+    totpEnabledAt: new Date(),
+    ...overrides,
+  });
 }
 
 /**
@@ -86,4 +95,25 @@ export function createAdminRecord(
  */
 export function authHeader(user: Pick<User, 'id' | 'role'>, sid = `sid-${randomUUID()}`): string {
   return `Bearer ${signAccessToken({ id: user.id, role: user.role }, sid)}`;
+}
+
+/**
+ * A bearer header for `user` on a real Session row that authenticated at `authenticatedAt` (default: now). Admin
+ * keys and review grants need a recent step-up (server-3, ADMIN_STEP_UP_MINUTES), which a random sid cannot show.
+ */
+export async function steppedUpAuthHeader(
+  prisma: PrismaClient,
+  user: Pick<User, 'id' | 'role'>,
+  authenticatedAt: Date = new Date(),
+): Promise<string> {
+  const session = await prisma.session.create({
+    data: {
+      userId: user.id,
+      createdAt: authenticatedAt,
+      lastUsedAt: authenticatedAt,
+      authenticatedAt,
+      expiresAt: new Date(authenticatedAt.getTime() + 86_400_000),
+    },
+  });
+  return authHeader(user, session.id);
 }

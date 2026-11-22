@@ -45,11 +45,11 @@
     "cross-env": "^10.1.0",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.5.7",
+    "eslint-plugin-react-refresh": "^0.5.8",
     "globals": "^17.14.0",
     "prettier": "^3.9.10",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.72.1"
+    "typescript-eslint": "^8.72.2"
   }
 }

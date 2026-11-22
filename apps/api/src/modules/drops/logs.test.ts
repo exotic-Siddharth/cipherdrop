@@ -11,7 +11,12 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestApp, type TestApp } from '../../../test/app';
 import { resetTables } from '../../../test/db';
-import { authHeader, createAdminRecord, createUserRecord } from '../../../test/factories';
+import {
+  authHeader,
+  createAdminRecord,
+  createUserRecord,
+  steppedUpAuthHeader,
+} from '../../../test/factories';
 import { env } from '../../config/env';
 import { createPrisma } from '../../db/prisma';
 import { createLogger } from '../../lib/logger';
@@ -215,7 +220,7 @@ describe('drop logging', () => {
 
       // Admin review: the report list (which returns the key), a review grant, a chunk GET, dismiss.
       const admin = await createAdminRecord(t.prisma);
-      const adminAuth = authHeader(admin);
+      const adminAuth = await steppedUpAuthHeader(t.prisma, admin);
       secrets.push(accessToken(adminAuth));
       const list = await request(t.app).get('/api/admin/reports').set('Authorization', adminAuth);
       expect(list.status).toBe(200);

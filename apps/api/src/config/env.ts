@@ -89,6 +89,12 @@ const EnvSchema = z
      * days from sign-in. It must be at least REFRESH_TOKEN_TTL_DAYS.
      */
     SESSION_MAX_LIFETIME_DAYS: int(30, 1, 365),
+    /**
+     * Admin step-up (server-3): GET /admin/reports returns reporters' decryption keys, and POST
+     * /admin/drops/:id/grant mints a review grant, only within this many minutes of the session's last
+     * authentication (sign-in, or POST /auth/step-up with the password and a 2FA code).
+     */
+    ADMIN_STEP_UP_MINUTES: int(15, 1, 1440),
     COOKIE_SECURE: bool(false),
     /** 32 bytes, base64: AES-256-GCM key for TOTP secrets at rest. */
     TOTP_ENC_KEY: base64Key32,
@@ -148,6 +154,12 @@ const EnvSchema = z
      * at a time).
      */
     MAX_CHUNK_DOWNLOADS_PER_GRANT: int(8, 1, 10_000),
+    /**
+     * Byte budget of one download grant (critic-2): chunk GETs on a grant may serve at most this many times the
+     * drop's ciphertext size, so a consumed download cannot be replayed without limit for 24 h. 3 leaves room for
+     * resumes and retries (an aborted chunk counts in full).
+     */
+    DOWNLOAD_GRANT_BYTE_FACTOR: int(3, 1, 100),
     MAX_CHUNK_DOWNLOADS_PER_IP: int(32, 1, 10_000),
     /** Chunk PUTs in flight per API process (each buffers up to 4 MiB); more get 429 + Retry-After. */
     MAX_CONCURRENT_CHUNK_UPLOADS: int(64, 1, 10_000),

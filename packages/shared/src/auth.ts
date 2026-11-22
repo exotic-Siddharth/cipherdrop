@@ -99,6 +99,12 @@ export const VaultSchema = z.object({
   kdf: KdfParamsSchema,
 });
 export type Vault = z.infer<typeof VaultSchema>;
+/**
+ * GET /auth/vault/recovery (critic-5): the account key wrapped by the recovery key, so "Test recovery key" can check a
+ * typed key locally (an unwrap that succeeds proves it), changing nothing. /recovery/start returns the same value.
+ */
+export const RecoveryVaultSchema = z.object({ wrappedAccountKeyRecovery: WrappedKeySchema });
+export type RecoveryVault = z.infer<typeof RecoveryVaultSchema>;
 
 /**
  * Re-authentication for sensitive signed-in actions (review server-3): the current authKey, plus a TOTP or backup
@@ -214,3 +220,6 @@ export const SessionIdParamsSchema = z.object({ id: IdSchema });
 /* DELETE /auth/sessions/:id and POST /auth/sessions/revoke-others -> 204 */
 export const SessionRevokeRequestSchema = AccountProofSchema;
 export type SessionRevokeRequest = z.infer<typeof SessionRevokeRequestSchema>;
+/** POST /auth/step-up (server-3): re-authenticate this session for admin actions that need a recent sign-in. */
+export const StepUpRequestSchema = AccountProofSchema;
+export type StepUpRequest = z.infer<typeof StepUpRequestSchema>;

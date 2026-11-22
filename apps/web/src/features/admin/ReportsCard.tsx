@@ -22,7 +22,9 @@ import { cn } from '../../lib/cn';
 import { formatBytes, formatDate, formatRelative, pluralize } from '../../lib/format';
 import { reviewPath } from '../../lib/links';
 import { queryKeys } from '../../lib/queryClient';
+import { useAccountActions } from '../account/useAccountActions';
 import { StatusBadge } from '../dashboard/components/StatusBadge';
+import { ReauthDialog } from '../settings/ReauthDialog';
 
 const PAGE_SIZE = 10;
 
@@ -62,9 +64,11 @@ interface PendingAction {
 function ReportActions({
   report,
   onAct,
+  onStepUp,
 }: {
   report: AdminReport;
   onAct: (p: PendingAction) => void;
+  onStepUp: () => void;
 }) {
   const open = report.status === 'OPEN';
   const key =
@@ -84,6 +88,17 @@ function ReportActions({
         >
           Review
         </ButtonLink>
+      ) : report.hasKey && open ? (
+        // The API withholds keys without a recent sign-in (ADMIN_STEP_UP_MINUTES): confirm, then it sends them.
+        <Button
+          variant="outline"
+          size="sm"
+          icon={KeyRound}
+          onClick={onStepUp}
+          aria-label={`Review drop ${report.drop.id} (confirm it's you first)`}
+        >
+          Review
+        </Button>
       ) : (
         <Button
           variant="outline"
@@ -130,6 +145,8 @@ export function ReportsCard() {
   const [filter, setFilter] = useState<Filter>('OPEN');
   const [page, setPage] = useState(1);
   const [pending, setPending] = useState<PendingAction | null>(null);
+  const [stepUp, setStepUp] = useState(false);
+  const actions = useAccountActions();
 
   const reports = useQuery({
     queryKey: queryKeys.adminReports({
@@ -269,7 +286,7 @@ export function ReportsCard() {
                     </span>
                   </p>
                 </div>
-                <ReportActions report={r} onAct={setPending} />
+                <ReportActions report={r} onAct={setPending} onStepUp={() => setStepUp(true)} />
               </li>
             ))}
           </ul>
@@ -287,6 +304,24 @@ export function ReportsCard() {
           />
         </div>
       ) : null}
+
+      <ReauthDialog
+        open={stepUp}
+        onOpenChange={setStepUp}
+        title="Confirm it's you"
+        description="Reporters' decryption keys and review grants need a recent sign-in. Enter your password and a two-factor code to continue."
+        confirmLabel="Confirm"
+        password
+        code="mfa"
+        busyHint="Checking your password locally…"
+        onSubmit={async ({ password, code }) => {
+          await actions.stepUp(password, code);
+          await qc.invalidateQueries({ queryKey: queryKeys.adminReports() });
+          toast.success('Confirmed', {
+            description: "The reporters' keys are available for a while.",
+          });
+        }}
+      />
 
       <ConfirmDialog
         open={pending !== null}

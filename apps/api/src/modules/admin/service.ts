@@ -21,7 +21,7 @@ import {
 import { Prisma, type User } from '@prisma/client';
 import type { Request } from 'express';
 import type { AppContext } from '../../context';
-import { conflict, gone, notFound, validationError } from '../../lib/errors';
+import { conflict, gone, notFound, stepUpRequired, validationError } from '../../lib/errors';
 import { sha256B64url } from '../../lib/hash';
 import { ipPrefix } from '../../lib/ip';
 import { paginate, toPage } from '../../lib/pagination';
@@ -29,7 +29,7 @@ import { effectiveQuotaBytes, probationEndsAt } from '../../lib/quota';
 import { randomToken } from '../../lib/tokens';
 import type { AuthUser } from '../../types/express';
 import { recordAfterCommit } from '../audit/service';
-import { revokeUserSessions } from '../auth/service';
+import { isRecentlyAuthenticated, revokeUserSessions } from '../auth/service';
 import { goneReason, purgeDropBlobs } from '../drops/lifecycle';
 import { grantExpiry } from '../drops/service';
 
@@ -129,9 +129,19 @@ export async function getStats(ctx: AppContext): Promise<AdminStats> {
 
 /* ---------------------------------------------------------------- reports */
 
+/** Reporters' keys, review grants and promotions need a recent authentication of the admin's session (server-3). */
+export function hasAdminStepUp(ctx: AppContext, admin: AuthUser): Promise<boolean> {
+  return isRecentlyAuthenticated(ctx, admin, ctx.env.ADMIN_STEP_UP_MINUTES);
+}
+
+/**
+ * `withKeys` false (no recent step-up) withholds every decryption key: `hasKey` still says the report holds one, so
+ * the console can ask for the step-up and fetch again.
+ */
 export async function listReports(
   ctx: AppContext,
   query: AdminReportsQuery,
+  { withKeys }: { withKeys: boolean },
 ): Promise<Page<AdminReport>> {
   const p = paginate(query);
   const where: Prisma.ReportWhereInput = query.status ? { status: query.status } : {};
@@ -164,7 +174,7 @@ export async function listReports(
     createdAt: r.createdAt.toISOString(),
     // The key is only for reviewing an OPEN report; closed reports never serve one.
     hasKey: r.status === 'OPEN' && r.providedKey !== null,
-    decryptionKey: r.status === 'OPEN' ? r.providedKey : null,
+    decryptionKey: withKeys && r.status === 'OPEN' ? r.providedKey : null,
     drop: {
       id: r.drop.id,
       status: r.drop.status,
@@ -281,6 +291,7 @@ export async function reviewGrant(
   admin: AuthUser,
   req: Req,
 ): Promise<AdminGrantResponse> {
+  if (!(await hasAdminStepUp(ctx, admin))) throw stepUpRequired();
   const drop = await ctx.prisma.drop.findUnique({ where: { id: dropId } });
   if (!drop || drop.status === 'UPLOADING') throw notFound('Unknown drop');
   // An EXPIRED drop is reviewable while its blobs are still there (the evidence hold, server-5).
@@ -375,6 +386,9 @@ const ADMIN_NEEDS_MFA =
  *
  * A suspension signs out every session of the account (its access tokens die with the sid denylist); login and
  * refresh then refuse it. Admins are not suspended (demote first), nor is a suspended account promoted.
+ *
+ * A promotion needs the same recent step-up as the reporters' keys: otherwise a stale admin session could promote
+ * an account of its own and sign in to it, which opens a fresh session that reaches the keys.
  */
 export async function patchUser(
   ctx: AppContext,
@@ -402,6 +416,13 @@ export async function patchUser(
   });
   if (!target) throw notFound('Unknown user');
   const promoting = patch.role === 'ADMIN';
+  // `role: 'ADMIN'` sent for an admin (with a quota edit) needs no step-up; the write then requires the role to be
+  // unchanged, so a demotion racing it cannot turn it into a promotion without one.
+  const keepsAdmin = promoting && target.role === 'ADMIN';
+  // The operator CLI runs with shell access to the server and has no session to step up.
+  if (promoting && !keepsAdmin && admin !== 'operator' && !(await hasAdminStepUp(ctx, admin))) {
+    throw stepUpRequired();
+  }
   if (promoting && target.totpEnabledAt === null) throw conflict(ADMIN_NEEDS_MFA);
   const nextRole = patch.role ?? target.role;
   const nextSuspended = patch.suspended ?? target.suspendedAt !== null;
@@ -419,6 +440,7 @@ export async function patchUser(
     where: {
       id: userId,
       ...(promoting ? { totpEnabledAt: { not: null }, suspendedAt: null } : {}),
+      ...(keepsAdmin ? { role: 'ADMIN' as const } : {}),
       ...(suspending && patch.role === undefined ? { role: 'USER' as const } : {}),
     },
     data: {
@@ -432,6 +454,8 @@ export async function patchUser(
     },
   });
   if (updated.count !== 1) {
+    if (keepsAdmin)
+      throw conflict('This account changed meanwhile. Reload the list and try again.');
     if (promoting) throw conflict(ADMIN_NEEDS_MFA);
     if (suspending) throw conflict('Remove the admin role before suspending this account.');
     throw notFound('Unknown user');
@@ -578,4 +602,46 @@ export async function listAudit(
     };
   });
   return toPage(items, total, p);
+}
+
+/**
+ * Clear the sign-in lockout of an account (server-2): the failed-login counter and `lockedUntil`. The lock is
+ * account-wide, so anyone who knows an email can keep its owner out by re-locking it every 15 minutes; this is
+ * the owner's way back in, through an admin, until the lock itself is scoped per device. Audited twice: the owner
+ * sees ACCOUNT_LOCK_CLEARED in Activity (no admin id, IP prefix or User-Agent), and ADMIN_LOCK_CLEARED names the
+ * acting admin in the admin audit log.
+ */
+export async function clearUserLock(
+  ctx: AppContext,
+  userId: string,
+  admin: AuthUser,
+  req: Req,
+): Promise<AdminUser> {
+  const before = await ctx.prisma.user.findUnique({
+    where: { id: userId },
+    select: { lockedUntil: true, failedLoginCount: true },
+  });
+  if (!before) throw notFound('Unknown user');
+  const user = await ctx.prisma.user.update({
+    where: { id: userId },
+    data: { failedLoginCount: 0, lockedUntil: null },
+    include: { _count: { select: { drops: true } } },
+  });
+  const wasLocked = before.lockedUntil !== null && before.lockedUntil > ctx.now();
+  // No `req` on the owner's row (unless the admin cleared their own): its IP prefix and User-Agent would be the
+  // admin's, shown to the owner in Activity.
+  await recordAfterCommit(ctx, {
+    userId,
+    action: 'ACCOUNT_LOCK_CLEARED',
+    ...(admin.id === userId ? { req } : {}),
+    metadata: { byAdmin: true, wasLocked, failedLogins: before.failedLoginCount },
+  });
+  // The admin's side is an admin action like any other (server-4): it names the acting admin and lands in the
+  // admin audit log, GET /admin/audit, not in the admin's personal Activity.
+  await recordAdminAction(ctx, admin, 'ADMIN_LOCK_CLEARED', {
+    targetUserId: userId,
+    req,
+    metadata: { wasLocked, failedLogins: before.failedLoginCount },
+  });
+  return toAdminUser(ctx, user);
 }

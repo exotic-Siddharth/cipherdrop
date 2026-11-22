@@ -28,11 +28,13 @@ import {
   RecoveryRotateRequestSchema,
   RecoveryStartRequestSchema,
   RecoveryStartResponseSchema,
+  RecoveryVaultSchema,
   RefreshResponseSchema,
   RegisterRequestSchema,
   SessionIdParamsSchema,
   SessionListResponseSchema,
   SessionRevokeRequestSchema,
+  StepUpRequestSchema,
   TotpDisableRequestSchema,
   TotpEnableRequestSchema,
   TotpSetupResponseSchema,
@@ -414,6 +416,23 @@ export function authRoutes(ctx: AppContext): AppRouter {
     async (req, res) => {
       const user = await loadUser(ctx, authUser(req).id);
       res.json({ wrappedAccountKey: user.wrappedAccountKey, kdf: kdfOf(user) });
+    },
+  );
+  r.route(
+    {
+      method: 'get',
+      path: '/vault/recovery',
+      summary:
+        'Account key wrapped by the recovery key, for a local "Test recovery key" check (changes nothing)',
+      tags,
+      auth: 'user',
+      responses: {
+        200: { description: 'Recovery-wrapped account key', schema: RecoveryVaultSchema },
+      },
+    },
+    async (req, res) => {
+      const user = await loadUser(ctx, authUser(req).id);
+      res.json({ wrappedAccountKeyRecovery: user.wrappedAccountKeyRecovery });
     },
   );
 
@@ -856,6 +875,32 @@ export function authRoutes(ctx: AppContext): AppRouter {
           metadata: { scope: 'others', count: revoked.length },
         });
       }
+      res.status(204).end();
+    },
+  );
+  r.route(
+    {
+      method: 'post',
+      path: '/step-up',
+      summary:
+        'Re-authenticate this session (authKey + code when TOTP is on) for admin actions that need a recent sign-in',
+      tags,
+      auth: 'user',
+      request: { body: StepUpRequestSchema },
+      responses: {
+        204: { description: 'This session counts as just authenticated' },
+        403: { description: 'Wrong authKey or two-factor code (FORBIDDEN)' },
+      },
+    },
+    reauth,
+    async (req, res) => {
+      const me = authUser(req);
+      await requireAccountProof(ctx, await loadUser(ctx, me.id), req.body, req, 'step-up');
+      const updated = await ctx.prisma.session.updateMany({
+        where: { id: me.sid, userId: me.id, revokedAt: null },
+        data: { authenticatedAt: ctx.now() },
+      });
+      if (updated.count !== 1) throw unauthorized();
       res.status(204).end();
     },
   );

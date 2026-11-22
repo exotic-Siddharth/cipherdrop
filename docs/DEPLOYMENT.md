@@ -715,6 +715,17 @@ able to choose its address, or break `up`, a build or a sidecar.
 - **Admin API fields:** `AdminUser.storageQuotaBytes` is the stored quota, and the new `effectiveQuotaBytes` is the
   one that applies now; `Me` and `AdminUser` gain `quotaProbationEndsAt`. A `PATCH /admin/users/:id` with
   `storageQuotaBytes` ends an account's probation.
+- **Admin step-up (batch 2):** `GET /admin/reports` withholds every reporter's key (`decryptionKey: null`, `hasKey`
+  unchanged), and `POST /admin/drops/:id/grant` and a promotion through `PATCH /admin/users/:id` answer 403
+  `STEP_UP_REQUIRED`, unless the admin's session signed in, or passed `POST /auth/step-up` (password plus a 2FA
+  code), within `ADMIN_STEP_UP_MINUTES` (15). Scripts that promote with an older token must step up first. The
+  console asks for it. Migration `20261122200100_session_authenticated_at` adds `Session.authenticatedAt`, set to each existing
+  session's creation time.
+- **Download grants have a byte budget (batch 2):** chunk GETs on one grant stop with 401 once it has served
+  `DOWNLOAD_GRANT_BYTE_FACTOR` (3) times the drop's ciphertext size; the recipient opens the link again. Migration
+  `20261122200200_download_grant_served_bytes` adds `DownloadGrant.servedBytes` (0 for existing grants). Migrations
+  `20261122200000_account_lock_cleared_audit` and `20261122200300_admin_lock_cleared_audit` add the audit actions
+  `ACCOUNT_LOCK_CLEARED` (the owner's row) and `ADMIN_LOCK_CLEARED` (the admin action).
 
 - **Moderation (2026-11-22):** migrations `20261122100000_moderation`, `20261122100100_audit_append_only` and
   `20261122100200_audit_fk_restrict` (the audit foreign keys no longer cascade an update of a user id) run on

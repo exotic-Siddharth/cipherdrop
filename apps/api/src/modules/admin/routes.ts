@@ -23,8 +23,10 @@ import type { AppContext } from '../../context';
 import { authUser } from '../../middleware/auth';
 import { createRouter, type AppRouter } from '../../lib/router';
 import {
+  clearUserLock,
   disableDrop,
   getStats,
+  hasAdminStepUp,
   listAudit,
   listReports,
   listUsers,
@@ -55,14 +57,16 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     {
       method: 'get',
       path: '/reports',
-      summary: 'Abuse reports (decryptionKey is exposed only here)',
+      summary:
+        'Abuse reports (decryptionKey is exposed only here, and only within ADMIN_STEP_UP_MINUTES of a sign-in or step-up)',
       tags,
       auth,
       request: { query: AdminReportsQuerySchema },
       responses: { 200: { description: 'Page of reports', schema: AdminReportPageSchema } },
     },
     async (req, res) => {
-      res.json(await listReports(ctx, req.validatedQuery));
+      const withKeys = await hasAdminStepUp(ctx, authUser(req));
+      res.json(await listReports(ctx, req.validatedQuery, { withKeys }));
     },
   );
   r.route(
@@ -84,12 +88,13 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     {
       method: 'post',
       path: '/drops/:id/grant',
-      summary: 'Non-consuming review grant (audited)',
+      summary: 'Non-consuming review grant (audited; needs a recent sign-in or step-up)',
       tags,
       auth,
       request: { params: DropIdParamsSchema },
       responses: {
         200: { description: 'Review grant', schema: AdminGrantResponseSchema },
+        403: { description: 'No recent step-up (FORBIDDEN; details.reason STEP_UP_REQUIRED)' },
         404: { description: 'Unknown drop' },
       },
     },
@@ -115,12 +120,17 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     {
       method: 'patch',
       path: '/users/:id',
-      summary: 'Edit a user role and/or storage quota (only accounts with 2FA can become admins)',
+      summary:
+        'Edit a user role and/or storage quota (only accounts with 2FA can become admins; a promotion needs a recent sign-in or step-up)',
       tags,
       auth,
       request: { params: UserIdParamsSchema, body: AdminUserPatchRequestSchema },
       responses: {
         200: { description: 'Updated user', schema: AdminUserResponseSchema },
+        403: {
+          description:
+            'Promotion without a recent step-up (FORBIDDEN; details.reason STEP_UP_REQUIRED)',
+        },
         404: { description: 'Unknown user' },
         409: { description: 'Promotion of an account without two-step verification (CONFLICT)' },
       },
@@ -166,6 +176,25 @@ export function adminRoutes(ctx: AppContext): AppRouter {
     },
     async (req, res) => {
       res.json(await listAudit(ctx, req.validatedQuery));
+    },
+  );
+  r.route(
+    {
+      method: 'post',
+      path: '/users/:id/clear-lock',
+      summary: 'Clear the sign-in lockout of an account (audited on the account and on the admin)',
+      tags,
+      auth,
+      request: { params: UserIdParamsSchema },
+      responses: {
+        200: { description: 'Updated user', schema: AdminUserResponseSchema },
+        404: { description: 'Unknown user' },
+      },
+    },
+    async (req, res) => {
+      res.json({
+        user: await clearUserLock(ctx, req.validatedParams.id, authUser(req), req),
+      });
     },
   );
 

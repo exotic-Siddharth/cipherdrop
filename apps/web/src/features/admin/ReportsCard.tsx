@@ -158,6 +158,7 @@ export function ReportsCard() {
       );
       void qc.invalidateQueries({ queryKey: queryKeys.adminReports() });
       void qc.invalidateQueries({ queryKey: queryKeys.adminStats() });
+      void qc.invalidateQueries({ queryKey: queryKeys.adminAudit() });
     },
   });
 

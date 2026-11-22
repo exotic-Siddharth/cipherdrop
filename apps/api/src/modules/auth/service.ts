@@ -249,6 +249,8 @@ export async function rotateRefresh(
   if (session.revokedAt || session.expiresAt <= now || found.expiresAt <= now || deadline <= now) {
     throw unauthorized();
   }
+  // Suspension revokes the sessions too; this also covers a refresh racing the suspension (server-6).
+  if (session.user.suspendedAt) throw unauthorized();
   const refreshToken = randomToken();
   const refreshExpiresAt = refreshExpiry(ctx, now, deadline);
   // Claim the token and issue its successor in ONE transaction: a failure rolls the claim back, so a

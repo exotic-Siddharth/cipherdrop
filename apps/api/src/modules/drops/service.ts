@@ -601,12 +601,18 @@ function authKeyMatches(drop: Drop, authKey: string): boolean {
   return timingSafeEqualStr(sha256B64url(bytes), drop.authKeyHash ?? '');
 }
 
+/**
+ * The owner's Activity shows the network prefix and browser of opens and failed unlocks (critic-7). A drop without
+ * an owner has nobody to show them to, so its events carry neither.
+ */
+const ownerReq = (drop: Pick<Drop, 'ownerId'>, req: Req) => (drop.ownerId ? { req } : {});
+
 async function auditUnlockFailure(ctx: AppContext, drop: Drop, req: Req): Promise<void> {
   await ctx.audit.record({
     userId: drop.ownerId,
     dropId: drop.id,
     action: 'DROP_UNLOCK_FAILED',
-    req,
+    ...ownerReq(drop, req),
   });
 }
 
@@ -660,7 +666,6 @@ export async function openDrop(
   const now = ctx.now();
   const downloadToken = randomToken();
   const expiresAt = grantExpiry(ctx, now, now);
-  const prefix = ipPrefix(req.ip);
 
   // Spec section 9: ONE conditional UPDATE consumes a download; the same statement flips the status to
   // EXHAUSTED when it takes the last one. Concurrent opens serialise on the row lock and re-check the WHERE.
@@ -683,7 +688,7 @@ export async function openDrop(
         dropId,
         tokenHash: sha256B64url(downloadToken),
         isAdmin: false,
-        ipPrefix: prefix,
+        // No ipPrefix: nothing reads it, and the recipient's network is the owner's audit event alone (critic-7).
         createdAt: now,
         expiresAt,
       },
@@ -700,7 +705,12 @@ export async function openDrop(
   }
 
   metrics.dropOpens.inc();
-  await recordAfterCommit(ctx, { userId: drop.ownerId, dropId, action: 'DROP_OPENED', req });
+  await recordAfterCommit(ctx, {
+    userId: drop.ownerId,
+    dropId,
+    action: 'DROP_OPENED',
+    ...ownerReq(drop, req),
+  });
   return {
     downloadToken,
     expiresAt: expiresAt.toISOString(),

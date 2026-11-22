@@ -97,7 +97,9 @@ attacker:
   10 characters and a zxcvbn score of 2 or more;
 - **can** decrypt drops that have an OPEN abuse report whose reporter attached the key, if it also has the blob
   storage. The key is deleted when the report is dismissed, when the drop is disabled and when its blobs are
-  purged (review C-14);
+  purged (review C-14). While such a report is open, cleanup keeps the blobs of the drop past its expiry or last
+  download for review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the drop expired or was used up, however
+  many reports are filed (server-5, see [ABUSE.md](ABUSE.md)); an owner's delete is never held;
 - **can** see all metadata in [section 4](#4-metadata-the-server-sees);
 - **cannot** log in with the stored `authKeyHash`: it is a server-side Argon2id hash (m=19456 KiB, t=2, p=1) of
   the client's authKey, so the hash is not the credential;
@@ -179,7 +181,9 @@ cost and volume, not on content:
 
 The arithmetic: before, one IPv4 address could keep about 10 x 100 MiB x 72 h, about 70 GiB, of anonymous drops
 alive; now at most about 3 GiB (1 GiB per 24 hours, and links live up to 72 hours), and 10 GiB for all anonymous
-senders together.
+senders together. A sender who also files keyed reports on their own drops can keep them, and their pool bytes,
+for up to `REPORT_EVIDENCE_HOLD_DAYS` (14) more days after expiry (the evidence hold, server-5), so about 17 GiB
+per IPv4 address at worst; an admin dismissing the reports ends that.
 
 Residual risk, stated plainly:
 
@@ -256,7 +260,8 @@ The server does see, and stores:
 - the time each chunk was last written (`DropChunk.storedAt`), kept with the chunk row until the drop's blobs are
   purged; the free-disk floor uses it to tell active uploads from idle ones;
 - IP addresses as **prefixes only** in the database (IPv4 /24, IPv6 /48) and user-agent strings: on sessions,
-  download grants, audit events and abuse reports;
+  admin review grants, audit events and abuse reports (a recipient's download grant stores none since
+  2026-11-22: the owner's audit event is the only record of an open);
 - full IPv4 addresses and IPv6 /64 prefixes (/48 for the anonymous-create, register and failed-login-per-client
   limiters) as rate-limit keys in Redis, for the length of each limiter window (at most one hour);
 - for each anonymous client key (an IPv4 address or an IPv6 /48), the MiB total of its anonymous drop creates per
@@ -301,7 +306,7 @@ log shipper that expires entries ([DEPLOYMENT.md](DEPLOYMENT.md), Operations).
 | Vault | The account key lives only in memory as a non-extractable `CryptoKey`; a page reload locks it, and it auto-locks after 5, 15 or 60 minutes idle (default 15). Each tab has its own vault: a tab starts locked, and Lock acts on the current tab only, so another tab the user unlocked stays unlocked until its own idle lock (after a sign-out, until its next API call finds the session revoked) |
 | Recovery | The recovery key resets the password; it is rotated on use, all sessions are revoked, and a TOTP or backup code is still required when 2FA is enabled |
 | Audit log | Logins, failures, lockouts, 2FA changes, password and recovery events, session revocations, and per drop: created, opened (with IP prefix and browser), unlock failures, expiry, reports. Visible to the user in Settings, Activity |
-| Admin | Admin routes need role ADMIN and two-step verification on the account, both re-read from the database on every request. Without 2FA the answer is 403 `FORBIDDEN` with `details.reason` `MFA_REQUIRED`, because admin routes return reporter-supplied decryption keys. Only accounts with 2FA can be promoted (`PATCH /admin/users/:id` answers 409 otherwise), admins cannot turn 2FA off (409), and enabling 2FA signs out every other session, so every live admin session has passed the second factor. Admin review of a reported drop uses a non-consuming grant and is audited as `ADMIN_REVIEW_GRANT` |
+| Admin | Admin routes need role ADMIN and two-step verification on the account, both re-read from the database on every request. Without 2FA the answer is 403 `FORBIDDEN` with `details.reason` `MFA_REQUIRED`, because admin routes return reporter-supplied decryption keys. Only accounts with 2FA can be promoted (`PATCH /admin/users/:id` answers 409 otherwise), admins cannot turn 2FA off (409), and enabling 2FA signs out every other session, so every live admin session has passed the second factor. Admin review of a reported drop uses a non-consuming grant and is audited as `ADMIN_REVIEW_GRANT`. The admin audit log (`GET /admin/audit`) lists admin and operator actions only; admins cannot read an account's own events (sign-ins, opens of its drops), which only the owner sees in `/me/audit` |
 
 Other server controls: zod validation of every request; a 1 MiB JSON body limit and an exact size check on
 chunk uploads (4 MiB + 16 bytes, `X-Chunk-SHA256` must match); constant-time comparison of every token and hash;
@@ -340,15 +345,18 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
 - **Per-drop unlock budget (C-01).** An attacker who uses up the per-drop failure budget also blocks recipients
   until the window ends.
 - **Delayed deletion of expired drops (C-06).** Blobs of an expired drop are deleted once no download grant is
-  live, at most about 24 hours after expiry.
+  live, at most about 24 hours after expiry. The exception is the evidence hold: a drop with an open report that
+  carries the key keeps its blobs (and its quota or anonymous pool bytes) until the report is resolved, at most
+  `REPORT_EVIDENCE_HOLD_DAYS` (14) after expiry or the last download.
 - **Per-process caps (C-15, C-09).** The API's in-flight upload and download caps count per API process; several
   instances need connection limits in the reverse proxy. The bundled nginx has two: 64 in-flight `/api` requests
   per client (`limit_conn api_ip`, keyed by IPv4 address or IPv6 /48 like the API's per-IP shares) and 400 in total
   (`api_total`), answered with 429. With N API instances behind one nginx use 48 x N + 16 and about 400 x N
   ([DEPLOYMENT.md](DEPLOYMENT.md) section 4). Per-IP caps rely on `TRUST_PROXY`, which is `1` for the bundled stack
   with or without Caddy.
-- **Admin review of expired drops (C-R2-05).** Reports are accepted for expired drops until their blobs are purged,
-  but the admin review grant refuses expired drops.
+- **Admin review of expired drops (C-R2-05).** Reports are accepted for expired and used-up drops until their
+  blobs are purged, and the admin review grant works on them until then; the evidence hold is what keeps those
+  blobs for a keyed report.
 - **Orphaned blob versions (C-R2-01, C-R4-01).** A crash between a chunk write and its commit, or a storage error
   that outlasts all retries, can leave an unreferenced blob until the drop is purged; there is no storage sweep.
 - **Slowest supported uplink (C-R3-01).** About 0.34 Mbit/s for the three-lane web uploader, set by Node's 300 s
@@ -436,7 +444,12 @@ From the code review record ([review/2026-11-11-review.md](review/2026-11-11-rev
 - **Defence in depth on the host.** The API connects as a role with rights on rows only (`cipherdrop_app`), Redis
   needs a password, and Postgres, Redis and MinIO sit on an internal network that only the API and the one-shot
   `migrate` service join, so a compromised nginx cannot reach them and an injection in the API cannot change the
-  schema. Secrets are still passed only as environment variables (no `*_FILE` or Docker secrets), so they show in
+  schema. The audit log is append-only for that role (server-8): it has no UPDATE or DELETE on `AuditEvent`, and
+  retention runs through the owner's `prune_audit_events()`, which keeps 90 days (a year for admin actions) whatever
+  time it is given, so a compromised API cannot erase recent events (account deletion still removes the account's
+  own events). Its foreign keys refuse an update of `"User".id` instead of cascading it (as the table owner), so
+  the role cannot rewrite who a row is about or who acted, and each admin action keeps a copy of the acting admin's
+  id and email in its metadata, so an admin who deletes their account stays named. It is not tamper-evident against the operator, who owns the database. Secrets are still passed only as environment variables (no `*_FILE` or Docker secrets), so they show in
   `docker inspect`; the API container no longer holds the database owner's password, but `migrate` and `postgres`
   do ([DEPLOYMENT.md](DEPLOYMENT.md) section 5).
 - **Hosting abuse (server-1, ops-3).** The residual risks (a) to (d) of [section 2.7](#27-hosting-abuse-the-service-as-a-free-file-host).

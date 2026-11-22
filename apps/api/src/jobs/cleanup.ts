@@ -34,7 +34,7 @@ export interface CleanupReport {
   bytesReleased: number;
 }
 
-export type CleanupContext = Pick<AppContext, 'prisma' | 'storage' | 'audit' | 'logger'>;
+export type CleanupContext = Pick<AppContext, 'prisma' | 'storage' | 'audit' | 'logger' | 'env'>;
 export type SchedulerContext = Pick<
   AppContext,
   'prisma' | 'redis' | 'storage' | 'audit' | 'logger' | 'env'
@@ -59,6 +59,10 @@ const GRANT_RETENTION_MS = 24 * HOUR_MS;
 const SESSION_RETENTION_MS = 7 * 24 * HOUR_MS;
 /** Audit events and closed reports are kept this long (the Activity tab shows recent history only). */
 const RECORD_RETENTION_MS = 90 * 24 * HOUR_MS;
+/**
+ * Admin and operator actions (every ADMIN_* action) are kept a year (server-4): the trail that answers "who watches
+ * the admins". Enforced, with RECORD_RETENTION_MS for audit events, by prune_audit_events() in the database.
+ */
 const LOCK_NAME = 'cleanup';
 
 interface Candidate {
@@ -129,11 +133,29 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
       await c.audit.record({ userId: d.ownerId, dropId: d.id, action: 'DROP_EXPIRED' });
   }
 
+  // Evidence hold (server-5): an open report that carries the key keeps an expired or exhausted drop's blobs
+  // for review, for at most REPORT_EVIDENCE_HOLD_DAYS after the drop ended (expiresAt, or the open that
+  // exhausted it). The hold is measured from the drop, never from a report, so filing new reports cannot
+  // extend it.
+  const holdDays = c.env.REPORT_EVIDENCE_HOLD_DAYS;
+  const holdCutoff = new Date(now.getTime() - holdDays * 24 * HOUR_MS);
+  const notHeld = (endedBeforeCutoff: Prisma.DropWhereInput): Prisma.DropWhereInput =>
+    holdDays > 0
+      ? {
+          OR: [
+            { reports: { none: { status: 'OPEN', providedKey: { not: null } } } },
+            endedBeforeCutoff,
+          ],
+        }
+      : {};
+
   // 2. EXHAUSTED with no live grant -> blobs deleted (R12: kept while any grant lives).
   const exhaustedWhere: Prisma.DropWhereInput = {
     status: 'EXHAUSTED',
     blobsDeletedAt: null,
     grants: { none: { expiresAt: { gt: now } } },
+    // The last open exhausts the drop, so lastOpenedAt is when it ended.
+    ...notHeld({ OR: [{ lastOpenedAt: null }, { lastOpenedAt: { lte: holdCutoff } }] }),
   };
   for await (const d of candidates(c, exhaustedWhere)) {
     if (!(await purge(d.id))) continue;
@@ -165,7 +187,11 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     blobsDeletedAt: null,
     OR: [
       { status: { in: ['DELETED', 'DISABLED'] } },
-      { status: 'EXPIRED', grants: { none: { expiresAt: { gt: now } } } },
+      {
+        status: 'EXPIRED',
+        grants: { none: { expiresAt: { gt: now } } },
+        ...notHeld({ expiresAt: { lte: holdCutoff } }),
+      },
     ],
   };
   for await (const d of candidates(c, orphanWhere)) await purge(d.id);
@@ -182,7 +208,10 @@ export async function runCleanup(now: Date, ctx?: CleanupContext): Promise<Clean
     where: { OR: [{ expiresAt: { lte: sessionCutoff } }, { revokedAt: { lte: sessionCutoff } }] },
   });
   const recordCutoff = new Date(now.getTime() - RECORD_RETENTION_MS);
-  await c.prisma.auditEvent.deleteMany({ where: { createdAt: { lte: recordCutoff } } });
+  // The runtime role cannot delete audit rows (server-8): the owner's prune_audit_events() does, keeping
+  // RECORD_RETENTION_MS and ADMIN_RECORD_RETENTION_MS (both fixed in the function, migration 20261122100100).
+  await c.prisma.$queryRaw`
+    SELECT prune_audit_events((${now.toISOString()}::timestamptz AT TIME ZONE 'UTC')::timestamp(3)) AS "n"`;
   await c.prisma.report.deleteMany({
     where: { status: { not: 'OPEN' }, resolvedAt: { lte: recordCutoff } },
   });

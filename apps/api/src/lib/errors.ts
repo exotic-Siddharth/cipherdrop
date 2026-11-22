@@ -67,6 +67,17 @@ export const mfaRequired = (
   message = 'Admin access needs two-step verification. Turn it on in Settings, Security, then try again.',
 ) => new AppError(403, 'FORBIDDEN', message, { reason: 'MFA_REQUIRED' satisfies ForbiddenReason });
 
+/**
+ * 403 FORBIDDEN with `details.reason` ACCOUNT_SUSPENDED (server-6). Sent only after a correct login proof, so an
+ * attacker without the password learns nothing about the account.
+ */
+export const accountSuspended = (
+  message = 'This account is suspended. Contact the operator of this server if you think this is a mistake.',
+) =>
+  new AppError(403, 'FORBIDDEN', message, {
+    reason: 'ACCOUNT_SUSPENDED' satisfies ForbiddenReason,
+  });
+
 export const notFound = (message = 'Not found') => new AppError(404, 'NOT_FOUND', message);
 
 export const conflict = (message = 'Conflict', details?: unknown) =>

@@ -1,4 +1,5 @@
 import type {
+  AdminAuditPage,
   AdminReport,
   AdminReportPage,
   AdminStats,
@@ -98,6 +99,8 @@ function users(): AdminUser[] {
     totpEnabled: false,
     dropCount: 3,
     lockedUntil: null,
+    suspendedAt: null,
+    suspendedReason: null,
     createdAt: iso(-10 * 86_400_000),
     storageQuotaBytes: 5 * GIB,
     effectiveQuotaBytes: 5 * GIB,
@@ -162,7 +165,44 @@ function mockApi(
       const page: AdminUserPage = { items, total: items.length, page: 1, pageSize: 10 };
       return json(page);
     }
+    if (method === 'GET' && url.pathname === '/api/admin/audit') {
+      const page: AdminAuditPage = {
+        items: [
+          {
+            id: 'ckaudit000000000000000001',
+            action: 'ADMIN_USER_SUSPENDED',
+            createdAt: iso(-60_000),
+            actor: { id: admin.id, email: admin.email },
+            byOperator: false,
+            subject: { id: 'ckuser000000000000000002', email: 'bob@example.com' },
+            dropId: null,
+            ipPrefix: '198.51.100.0/24',
+            userAgent: 'Firefox on Linux',
+            metadata: { reason: 'Repeat malware', revokedSessions: 2 },
+          },
+          {
+            id: 'ckaudit000000000000000002',
+            action: 'ADMIN_DROP_DISABLED',
+            createdAt: iso(-120_000),
+            actor: null,
+            byOperator: true,
+            subject: null,
+            dropId: dropId(2),
+            ipPrefix: null,
+            userAgent: null,
+            metadata: { reason: 'Notice 42' },
+          },
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 10,
+      };
+      return json(page);
+    }
     if (method === 'POST' && url.pathname.startsWith('/api/admin/reports/')) {
+      return new Response(null, { status: 204 });
+    }
+    if (method === 'POST' && url.pathname.startsWith('/api/admin/drops/')) {
       return new Response(null, { status: 204 });
     }
     if (method === 'PATCH' && url.pathname.startsWith('/api/admin/users/')) {
@@ -506,5 +546,75 @@ describe('AdminPage users', () => {
     dialog = await openEdit('root@example.com');
     expect(within(dialog).getByLabelText('Role')).toBeDisabled();
     expect(within(dialog).getByText('You cannot change your own role.')).toBeVisible();
+  });
+
+  describe('moderation (server-4, server-6)', () => {
+    it('lists the audit log with the acting admin, the operator and the reason', async () => {
+      const calls = mockApi();
+      renderAdmin();
+      const list = await screen.findByRole('list', { name: 'Audit events' });
+      expect(within(list).getByText('Admin suspended an account')).toBeInTheDocument();
+      expect(
+        within(list).getByText(`By ${admin.email} · Account bob@example.com`),
+      ).toBeInTheDocument();
+      expect(
+        within(list).getByText('Reason: Repeat malware · 2 sessions signed out'),
+      ).toBeInTheDocument();
+      expect(within(list).getByText(/By Operator \(command line\)/)).toBeInTheDocument();
+      // Admin actions only: no picker for every account's own activity, and no scope sent.
+      expect(screen.queryByLabelText('Show')).toBeNull();
+      expect(calls.find((c) => c.path === '/api/admin/audit')?.search.has('scope')).toBe(false);
+    });
+
+    it('suspends with a reason (required), and never offers it for admins', async () => {
+      const calls = mockApi();
+      renderAdmin();
+      expect(
+        await screen.findByRole('button', { name: 'Suspend bob@example.com' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: `Suspend ${admin.email}` })).toBeNull();
+      await userEvent.click(screen.getByRole('button', { name: 'Suspend bob@example.com' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Suspend account' });
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Suspend' }));
+      expect(within(dialog).getByText('Give a reason.')).toBeInTheDocument();
+      expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+      await userEvent.type(within(dialog).getByLabelText('Reason'), 'Spam');
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Suspend' }));
+      await waitFor(() =>
+        expect(calls).toContainEqual(
+          expect.objectContaining({
+            method: 'PATCH',
+            path: '/api/admin/users/ckuser000000000000000002',
+            body: { suspended: true, suspendedReason: 'Spam' },
+          }),
+        ),
+      );
+    });
+
+    it('takes a drop down from a pasted link without ever sending its key', async () => {
+      const calls = mockApi();
+      renderAdmin();
+      const card = (await screen.findByRole('heading', { name: 'Take a drop down' })).closest(
+        'section',
+      )!;
+      await userEvent.type(
+        within(card as HTMLElement).getByLabelText('Drop link or id'),
+        `https://drop.example/d/${dropId(1)}#${KEY}`,
+      );
+      await userEvent.type(within(card as HTMLElement).getByLabelText('Reason'), 'Notice 7');
+      await userEvent.click(within(card as HTMLElement).getByRole('button', { name: 'Take down' }));
+      await waitFor(() =>
+        expect(calls).toContainEqual(
+          expect.objectContaining({
+            method: 'POST',
+            path: `/api/admin/drops/${dropId(1)}/disable`,
+            body: { reason: 'Notice 7' },
+          }),
+        ),
+      );
+      expect(JSON.stringify(calls.map((c) => [c.path, c.search.toString(), c.body]))).not.toContain(
+        KEY,
+      );
+    });
   });
 });

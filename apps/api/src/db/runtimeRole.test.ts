@@ -92,7 +92,7 @@ describe('provisionRuntimeRole', () => {
     expect(await app.user.count({ where: { id: user.id } })).toBe(0);
   });
 
-  it('has exactly SELECT, INSERT, UPDATE and DELETE on every table but the migration history', async () => {
+  it('has exactly SELECT, INSERT, UPDATE and DELETE on every table but the migration history and the audit log', async () => {
     const tables = await owner.$queryRaw<{ name: string }[]>`
       SELECT quote_ident(table_schema) || '.' || quote_ident(table_name) AS "name"
       FROM information_schema.tables WHERE table_schema = ${schema} AND table_type = 'BASE TABLE'`;
@@ -107,11 +107,13 @@ describe('provisionRuntimeRole', () => {
                has_table_privilege(${role}, ${name}, 'REFERENCES') AS "references",
                has_table_privilege(${role}, ${name}, 'TRIGGER') AS "trigger"`;
       const dml = !name.endsWith('_prisma_migrations');
+      // The audit log is append-only for the API (server-8).
+      const change = dml && !name.endsWith('"AuditEvent"');
       expect(p, name).toEqual({
         select: dml,
         insert: dml,
-        update: dml,
-        delete: dml,
+        update: change,
+        delete: change,
         truncate: false,
         references: false,
         trigger: false,
@@ -121,6 +123,58 @@ describe('provisionRuntimeRole', () => {
       SELECT has_schema_privilege(${role}, ${schema}, 'USAGE') AS "usage",
              has_schema_privilege(${role}, ${schema}, 'CREATE') AS "create"`;
     expect(s).toEqual({ usage: true, create: false });
+  });
+
+  it('appends audit rows but cannot change or delete them; prunes only through prune_audit_events (server-8)', async () => {
+    const app = asRuntime();
+    const user = await createUserRecord(owner);
+    const old = new Date(Date.now() - 100 * 86_400_000);
+    const ids = {
+      old: (
+        await app.auditEvent.create({
+          data: { userId: user.id, action: 'LOGIN_SUCCESS', createdAt: old },
+        })
+      ).id,
+      oldAdmin: (
+        await app.auditEvent.create({ data: { action: 'ADMIN_USER_SUSPENDED', createdAt: old } })
+      ).id,
+      fresh: (await app.auditEvent.create({ data: { userId: user.id, action: 'LOGIN_SUCCESS' } }))
+        .id,
+    };
+    const table = `"${schema}"."AuditEvent"`;
+    expect(
+      await sqlState(app, `UPDATE ${table} SET "ipPrefix" = 'x' WHERE "id" = '${ids.fresh}'`),
+    ).toBe('42501');
+    expect(await sqlState(app, `DELETE FROM ${table} WHERE "id" = '${ids.fresh}'`)).toBe('42501');
+
+    // A time far in the future is clamped to the database clock: nothing younger than 90 days goes.
+    await app.$queryRawUnsafe(
+      `SELECT "${schema}".prune_audit_events(TIMESTAMP '2100-01-01 00:00:00') AS "n"`,
+    );
+    const left = (await owner.auditEvent.findMany({ where: { id: { in: Object.values(ids) } } }))
+      .map((e) => e.id)
+      .sort();
+    expect(left).toEqual([ids.oldAdmin, ids.fresh].sort());
+
+    // Nor through "User".id: the foreign keys refuse an update (23503 foreign_key_violation) instead of cascading it, which would
+    // otherwise rewrite who a row is about or who acted, as the table owner.
+    const actor = await createUserRecord(owner);
+    const acted = await app.auditEvent.create({
+      data: { actorId: actor.id, action: 'ADMIN_USER_SUSPENDED' },
+    });
+    const users = `"${schema}"."User"`;
+    expect(
+      await sqlState(app, `UPDATE ${users} SET "id" = 'swapped1' WHERE "id" = '${user.id}'`),
+    ).toBe('23503');
+    expect(
+      await sqlState(app, `UPDATE ${users} SET "id" = 'swapped2' WHERE "id" = '${actor.id}'`),
+    ).toBe('23503');
+    await owner.auditEvent.delete({ where: { id: acted.id } });
+
+    // Account deletion still cascades to the user's own events (the cascade runs as the owner).
+    await app.user.delete({ where: { id: user.id } });
+    expect(await owner.auditEvent.count({ where: { id: ids.fresh } })).toBe(0);
+    await owner.auditEvent.delete({ where: { id: ids.oldAdmin } });
   });
 
   it('cannot change the schema, read the migration history or reach the server', async () => {

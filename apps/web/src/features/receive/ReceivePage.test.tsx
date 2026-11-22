@@ -214,6 +214,18 @@ describe('ReceivePage', () => {
     expect(await screen.findByRole('heading', { name: title })).toBeVisible();
   });
 
+  it('tells the recipient what an account sender sees of the open (critic-7)', async () => {
+    const f = await fixture({ remaining: 2, max: 3 });
+    mockApi(f);
+    renderAt(`/d/${f.dropId}#${f.dkB64}`);
+    expect(
+      await screen.findByText(/If the sender has an account, they see when this link was opened/),
+    ).toBeVisible();
+    // Never "none of it is stored": the request logs keep the network prefix either way.
+    expect(screen.getByText(/no sender sees any of it/)).toBeVisible();
+    expect(screen.queryByText(/none of it is stored/)).toBeNull();
+  });
+
   it('ready: decrypted note, file list and downloads left; download verifies and saves', async () => {
     const f = await fixture({ remaining: 2, max: 3 });
     const calls = mockApi(f);

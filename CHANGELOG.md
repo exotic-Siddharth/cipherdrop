@@ -71,6 +71,23 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
 
 ### Added
 
+- Moderation (2026-11-22): every admin action is an audit event naming the acting admin (role and quota edits,
+  dismissals, disables, review grants, suspensions, session revocations), kept for a year and listed by
+  `GET /api/admin/audit` and the console's Audit card. That log holds admin and operator actions only: an account's
+  own activity (sign-ins, opens of its drops) stays readable by its owner alone. Admins can suspend an account (all sessions signed out,
+  sign-in refused with 403 `ACCOUNT_SUSPENDED` after a correct password) and take a drop down by link or id without
+  a report (`POST /api/admin/drops/:id/disable`).
+- An operator CLI (`node apps/api/dist/cli.js` in the api container, `npm run cli -w @cipherdrop/api` in development):
+  promote an existing account with 2FA to admin or demote it, suspend and unsuspend, take a drop down, sign out one
+  account or every account, and print the audit tail. Audited as the operator.
+- Evidence hold: while a report that carries the key is open, cleanup keeps an expired or used-up drop's blobs for
+  review, at most `REPORT_EVIDENCE_HOLD_DAYS` (14) after the drop expired or was used up; later reports do not
+  extend it. [docs/ABUSE.md](docs/ABUSE.md) describes the
+  abuse process.
+- The receive page says what a sender with an account sees of an open (time, network prefix, browser), and that
+  the server's short-lived request logs keep the network prefix either way. A recipient's download grant no longer
+  stores the network prefix (nothing read it).
+
 - `/.well-known/security.txt` (RFC 9116), generated at build time from `SECURITY_TXT_CONTACT` and
   `SECURITY_TXT_POLICY`, and a vulnerability disclosure policy in `.github/SECURITY.md` (GitHub private
   vulnerability reporting, which works only once the repository setting is on; it was off on 2026-11-21, see
@@ -106,6 +123,17 @@ sessions end 30 days after sign-in, and several API routes take new request bodi
   and a dependency audit gate (`npm run audit:gate`, `audit.yml`) with a reviewed allowlist.
 
 ### Changed
+
+- Account deletion keeps the reports against the account's drops: a reported drop stays as an ownerless row
+  without blobs or key, instead of cascading its reports away.
+- Opens and failed unlocks of a drop without an owner no longer store the IP prefix or the browser.
+- The audit log is append-only for the runtime role `cipherdrop_app` (no UPDATE or DELETE on `AuditEvent`);
+  retention runs through the owner's `prune_audit_events()` (migration `20261122100100_audit_append_only`). Its
+  foreign keys are `ON UPDATE RESTRICT` (migration `20261122100200_audit_fk_restrict`), and an admin action keeps the
+  acting admin's id and email in its metadata, so an admin who deletes their account is still named.
+- `ADMIN_REVIEW_GRANT` is recorded with the admin as the actor and no longer appears in the admin's own Activity.
+- `AdminUser` gains `suspendedAt` and `suspendedReason`; `PATCH /admin/users/:id` takes `suspended` and
+  `suspendedReason`.
 
 - `POST /auth/mfa/totp/enable`, `POST /auth/mfa/backup-codes`, `DELETE /auth/sessions/:id` and
   `POST /auth/sessions/revoke-others` require `authKey` (and a code) in the body; `POST /auth/password` takes a

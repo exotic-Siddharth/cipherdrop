@@ -179,6 +179,14 @@ describe('parseEnv outside production', () => {
     );
   });
 
+  it('holds the evidence of a keyed open report for 14 days by default (0 = no hold, at most 90)', () => {
+    expect(parseEnv(dev).REPORT_EVIDENCE_HOLD_DAYS).toBe(14);
+    expect(parseEnv({ ...dev, REPORT_EVIDENCE_HOLD_DAYS: '0' }).REPORT_EVIDENCE_HOLD_DAYS).toBe(0);
+    expect(() => parseEnv({ ...dev, REPORT_EVIDENCE_HOLD_DAYS: '91' })).toThrow(
+      /REPORT_EVIDENCE_HOLD_DAYS/,
+    );
+  });
+
   it('allows anonymous uploads and registration unless an operator switches them off', () => {
     expect(parseEnv(dev)).toMatchObject({
       ALLOW_ANONYMOUS_UPLOADS: true,

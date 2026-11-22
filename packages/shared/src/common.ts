@@ -62,6 +62,12 @@ export const AuditActionSchema = z.enum([
   'DROP_REPORTED',
   'DROP_DISABLED',
   'ADMIN_REVIEW_GRANT',
+  'ADMIN_USER_UPDATED',
+  'ADMIN_USER_SUSPENDED',
+  'ADMIN_USER_UNSUSPENDED',
+  'ADMIN_SESSIONS_REVOKED',
+  'ADMIN_REPORT_DISMISSED',
+  'ADMIN_DROP_DISABLED',
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 
@@ -71,9 +77,10 @@ export type GoneReason = z.infer<typeof GoneReasonSchema>;
 
 /**
  * `details.reason` of a 403 FORBIDDEN that the user can fix. MFA_REQUIRED: an admin without two-step
- * verification on an admin route (the SPA then asks them to turn it on).
+ * verification on an admin route (the SPA then asks them to turn it on). ACCOUNT_SUSPENDED: a correct login
+ * proof for an account an admin or the operator suspended (server-6).
  */
-export const ForbiddenReasonSchema = z.enum(['MFA_REQUIRED']);
+export const ForbiddenReasonSchema = z.enum(['MFA_REQUIRED', 'ACCOUNT_SUSPENDED']);
 export type ForbiddenReason = z.infer<typeof ForbiddenReasonSchema>;
 
 /* ---- Errors and paging ---- */

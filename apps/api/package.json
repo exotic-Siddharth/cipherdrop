@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.4",
-    "@aws-sdk/client-s3": "^3.1164.0",
+    "@aws-sdk/client-s3": "^3.1169.0",
     "@cipherdrop/crypto": "*",
     "@cipherdrop/shared": "*",
     "@node-rs/argon2": "^2.2.2",

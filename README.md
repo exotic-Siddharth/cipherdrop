@@ -5,6 +5,8 @@
 Zero-knowledge, end-to-end encrypted file sharing: files are encrypted in the browser before upload, and the
 server stores only ciphertext it has no key for.
 
+**Live demo:** <https://cipherdrop.20-205-104-24.sslip.io> (a small public instance with storage caps).
+
 ![The two-minute demo in about 90 seconds: a file is encrypted in the browser and sent with burn after reading, the key sits after the # in the link, a fresh browser decrypts and verifies it, a reload finds the link used up, one flipped ciphertext byte blocks the save, a password link, then the zero-knowledge account: dashboard, locked vault after a reload, activity log](docs/screenshots/demo.gif)
 
 [Screenshots](#screenshots) of every view are further down; [docs/DEMO.md](docs/DEMO.md) is the script, and
